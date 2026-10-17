@@ -70,9 +70,13 @@ JS 标识符、GraphQL 字段与枚举值、filter type、CSS 与 `<style>` 内�
 
 ### 扫描器捞不到、必须人工扫的
 
+- 写死在 JSX 结构里的英文文本节点（`<span>History</span>`、`of {total}` 这类裸文本，不经字符串）
 - 以 `` `${name}: `` 之类插值开头的模板字面量（`tell`/`notify` 提示语）
 - 部分 `throw new Error(...)` 文案（会显示给用户的才译）
 - HTML 结构里写死的英文、CSS `content:` 里的英文
+
+JSX 文本节点可用两条正则扫全部 `.jsx` 兜底：`>[A-Za-z][A-Za-z0-9 ,.'()/&%#!?:_-]{2,}` 与行首裸文本
+（如 `History {x ? "▴" : "▾"}` 的 `History`）。
 
 ## 9. 发布
 
@@ -81,3 +85,19 @@ JS 标识符、GraphQL 字段与枚举值、filter type、CSS 与 `<style>` 内�
 最后把该插件从 `UPSTREAM.md` 的候选表移入记账表。
 
 Windows：PowerShell 用 `;` 分隔命令（不用 `&&`）；含中文的 commit message 用 `git commit -F <文件>`；`git push`/`gh` 需在非沙箱下执行。
+
+## 10. 构建源仓库上游（`src/` + vite，如 Xenith）
+
+上游若提供构建源仓库（`src/` + vite，如 `gq1869/stashapp-xenith`），汉化方式是**改 `src/` 再 `npm run build`**，
+仓库只放产物 bundle（`<插件ID>.js` = 上游 `dist/<name>.js`），**不放 `src/`**：
+
+1. `git clone` 上游到临时目录，检出记账版本（见 UPSTREAM.md）
+2. 照第 2–6 节改 `src/`（脚手架、冻结表、映射脚本）
+3. `npm run build`（需先 `npm i`/复制 `node_modules`），产物覆盖到 `<插件ID>/`
+4. 校验改扫 `src/` 而非压缩产物：`python scripts/scan_src_i18n.py <临时目录>/src`（压缩产物里 `tc` 被改名、全压成一行，`check_i18n.py` 会失效）
+5. 把 `src/` 改动导出为 patch 沉进仓库：`scripts/<插件>.patch`
+   （`git add -N <新增文件>` → `git diff --output=<patch> -- src`，不随插件 zip 发布）
+6. 复现校验：干净 clone 上游 → `git apply <patch>` → 与工作区 `src` 逐文件 sha256 对比 → `npm run build` → 产物 sha256 与已发布一致
+
+已验证：Xenith 的 `scripts/xenith-i18n.patch` 从上游 `d7d06dc` 干净 clone 直接 `git apply` 后构建，
+所得 `xenith.js`/`xenith.css` 与已发布产物逐字节一致（sha256 相同）。

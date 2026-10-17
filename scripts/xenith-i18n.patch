@@ -1,0 +1,1527 @@
+diff --git a/src/api.js b/src/api.js
+index 5478d3a..68d53e0 100644
+--- a/src/api.js
++++ b/src/api.js
+@@ -1,3 +1,5 @@
++import { tc } from "./i18n";
++
+ const GRAPHQL_ENDPOINT = "/graphql";
+ 
+ // Bounds how long a hung connection can pin a caller's in-flight guard
+@@ -24,7 +26,7 @@ async function execGraphQL(query, variables) {
+   }
+ 
+   if (!res.ok) {
+-    throw new Error(`GraphQL request failed: ${res.status} ${res.statusText}`);
++    throw new Error(tc(`GraphQL 请求失败：${res.status} ${res.statusText}`, `GraphQL request failed: ${res.status} ${res.statusText}`));
+   }
+ 
+   const json = await res.json();
+diff --git a/src/card-chips.js b/src/card-chips.js
+index 92ceec6..7322fe0 100644
+--- a/src/card-chips.js
++++ b/src/card-chips.js
+@@ -30,6 +30,7 @@ import {
+   formatYear,
+   UNITS,
+ } from "./format";
++import { tc } from "./i18n";
+ 
+ // tattoos/piercings are free-text Strings in Stash's schema (prose like
+ // "Left arm sleeve", or "No"/""), so a truthy check alone would render a
+@@ -43,8 +44,8 @@ export function isAffirmative(value) {
+ // The rating chip drops its "Rating " label when unrated — "Rating Unrated"
+ // reads as broken English, so an unrated item's chip just says "Unrated".
+ function formatRatingChipText(rating100) {
+-  if (rating100 == null) return "Unrated";
+-  return `Rating ${formatDisplayRating(rating100)}`;
++  if (rating100 == null) return tc("未评级", "Unrated");
++  return tc(`评分 ${formatDisplayRating(rating100)}`, `Rating ${formatDisplayRating(rating100)}`);
+ }
+ 
+ // fake_tits is a closed enum in practice, not prose — a live 2.5k-performer
+@@ -195,12 +196,12 @@ export function buildPerformerChips(item, units = UNITS.CUSTOMARY) {
+   chips.push({ id: "rating", text: formatRatingChipText(item.rating100), group: "accent" });
+ 
+   if (item.favorite === true) {
+-    chips.push({ id: "favorite", text: "Favorite", group: "accent" });
++    chips.push({ id: "favorite", text: tc("收藏", "Favorite"), group: "accent" });
+   }
+ 
+   const age = formatAge(item.birthdate, item.death_date);
+   if (age != null) {
+-    chips.push({ id: "age", text: `Age ${age}`, group: "physical" });
++    chips.push({ id: "age", text: tc(`${age} 岁`, `Age ${age}`), group: "physical" });
+   }
+ 
+   if (item.ethnicity) {
+@@ -218,11 +219,11 @@ export function buildPerformerChips(item, units = UNITS.CUSTOMARY) {
+   }
+ 
+   if (item.eye_color) {
+-    chips.push({ id: "eye_color", text: `${item.eye_color} eyes`, group: "physical" });
++    chips.push({ id: "eye_color", text: tc(`${item.eye_color} 眼睛`, `${item.eye_color} eyes`), group: "physical" });
+   }
+ 
+   if (item.hair_color) {
+-    chips.push({ id: "hair_color", text: `${item.hair_color} hair`, group: "physical" });
++    chips.push({ id: "hair_color", text: tc(`${item.hair_color} 头发`, `${item.hair_color} hair`), group: "physical" });
+   }
+ 
+   if (item.measurements) {
+@@ -231,27 +232,27 @@ export function buildPerformerChips(item, units = UNITS.CUSTOMARY) {
+ 
+   const breasts = classifyBreasts(item.fake_tits);
+   if (breasts) {
+-    chips.push({ id: "breasts", text: breasts === "fake" ? "Fake Tits" : "Natural", group: "physical" });
++    chips.push({ id: "breasts", text: breasts === "fake" ? tc("假胸", "Fake Tits") : tc("自然", "Natural"), group: "physical" });
+   }
+ 
+   if (item.scene_count > 0) {
+-    chips.push({ id: "scene_count", text: `${item.scene_count} ${pluralize(item.scene_count, "scene")}`, group: "activity" });
++    chips.push({ id: "scene_count", text: tc(`${item.scene_count} 个场景`, `${item.scene_count} ${pluralize(item.scene_count, "scene")}`), group: "activity" });
+   }
+ 
+   if (item.o_counter > 0) {
+-    chips.push({ id: "o_counter", text: `O-Count ${item.o_counter}`, group: "activity" });
++    chips.push({ id: "o_counter", text: tc(`O 计数 ${item.o_counter}`, `O-Count ${item.o_counter}`), group: "activity" });
+   }
+ 
+   if (item.gallery_count > 0) {
+-    chips.push({ id: "gallery_count", text: `${item.gallery_count} ${pluralize(item.gallery_count, "gallery", "galleries")}`, group: "activity" });
++    chips.push({ id: "gallery_count", text: tc(`${item.gallery_count} 个图库`, `${item.gallery_count} ${pluralize(item.gallery_count, "gallery", "galleries")}`), group: "activity" });
+   }
+ 
+   if (isAffirmative(item.tattoos)) {
+-    chips.push({ id: "tattoos", text: "Tattoos", group: "art" });
++    chips.push({ id: "tattoos", text: tc("纹身", "Tattoos"), group: "art" });
+   }
+ 
+   if (isAffirmative(item.piercings)) {
+-    chips.push({ id: "piercings", text: "Piercings", group: "art" });
++    chips.push({ id: "piercings", text: tc("穿孔", "Piercings"), group: "art" });
+   }
+ 
+   for (const tag of sortByCountThenName(item.tags, "performer_count")) {
+@@ -301,21 +302,21 @@ export function buildSceneChips(item) {
+   }
+ 
+   if (item.o_counter > 0) {
+-    chips.push({ id: "o_counter", text: `O-Count ${item.o_counter}`, group: "activity" });
++    chips.push({ id: "o_counter", text: tc(`O 计数 ${item.o_counter}`, `O-Count ${item.o_counter}`), group: "activity" });
+   }
+ 
+   if (item.play_count > 0) {
+-    chips.push({ id: "play_count", text: `${item.play_count} ${pluralize(item.play_count, "play")}`, group: "activity" });
++    chips.push({ id: "play_count", text: tc(`${item.play_count} 次播放`, `${item.play_count} ${pluralize(item.play_count, "play")}`), group: "activity" });
+   }
+ 
+   const markerCount = item.scene_markers?.length ?? 0;
+   if (markerCount > 0) {
+-    chips.push({ id: "marker_count", text: `${markerCount} ${pluralize(markerCount, "marker")}`, group: "activity" });
++    chips.push({ id: "marker_count", text: tc(`${markerCount} 个标记`, `${markerCount} ${pluralize(markerCount, "marker")}`), group: "activity" });
+   }
+ 
+   const galleryCount = item.galleries?.length ?? 0;
+   if (galleryCount > 0) {
+-    chips.push({ id: "gallery_count", text: `${galleryCount} ${pluralize(galleryCount, "gallery", "galleries")}`, group: "activity" });
++    chips.push({ id: "gallery_count", text: tc(`${galleryCount} 个图库`, `${galleryCount} ${pluralize(galleryCount, "gallery", "galleries")}`), group: "activity" });
+   }
+ 
+   for (const entry of item.groups ?? []) {
+diff --git a/src/components/BattleRankBadge.jsx b/src/components/BattleRankBadge.jsx
+index 1aaca86..dd655c6 100644
+--- a/src/components/BattleRankBadge.jsx
++++ b/src/components/BattleRankBadge.jsx
+@@ -1,6 +1,7 @@
+ const { React } = window.PluginApi;
+ import { getRatingTier, TIER_COLORS, DEFAULT_RATING, streakEmoji } from "../elo";
+ import { formatDisplayRating } from "../format";
++import { tc } from "../i18n";
+ 
+ // xenith_record entries store the opponent as "id:name" (matchmaking.js's
+ // RECORD_KEY comment) — split on the first colon only, since a name can
+@@ -11,6 +12,13 @@ function parseOpponent(opponent) {
+   return { id: opponent.slice(0, i), name: opponent.slice(i + 1) };
+ }
+ 
++// 历史抽屉里的胜/负/平标签（渲染期取值，跟随界面语言）。
++function kindLabel(kind) {
++  if (kind === "draw") return tc("平", "draw");
++  if (kind === "win") return tc("胜", "win");
++  return tc("负", "loss");
++}
++
+ function formatHistoryDate(iso) {
+   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+ }
+@@ -40,9 +48,9 @@ function HistoryDrawer({ record, battleType }) {
+         return (
+           <div className="hon-history-row" key={`${entry.date}-${i}`}>
+             <span className="hon-history-date">{formatHistoryDate(entry.date)}</span>
+-            <span className={`hon-history-chip hon-history-chip-${kind}`}>{kind}</span>
++            <span className={`hon-history-chip hon-history-chip-${kind}`}>{kindLabel(kind)}</span>
+             <span className="hon-history-opponent">
+-              vs{" "}
++              {tc("对阵", "vs")}{" "}
+               {id ? (
+                 <a href={`/${battleType}/${id}`} target="_blank" rel="noreferrer">
+                   {name}
+@@ -76,7 +84,7 @@ export function BattleRankBadge({ rank, total, rating100, stats, record, battleT
+   const badge = (
+     <div
+       className={`hon-battle-rank-badge ${compact ? "xen-battle-rank-badge-compact" : ""}`}
+-      title={`Rank #${rank} of ${total} (Rating ${formatDisplayRating(rating100)})`}
++      title={tc(`排名 #${rank} / 共 ${total}（评分：${formatDisplayRating(rating100)}）`, `Rank #${rank} of ${total} (Rating ${formatDisplayRating(rating100)})`)}
+     >
+       {!compact && (
+         <span className="hon-tier-chip" style={{ color: TIER_COLORS[tier], borderColor: TIER_COLORS[tier] }}>
+@@ -86,12 +94,12 @@ export function BattleRankBadge({ rank, total, rating100, stats, record, battleT
+       <span className="hon-rank-text" style={{ color: TIER_COLORS[tier] }}>
+         #{rank}
+       </span>
+-      {!compact && <span className="hon-rank-total">of {total}</span>}
++      {!compact && <span className="hon-rank-total">{tc("共", "of")} {total}</span>}
+       {stats?.total_matches > 0 && (
+         <span className="hon-match-stats">
+-          <span className="hon-wins">{stats.wins}W</span>
+-          <span className="hon-losses">{stats.losses}L</span>
+-          <span className="hon-draws">{stats.draws || 0}D</span>
++          <span className="hon-wins">{tc(`${stats.wins}胜`, `${stats.wins}W`)}</span>
++          <span className="hon-losses">{tc(`${stats.losses}负`, `${stats.losses}L`)}</span>
++          <span className="hon-draws">{tc(`${stats.draws || 0}平`, `${stats.draws || 0}D`)}</span>
+         </span>
+       )}
+       {!compact && streak >= 2 && (
+@@ -106,7 +114,7 @@ export function BattleRankBadge({ rank, total, rating100, stats, record, battleT
+           aria-expanded={historyOpen}
+           onClick={() => setHistoryOpen((open) => !open)}
+         >
+-          History {historyOpen ? "▴" : "▾"}
++          {tc("历史", "History")} {historyOpen ? "▴" : "▾"}
+         </button>
+       )}
+     </div>
+diff --git a/src/components/Champion.jsx b/src/components/Champion.jsx
+index d32bc41..d06e8e8 100644
+--- a/src/components/Champion.jsx
++++ b/src/components/Champion.jsx
+@@ -6,6 +6,7 @@ import { streakEmoji } from "../elo";
+ import { persisted } from "../state";
+ import { pickRunChallenger, matchesGenderFilter } from "../matchmaking";
+ import { ShuffleIcon } from "./Icons";
++import { tc } from "../i18n";
+ 
+ const RETIRED_NOTICE_MS = 4000;
+ 
+@@ -68,7 +69,7 @@ export function Champion({ battleType, selectedGenders }) {
+       if (run.championId === prev.challengerId) {
+         setRetiredNotice(null);
+       } else {
+-        setRetiredNotice(`Previous reign: ${prev.championName} — ${prev.defenses} defended`);
++        setRetiredNotice(tc(`上一任期：${prev.championName} — 守擂 ${prev.defenses} 次`, `Previous reign: ${prev.championName} — ${prev.defenses} defended`));
+         if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+         noticeTimerRef.current = setTimeout(() => setRetiredNotice(null), RETIRED_NOTICE_MS);
+       }
+@@ -129,18 +130,18 @@ function ChampionBanner({ run, pair, retiredNotice, onShuffle, shuffling }) {
+   return (
+     <div className="hon-run-banner">
+       <span className="hon-run-banner-count">
+-        👑 {championName} · {defenses} defended {streakEmoji(defenses)}
++        👑 {championName} · {tc("守擂 ", "")}{defenses}{tc(" 次", " defended")} {streakEmoji(defenses)}
+       </span>
+       <span className="hon-run-banner-range">
+-        {retiredNotice ?? `${remaining} to retirement`}
++        {retiredNotice ?? tc(`${remaining} 次后退役`, `${remaining} to retirement`)}
+         {defenses === 0 && (
+           <button
+             type="button"
+             className="hon-run-banner-shuffle"
+             onClick={onShuffle}
+             disabled={shuffling}
+-            title="Shuffle in a different champion"
+-            aria-label="Shuffle in a different champion"
++            title={tc("随机更换冠军", "Shuffle in a different champion")}
++            aria-label={tc("随机更换冠军", "Shuffle in a different champion")}
+           >
+             <ShuffleIcon />
+           </button>
+diff --git a/src/components/Gauntlet.jsx b/src/components/Gauntlet.jsx
+index 1e92fd6..8b6a82a 100644
+--- a/src/components/Gauntlet.jsx
++++ b/src/components/Gauntlet.jsx
+@@ -11,6 +11,7 @@ import { useNativeCard, handleNativeCardClick } from "../native-loader";
+ import { CardChips } from "./CardChips";
+ import { ShuffleIcon } from "./Icons";
+ import { useCardChips } from "../hooks/useCardChips";
++import { tc } from "../i18n";
+ 
+ // Gauntlet mode: one challenger gets placed against the ladder over a run
+ // of matches (see src/gauntlet.js for the placement math). Both battle
+@@ -117,8 +118,8 @@ export function Gauntlet({ battleType, selectedGenders }) {
+         <div className="hon-run">
+           <GauntletBanner progress={runProgress(run)} genderFilter={run.genderFilter} />
+           <div className="hon-gauntlet-exhausted">
+-            <div className="hon-gauntlet-exhausted-message">No eligible opponents left under the current gender filter.</div>
+-            <button type="button" className="hon-choose-btn" onClick={handleNextChallenger}>Next Challenger</button>
++            <div className="hon-gauntlet-exhausted-message">{tc("当前性别筛选下已没有符合条件的对手。", "No eligible opponents left under the current gender filter.")}</div>
++            <button type="button" className="hon-choose-btn" onClick={handleNextChallenger}>{tc("下一位挑战者", "Next Challenger")}</button>
+           </div>
+         </div>
+       );
+@@ -148,9 +149,9 @@ function GauntletBanner({ progress, genderFilter }) {
+   const genderLabel = formatGenderList(genderFilter);
+   return (
+     <div className="hon-run-banner">
+-      <span className="hon-run-banner-count">Match {matchesPlayed + 1} of {maxMatches}</span>
++      <span className="hon-run-banner-count">{tc("第 ", "Match ")}{matchesPlayed + 1}{tc(" 场 / 共 ", " of ")}{maxMatches}{tc(" 场", "")}</span>
+       <span className="hon-run-banner-range">
+-        Narrowing to #{intervalLo + 1}–#{intervalHi + 1} of {ladderSize + 1}
++        {tc("缩小范围至 #", "Narrowing to #")}{intervalLo + 1}–#{intervalHi + 1}{tc("，共 ", " of ")}{ladderSize + 1}{tc(" 位", "")}
+         {genderLabel && ` (${genderLabel})`}
+       </span>
+     </div>
+@@ -164,8 +165,8 @@ function ChallengerPreview({ battleType, challenger, loading, error, onStart, on
+ 
+   return (
+     <div className="hon-gauntlet-preview">
+-      <div className="hon-gauntlet-preview-heading">Gauntlet Challenger</div>
+-      {loading && <div className="hon-loading">Finding a challenger...</div>}
++      <div className="hon-gauntlet-preview-heading">{tc("车轮战挑战者", "Gauntlet Challenger")}</div>
++      {loading && <div className="hon-loading">{tc("正在寻找挑战者...", "Finding a challenger...")}</div>}
+       {error && <div className="hon-error">{error}</div>}
+       {!loading && !error && challenger && (
+         <>
+@@ -174,14 +175,14 @@ function ChallengerPreview({ battleType, challenger, loading, error, onStart, on
+               {NativeCard ? (
+                 isScenes ? <NativeCard scene={challenger} /> : <NativeCard performer={challenger} />
+               ) : (
+-                <div className="hon-card-native-loading">Loading...</div>
++                <div className="hon-card-native-loading">{tc("加载中...", "Loading...")}</div>
+               )}
+             </div>
+             <CardChips chips={chips} />
+           </div>
+           <div className="hon-gauntlet-preview-actions">
+-            <button type="button" className="hon-choose-btn" onClick={onStart}>Start Run</button>
+-            <button type="button" className="xen-action-btn" onClick={onTryAnother} title="Try another challenger" aria-label="Try another challenger">
++            <button type="button" className="hon-choose-btn" onClick={onStart}>{tc("开始挑战", "Start Run")}</button>
++            <button type="button" className="xen-action-btn" onClick={onTryAnother} title={tc("换一个挑战者", "Try another challenger")} aria-label={tc("换一个挑战者", "Try another challenger")}>
+               <ShuffleIcon />
+             </button>
+           </div>
+@@ -219,18 +220,18 @@ function PlacementScreen({ battleType, run, onNext }) {
+ 
+   return (
+     <div className="hon-gauntlet-placement">
+-      <div className="hon-gauntlet-placement-heading">Placed!</div>
++      <div className="hon-gauntlet-placement-heading">{tc("已定级！", "Placed!")}</div>
+       <div className="hon-gauntlet-placement-rank" style={{ color: TIER_COLORS[tier] }}>
+-        #{placementRank} of {totalCount}{" "}
++        {tc("第 ", "#")}{placementRank}{tc(" 位 / 共 ", " of ")}{totalCount}{tc(" 位", "")}{" "}
+         <span className="hon-gauntlet-placement-basis">
+-          by rating{genderLabel && ` among ${genderLabel}`}
++          {tc("按评分", "by rating")}{genderLabel && tc(`（${genderLabel}）`, ` among ${genderLabel}`)}
+         </span>
+       </div>
+-      <div className="hon-gauntlet-placement-tier">Tier {tier}</div>
++      <div className="hon-gauntlet-placement-tier">{tc("分档 ", "Tier ")}{tier}</div>
+       {leaderboardRank != null && (
+-        <div className="hon-gauntlet-placement-leaderboard">Leaderboard rank (all): #{leaderboardRank}</div>
++        <div className="hon-gauntlet-placement-leaderboard">{tc("排行榜排名（全部）：#", "Leaderboard rank (all): #")}{leaderboardRank}</div>
+       )}
+-      <button type="button" className="hon-choose-btn" onClick={onNext}>Next Challenger</button>
++      <button type="button" className="hon-choose-btn" onClick={onNext}>{tc("下一位挑战者", "Next Challenger")}</button>
+     </div>
+   );
+ }
+diff --git a/src/components/HeadToHead.jsx b/src/components/HeadToHead.jsx
+index 53f24fe..b31f1e5 100644
+--- a/src/components/HeadToHead.jsx
++++ b/src/components/HeadToHead.jsx
+@@ -11,6 +11,7 @@ import { Gauntlet } from "./Gauntlet";
+ import { Champion } from "./Champion";
+ import { useXenithState } from "../state";
+ import { SkipIcon, UndoIcon } from "./Icons";
++import { tc } from "../i18n";
+ 
+ 
+ // True when the current focus target would consume the keystroke itself
+@@ -211,7 +212,7 @@ export function MatchView({ battleType, pair, ranks, loading, error, choose, ski
+ 
+   return (
+     <div className="hon-h2h">
+-      {loading && <div className="hon-loading">Loading matchup...</div>}
++      {loading && <div className="hon-loading">{tc("加载对局中...", "Loading matchup...")}</div>}
+       {error && <div className="hon-error">{error}</div>}
+ 
+       {!loading && !error && pair && (
+@@ -234,19 +235,19 @@ export function MatchView({ battleType, pair, ranks, loading, error, choose, ski
+           {/* Label leads/trails the icon by direction of motion: skip moves
+               forward (label, then icon), undo moves backward (icon, then
+               label) — same convention as the reverse ordering below. */}
+-          <button type="button" className="xen-action-btn xen-action-btn-labeled" onClick={skip} disabled={loading || !!result} title="Skip" aria-label="Skip">
+-            <span className="xen-action-btn-label">Skip</span>
++          <button type="button" className="xen-action-btn xen-action-btn-labeled" onClick={skip} disabled={loading || !!result} title={tc("跳过", "Skip")} aria-label={tc("跳过", "Skip")}>
++            <span className="xen-action-btn-label">{tc("跳过", "Skip")}</span>
+             <SkipIcon />
+           </button>
+-          <span className="hon-hint"><strong>Space</strong> to Skip</span>
++          <span className="hon-hint"><strong>{tc("空格键", "Space")}</strong>{tc("跳过", " to Skip")}</span>
+         </div>
+ 
+         <div className="xen-action-group">
+-          <button type="button" className="xen-action-btn xen-action-btn-labeled" onClick={undo} disabled={!canUndo || loading} title="Undo" aria-label="Undo">
++          <button type="button" className="xen-action-btn xen-action-btn-labeled" onClick={undo} disabled={!canUndo || loading} title={tc("撤销", "Undo")} aria-label={tc("撤销", "Undo")}>
+             <UndoIcon />
+-            <span className="xen-action-btn-label">Undo</span>
++            <span className="xen-action-btn-label">{tc("撤销", "Undo")}</span>
+           </button>
+-          <span className="hon-hint"><strong>Ctrl+Z</strong> to Undo</span>
++          <span className="hon-hint"><strong>Ctrl+Z</strong>{tc("撤销", " to Undo")}</span>
+         </div>
+       </div>
+     </div>
+diff --git a/src/components/Leaderboard.jsx b/src/components/Leaderboard.jsx
+index f888d5b..1fe6826 100644
+--- a/src/components/Leaderboard.jsx
++++ b/src/components/Leaderboard.jsx
+@@ -5,8 +5,9 @@ import { formatDisplayRating } from "../format";
+ import { persisted } from "../state";
+ import { getPluginConfig } from "../plugin-config";
+ import { resolvePageSize, reindexPage } from "../leaderboard-pagination";
+-import { COLUMNS, computeColumnWidths, formatStreak } from "../leaderboard-columns";
++import { COLUMNS, columnLabel, computeColumnWidths, formatStreak } from "../leaderboard-columns";
+ import { ChevronLeftIcon, ChevronRightIcon } from "./Icons";
++import { tc } from "../i18n";
+ 
+ // Same breakpoint xenith.css's `.hon-stats-table-wrapper` scrollport switch
+ // uses (the `width <= 900px` block) — page size and scrollport change
+@@ -74,7 +75,7 @@ function TierDistribution({ rows, open, onToggle, itemLabel }) {
+         onClick={onToggle}
+         aria-expanded={open}
+       >
+-        <span>Tier Distribution</span>
++        <span>{tc("分档分布", "Tier Distribution")}</span>
+         <span className="xen-sidebar-expand-icon" aria-hidden="true">▼</span>
+       </button>
+       <div className={`hon-distribution-content ${open ? "expanded" : ""}`}>
+@@ -121,7 +122,7 @@ function TierDistribution({ rows, open, onToggle, itemLabel }) {
+             })}
+           </div>
+           <div className="hon-tier-distribution-total">
+-            {rows.length} {itemLabel}{rows.length === 1 ? "" : "s"} total
++            {tc(`共 ${rows.length} 个${itemLabel}`, `${rows.length} ${itemLabel}${rows.length === 1 ? "" : "s"} total`)}
+           </div>
+         </div>
+       </div>
+@@ -162,7 +163,7 @@ function usePageSize() {
+ export function Leaderboard() {
+   const { rows, error, battleType } = useLeaderboard();
+   const entityPath = battleType === "scenes" ? "scenes" : "performers";
+-  const scopeLabel = battleType === "scenes" ? "Scenes" : "Performers";
++  const scopeLabel = battleType === "scenes" ? tc("场景", "Scenes") : tc("演员", "Performers");
+   const [sortKey, setSortKey] = React.useState("composite");
+   const [sortAsc, setSortAsc] = React.useState(false);
+   const [tierFilter, setTierFilter] = React.useState("ALL");
+@@ -271,7 +272,7 @@ export function Leaderboard() {
+   }
+ 
+   if (error) return <div className="hon-error">{error}</div>;
+-  if (!rows) return <div className="hon-loading">Loading leaderboard...</div>;
++  if (!rows) return <div className="hon-loading">{tc("加载排行榜中...", "Loading leaderboard...")}</div>;
+ 
+   function toggleSort(key) {
+     if (key === sortKey) setSortAsc((a) => !a);
+@@ -285,10 +286,10 @@ export function Leaderboard() {
+     <div className="hon-leaderboard">
+       <div className="hon-stats-header">
+         <h2 className="hon-stats-title">
+-          <span className="hon-stats-title-icon">📊</span> Leaderboard
++          <span className="hon-stats-title-icon">📊</span> {tc("排行榜", "Leaderboard")}
+           <span className="hon-match-stats-scope">{scopeLabel}</span>
+         </h2>
+-        <div className="hon-tier-filter" role="radiogroup" aria-label="Tier filter">
++        <div className="hon-tier-filter" role="radiogroup" aria-label={tc("分档筛选", "Tier filter")}>
+           {["ALL", "S", "A", "B", "C", "D", "F"].map((t) => (
+             <button
+               key={t}
+@@ -309,7 +310,7 @@ export function Leaderboard() {
+         rows={rows}
+         open={distributionOpen}
+         onToggle={toggleDistribution}
+-        itemLabel={battleType === "scenes" ? "scene" : "performer"}
++        itemLabel={battleType === "scenes" ? tc("场景", "scene") : tc("演员", "performer")}
+       />
+ 
+       <div className="hon-stats-table-wrapper">
+@@ -337,7 +338,7 @@ export function Leaderboard() {
+                     aria-sort={isActive ? (sortAsc ? "ascending" : "descending") : "none"}
+                   >
+                     <button type="button" className="hon-stats-th-btn" onClick={() => toggleSort(col.key)}>
+-                      {col.label}
++                      {columnLabel(col)}
+                     </button>
+                   </th>
+                 );
+@@ -365,15 +366,15 @@ export function Leaderboard() {
+       </div>
+ 
+       {pageCount > 1 && (
+-        <div className="hon-leaderboard-pager" role="navigation" aria-label="Leaderboard pagination">
++        <div className="hon-leaderboard-pager" role="navigation" aria-label={tc("排行榜分页", "Leaderboard pagination")}>
+           <button
+             type="button"
+             className="hon-tier-btn hon-pager-btn"
+             disabled={safePage === 0}
+-            aria-label="Previous page"
++            aria-label={tc("上一页", "Previous page")}
+             onClick={() => setPage(safePage - 1)}
+           >
+-            <ChevronLeftIcon /> <span className="hon-pager-label">Prev</span>
++            <ChevronLeftIcon /> <span className="hon-pager-label">{tc("上一页", "Prev")}</span>
+           </button>
+ 
+           {/* Text labels collapse first (below 460px container width),
+@@ -381,36 +382,36 @@ export function Leaderboard() {
+               in .hon-pager-jump conveys position on its own, so the range is
+               the redundant half once space runs out entirely. */}
+           <span className="hon-pager-range" aria-live="polite">
+-            <span className="hon-pager-label">Showing </span>
++            <span className="hon-pager-label">{tc("显示 ", "Showing ")}</span>
+             {(safePage * pageSize + 1).toLocaleString()}–
+-            {Math.min((safePage + 1) * pageSize, sorted.length).toLocaleString()} of{" "}
++            {Math.min((safePage + 1) * pageSize, sorted.length).toLocaleString()}{tc(" / 共 ", " of ")}
+             {sorted.length.toLocaleString()}
+           </span>
+ 
+           <span className="hon-pager-jump">
+-            <span className="hon-pager-label">Page </span>
++            <span className="hon-pager-label">{tc("第 ", "Page ")}</span>
+             <input
+               type="number"
+               className="hon-pager-jump-input"
+               min={1}
+               max={pageCount}
+               value={pageInput}
+-              aria-label="Jump to page"
++              aria-label={tc("跳转到页码", "Jump to page")}
+               onChange={(e) => setPageInput(e.target.value)}
+               onBlur={commitPageInput}
+               onKeyDown={(e) => { if (e.key === "Enter") commitPageInput(); }}
+             />{" "}
+-            of {pageCount}
++            {tc(" / 共 ", " of ")}{pageCount}
+           </span>
+ 
+           <button
+             type="button"
+             className="hon-tier-btn hon-pager-btn"
+             disabled={safePage >= pageCount - 1}
+-            aria-label="Next page"
++            aria-label={tc("下一页", "Next page")}
+             onClick={() => setPage(safePage + 1)}
+           >
+-            <span className="hon-pager-label">Next</span> <ChevronRightIcon />
++            <span className="hon-pager-label">{tc("下一页", "Next")}</span> <ChevronRightIcon />
+           </button>
+         </div>
+       )}
+diff --git a/src/components/MatchLog.jsx b/src/components/MatchLog.jsx
+index 8f08025..52bf9ba 100644
+--- a/src/components/MatchLog.jsx
++++ b/src/components/MatchLog.jsx
+@@ -1,6 +1,7 @@
+ const { React } = window.PluginApi;
+ import { getSessionLog, clearSessionLog } from "../session-log";
+ import { formatDisplayRating } from "../format";
++import { tc } from "../i18n";
+ 
+ // Session-scoped, both battle types — this page reads src/session-log.js's
+ // in-memory store, not xenith_record, so it's scoped to what's been played
+@@ -21,16 +22,16 @@ function LogRow({ entry }) {
+       <td className="hon-match-log-time">{formatTime(ts)}</td>
+       <td className="hon-match-log-result">
+         {undone ? (
+-          <span className="hon-match-log-chip hon-match-log-chip-undone">Undone</span>
++          <span className="hon-match-log-chip hon-match-log-chip-undone">{tc("已撤销", "Undone")}</span>
+         ) : kind === "win" ? (
+-          <span className="hon-match-log-chip hon-match-log-chip-win">Win</span>
++          <span className="hon-match-log-chip hon-match-log-chip-win">{tc("胜", "Win")}</span>
+         ) : (
+-          <span className="hon-match-log-chip hon-match-log-chip-draw">Draw</span>
++          <span className="hon-match-log-chip hon-match-log-chip-draw">{tc("平", "Draw")}</span>
+         )}
+       </td>
+       <td className="hon-match-log-names">
+         <a className="hon-match-log-name" href={href(a.id)} target="_blank" rel="noreferrer">{a.name}</a>
+-        {kind === "win" ? " def. " : " vs "}
++        {kind === "win" ? tc(" 战胜 ", " def. ") : tc(" 对阵 ", " vs ")}
+         <a className="hon-match-log-name" href={href(b.id)} target="_blank" rel="noreferrer">{b.name}</a>
+       </td>
+       <td className="hon-match-log-ratings">
+@@ -59,24 +60,24 @@ export function MatchLog() {
+     <div className="hon-match-log-page">
+       <div className="hon-stats-header">
+         <h2 className="hon-stats-title">
+-          <span className="hon-stats-title-icon">📜</span> Match Log
+-          <span className="hon-match-stats-scope">This session</span>
++          <span className="hon-stats-title-icon">📜</span> {tc("对局日志", "Match Log")}
++          <span className="hon-match-stats-scope">{tc("本次会话", "This session")}</span>
+         </h2>
+-        <button className="hon-header-btn" onClick={handleClear} title="Clear" aria-label="Clear match log">
++        <button className="hon-header-btn" onClick={handleClear} title={tc("清空", "Clear")} aria-label={tc("清空对局日志", "Clear match log")}>
+           🗑️
+         </button>
+       </div>
+ 
+       {entries.length === 0 ? (
+-        <div className="hon-match-log-empty">No matches this session yet.</div>
++        <div className="hon-match-log-empty">{tc("本次会话尚无对局。", "No matches this session yet.")}</div>
+       ) : (
+         <table className="hon-match-log-table">
+           <thead>
+             <tr>
+-              <th>Time</th>
+-              <th>Result</th>
+-              <th>Match</th>
+-              <th>Rating</th>
++              <th>{tc("时间", "Time")}</th>
++              <th>{tc("结果", "Result")}</th>
++              <th>{tc("对局", "Match")}</th>
++              <th>{tc("评分", "Rating")}</th>
+             </tr>
+           </thead>
+           <tbody>
+diff --git a/src/components/MatchStats.jsx b/src/components/MatchStats.jsx
+index 5b437b1..d75ae62 100644
+--- a/src/components/MatchStats.jsx
++++ b/src/components/MatchStats.jsx
+@@ -3,6 +3,7 @@ import { useLeaderboard } from "../hooks/useLeaderboard";
+ import { computeMatchStats } from "../match-stats";
+ import { formatDisplayRating } from "../format";
+ import { streakEmoji } from "../elo";
++import { tc } from "../i18n";
+ 
+ /** @param {{ label: string, value: any, sub?: string }} props */
+ function StatCard({ label, value, sub }) {
+@@ -53,88 +54,88 @@ export function MatchStats() {
+   const { rows, error, battleType } = useLeaderboard();
+   const stats = React.useMemo(() => (rows ? computeMatchStats(rows) : null), [rows]);
+   const entityPath = battleType === "scenes" ? "scenes" : "performers";
+-  const scopeLabel = battleType === "scenes" ? "Scenes" : "Performers";
++  const scopeLabel = battleType === "scenes" ? tc("场景", "Scenes") : tc("演员", "Performers");
+ 
+   if (error) return <div className="hon-error">{error}</div>;
+-  if (!rows) return <div className="hon-loading">Loading match stats...</div>;
++  if (!rows) return <div className="hon-loading">{tc("加载对局统计中...", "Loading match stats...")}</div>;
+ 
+   return (
+     <div className="hon-match-stats-page">
+       <div className="hon-stats-header">
+         <h2 className="hon-stats-title">
+-          <span className="hon-stats-title-icon">📈</span> Match Stats
++          <span className="hon-stats-title-icon">📈</span> {tc("对局统计", "Match Stats")}
+           <span className="hon-match-stats-scope">{scopeLabel}</span>
+         </h2>
+       </div>
+ 
+       {!stats ? (
+         <div className="hon-match-stats-empty">
+-          No matches recorded yet. Play a few Head to Head rounds.
++          {tc("尚无对局记录。先玩几轮对决吧。", "No matches recorded yet. Play a few Head to Head rounds.")}
+         </div>
+       ) : (
+         <>
+-          <Section title="Pool">
+-            <StatCard label="Matches Played" value={stats.pool.matchesPlayed} />
++          <Section title={tc("总体", "Pool")}>
++            <StatCard label={tc("已打场次", "Matches Played")} value={stats.pool.matchesPlayed} />
+             <StatCard
+-              label="Rated"
++              label={tc("已评级", "Rated")}
+               value={`${stats.pool.ratedCount} / ${stats.pool.poolSize}`}
+-              sub={`${stats.pool.ratedPercent.toFixed(1)}% of pool`}
++              sub={tc(`占总体 ${stats.pool.ratedPercent.toFixed(1)}%`, `${stats.pool.ratedPercent.toFixed(1)}% of pool`)}
+             />
+-            <StatCard label="Mean Matches" value={stats.pool.meanMatches.toFixed(1)} />
+-            <StatCard label="Median Matches" value={stats.pool.medianMatches} />
++            <StatCard label={tc("平均场次", "Mean Matches")} value={stats.pool.meanMatches.toFixed(1)} />
++            <StatCard label={tc("中位场次", "Median Matches")} value={stats.pool.medianMatches} />
+             <StatCard
+-              label="Wins / Losses / Draws"
++              label={tc("胜 / 负 / 平", "Wins / Losses / Draws")}
+               value={`${stats.pool.wins} / ${stats.pool.losses} / ${stats.pool.draws}`}
+             />
+           </Section>
+ 
+-          <Section title="Records">
+-            <LeaderCard label="Most Played" leader={stats.leaders.mostPlayed} format={(v) => `${v} matches`} entityPath={entityPath} />
+-            <LeaderCard label="Most Wins" leader={stats.leaders.mostWins} format={(v) => `${v} wins`} entityPath={entityPath} />
++          <Section title={tc("纪录", "Records")}>
++            <LeaderCard label={tc("出场最多", "Most Played")} leader={stats.leaders.mostPlayed} format={(v) => tc(`${v} 场`, `${v} matches`)} entityPath={entityPath} />
++            <LeaderCard label={tc("胜场最多", "Most Wins")} leader={stats.leaders.mostWins} format={(v) => tc(`${v} 胜`, `${v} wins`)} entityPath={entityPath} />
+             <LeaderCard
+-              label="Best Win Rate"
++              label={tc("最佳胜率", "Best Win Rate")}
+               leader={stats.leaders.bestWinRate}
+               format={(v) => `${(v * 100).toFixed(1)}%`}
+-              sub={`min. ${Math.ceil(stats.leaders.minMatches)} matches`}
++              sub={tc(`至少 ${Math.ceil(stats.leaders.minMatches)} 场`, `min. ${Math.ceil(stats.leaders.minMatches)} matches`)}
+               entityPath={entityPath}
+             />
+             <LeaderCard
+-              label="Highest Rated"
++              label={tc("最高评分", "Highest Rated")}
+               leader={stats.leaders.highestRated}
+               format={(v) => formatDisplayRating(v)}
+               entityPath={entityPath}
+             />
+             <LeaderCard
+-              label="Lowest Rated"
++              label={tc("最低评分", "Lowest Rated")}
+               leader={stats.leaders.lowestRated}
+               format={(v) => formatDisplayRating(v)}
+               entityPath={entityPath}
+             />
+           </Section>
+ 
+-          <Section title="Streaks">
++          <Section title={tc("连续战绩", "Streaks")}>
+             <LeaderCard
+-              label="Longest Active Win Streak"
++              label={tc("当前最长连胜", "Longest Active Win Streak")}
+               leader={stats.streaks.longestActiveWin}
+-              format={(v) => `${streakEmoji(v)} W${v}`}
++              format={(v) => tc(`${streakEmoji(v)} ${v} 连胜`, `${streakEmoji(v)} W${v}`)}
+               entityPath={entityPath}
+             />
+             <LeaderCard
+-              label="Longest Active Loss Streak"
++              label={tc("当前最长连败", "Longest Active Loss Streak")}
+               leader={stats.streaks.longestActiveLoss}
+-              format={(v) => `L${v}`}
++              format={(v) => tc(`${v} 连败`, `L${v}`)}
+               entityPath={entityPath}
+             />
+             <LeaderCard
+-              label="Best Streak (All-Time)"
++              label={tc("最佳连胜（历史）", "Best Streak (All-Time)")}
+               leader={stats.streaks.bestAllTime}
+-              format={(v) => `${streakEmoji(v)} W${v}`}
++              format={(v) => tc(`${streakEmoji(v)} ${v} 连胜`, `${streakEmoji(v)} W${v}`)}
+               entityPath={entityPath}
+             />
+             <LeaderCard
+-              label="Worst Streak (All-Time)"
++              label={tc("最长连败（历史）", "Worst Streak (All-Time)")}
+               leader={stats.streaks.worstAllTime}
+-              format={(v) => `L${v}`}
++              format={(v) => tc(`${v} 连败`, `L${v}`)}
+               entityPath={entityPath}
+             />
+           </Section>
+diff --git a/src/components/OptionSheet.jsx b/src/components/OptionSheet.jsx
+index a38cab0..bfdd275 100644
+--- a/src/components/OptionSheet.jsx
++++ b/src/components/OptionSheet.jsx
+@@ -1,4 +1,5 @@
+ const { React } = window.PluginApi;
++import { localized } from "../i18n";
+ 
+ // Generic mobile bottom sheet for "tap to open a menu, pick an option" —
+ // extracted from the gender-filter sheet Sidebar.jsx originally shipped
+@@ -104,7 +105,7 @@ export function OptionSheet({ open, onClose, title, options, selected, onSelect,
+               {multi ? (isSelected(opt) ? "☑" : "☐") : isSelected(opt) ? "✓" : ""}
+             </span>
+             {opt.icon && <span aria-hidden="true">{opt.icon}</span>}
+-            {opt.label}
++            {localized(opt)}
+             {opt.hint && <span className="hon-sheet-row-hint">{opt.hint}</span>}
+           </button>
+         ))}
+diff --git a/src/components/PerformerCard.jsx b/src/components/PerformerCard.jsx
+index 701991b..b50f9ba 100644
+--- a/src/components/PerformerCard.jsx
++++ b/src/components/PerformerCard.jsx
+@@ -4,6 +4,7 @@ import { getRatingTier, streakEmoji, DEFAULT_RATING } from "../elo";
+ import { useNativeCard, handleNativeCardClick } from "../native-loader";
+ import { CardChips } from "./CardChips";
+ import { useCardChips } from "../hooks/useCardChips";
++import { tc } from "../i18n";
+ 
+ export function PerformerCard({ item, side, rank, onChoose, outcome, delta }) {
+   // Native component bundle loads async via Stash's plugin API; null until ready.
+@@ -21,7 +22,7 @@ export function PerformerCard({ item, side, rank, onChoose, outcome, delta }) {
+         {NativePerformerCard ? (
+           <NativePerformerCard performer={item} />
+         ) : (
+-          <div className="hon-card-native-loading">Loading...</div>
++          <div className="hon-card-native-loading">{tc("加载中...", "Loading...")}</div>
+         )}
+         {stats.current_streak >= 3 && (
+           <div className="hon-streak-badge">
+@@ -37,7 +38,7 @@ export function PerformerCard({ item, side, rank, onChoose, outcome, delta }) {
+       </div>
+ 
+       <CardChips chips={chips} />
+-      <button type="button" className="hon-choose-btn" onClick={onChoose}>✓ Choose This Performer</button>
++      <button type="button" className="hon-choose-btn" onClick={onChoose}>{tc("✓ 选择这位演员", "✓ Choose This Performer")}</button>
+     </div>
+   );
+ }
+diff --git a/src/components/SceneCard.jsx b/src/components/SceneCard.jsx
+index 8ba6eb4..12f2748 100644
+--- a/src/components/SceneCard.jsx
++++ b/src/components/SceneCard.jsx
+@@ -4,6 +4,7 @@ import { getRatingTier, streakEmoji, DEFAULT_RATING } from "../elo";
+ import { useNativeCard, handleNativeCardClick } from "../native-loader";
+ import { CardChips } from "./CardChips";
+ import { useCardChips } from "../hooks/useCardChips";
++import { tc } from "../i18n";
+ 
+ export function SceneCard({ item, side, rank, onChoose, outcome, delta }) {
+   // Native component bundle loads async via Stash's plugin API; null until ready.
+@@ -21,7 +22,7 @@ export function SceneCard({ item, side, rank, onChoose, outcome, delta }) {
+         {NativeSceneCard ? (
+           <NativeSceneCard scene={item} />
+         ) : (
+-          <div className="hon-card-native-loading">Loading...</div>
++          <div className="hon-card-native-loading">{tc("加载中...", "Loading...")}</div>
+         )}
+         {stats.current_streak >= 3 && (
+           <div className="hon-streak-badge">
+@@ -37,7 +38,7 @@ export function SceneCard({ item, side, rank, onChoose, outcome, delta }) {
+       </div>
+ 
+       <CardChips chips={chips} />
+-      <button type="button" className="hon-choose-btn" onClick={onChoose}>✓ Choose This Scene</button>
++      <button type="button" className="hon-choose-btn" onClick={onChoose}>{tc("✓ 选择这个场景", "✓ Choose This Scene")}</button>
+     </div>
+   );
+ }
+diff --git a/src/components/Sidebar.jsx b/src/components/Sidebar.jsx
+index 8efebb1..fcbb642 100644
+--- a/src/components/Sidebar.jsx
++++ b/src/components/Sidebar.jsx
+@@ -1,11 +1,13 @@
+ const { React } = window.PluginApi;
++import { tc, localized } from "../i18n";
+ import { useXenithState, useSheet } from "../state";
+ import { OptionSheet } from "./OptionSheet";
+-import { GENDERS } from "../format";
++import { GENDERS, genderLabel } from "../format";
+ 
++// labelZh/shortZh 与英文键一一对应，显示点走 i18n.js 的 localized()。
+ const RECORD_TYPES = [
+-  { value: "performers", label: "Performers", icon: "🎭" },
+-  { value: "scenes", label: "Scenes", icon: "🎬" },
++  { value: "performers", label: "Performers", labelZh: "演员", icon: "🎭" },
++  { value: "scenes", label: "Scenes", labelZh: "场景", icon: "🎬" },
+ ];
+ 
+ // short: abbreviated label for the mobile bar's value line, where full names
+@@ -14,9 +16,9 @@ const RECORD_TYPES = [
+ // src/gauntlet.js need only the candidate pool/ladder, neither is
+ // performers-only), so no battleType-dependent disabled/hint state here.
+ const MATCH_MODES = [
+-  { value: "h2h", label: "Head to Head", short: "H2H", icon: "🎯" },
+-  { value: "champion", label: "Champion", short: "Champion", icon: "👑" },
+-  { value: "gauntlet", label: "Gauntlet", short: "Gauntlet", icon: "⚔️" },
++  { value: "h2h", label: "Head to Head", labelZh: "对决", short: "H2H", shortZh: "对决", icon: "🎯" },
++  { value: "champion", label: "Champion", labelZh: "挑战冠军", short: "Champion", shortZh: "冠军", icon: "👑" },
++  { value: "gauntlet", label: "Gauntlet", labelZh: "车轮战", short: "Gauntlet", shortZh: "车轮战", icon: "⚔️" },
+ ];
+ 
+ export function Sidebar() {
+@@ -76,8 +78,8 @@ export function Sidebar() {
+     <div className="xen-sidebar">
+       {/* ── Desktop panel (hidden below 900px) ── */}
+       <div className="xen-sidebar-desktop">
+-        <div className="xen-sidebar-group-label">Record Type</div>
+-        <div className="xen-sidebar-group" role="radiogroup" aria-label="Record Type">
++        <div className="xen-sidebar-group-label">{tc("记录类型", "Record Type")}</div>
++        <div className="xen-sidebar-group" role="radiogroup" aria-label={tc("记录类型", "Record Type")}>
+           {RECORD_TYPES.map((r) => (
+             <button
+               type="button"
+@@ -87,13 +89,13 @@ export function Sidebar() {
+               aria-checked={battleType === r.value}
+               onClick={() => setBattleType(r.value)}
+             >
+-              {r.icon} {r.label}
++              {r.icon} {localized(r)}
+             </button>
+           ))}
+         </div>
+ 
+-        <div className="xen-sidebar-group-label">Mode</div>
+-        <div className="xen-sidebar-group" role="radiogroup" aria-label="Mode">
++        <div className="xen-sidebar-group-label">{tc("模式", "Mode")}</div>
++        <div className="xen-sidebar-group" role="radiogroup" aria-label={tc("模式", "Mode")}>
+           {matchModes.map((m) => (
+             <button
+               type="button"
+@@ -108,21 +110,21 @@ export function Sidebar() {
+               onClick={() => selectMatchMode(m.value)}
+             >
+               <span className="xen-sidebar-row-text">
+-                {m.icon} {m.label}
++                {m.icon} {localized(m)}
+               </span>
+               {m.hint && <span className="hon-sheet-row-hint">{m.hint}</span>}
+             </button>
+           ))}
+         </div>
+ 
+-        <div className="xen-sidebar-group-label">Stats</div>
++        <div className="xen-sidebar-group-label">{tc("统计", "Stats")}</div>
+         <button
+           type="button"
+           className={`xen-sidebar-row ${tab === "leaderboard" ? "active" : ""}`}
+           aria-pressed={tab === "leaderboard"}
+           onClick={() => setTab("leaderboard")}
+         >
+-          📊 Leaderboard
++          📊 {tc("排行榜", "Leaderboard")}
+         </button>
+         <button
+           type="button"
+@@ -130,7 +132,7 @@ export function Sidebar() {
+           aria-pressed={tab === "stats"}
+           onClick={() => setTab("stats")}
+         >
+-          📈 Match Stats
++          📈 {tc("对局统计", "Match Stats")}
+         </button>
+         <button
+           type="button"
+@@ -138,7 +140,7 @@ export function Sidebar() {
+           aria-pressed={tab === "log"}
+           onClick={() => setTab("log")}
+         >
+-          📜 Match Log
++          📜 {tc("对局日志", "Match Log")}
+         </button>
+ 
+         {/* Gender filter — inline accordion on desktop, bottom sheet on
+@@ -158,7 +160,7 @@ export function Sidebar() {
+               since this label still renders a raw glyph, unlike the action
+               buttons (HeadToHead.jsx), which moved to inline SVG (Icons.jsx)
+               and no longer need this fix. */}
+-          <span className="xen-sidebar-row-text">⚧️ Gender Filter</span>
++          <span className="xen-sidebar-row-text">⚧️ {tc("性别筛选", "Gender Filter")}</span>
+           {genderFilterDisabled ? (
+             <span className="hon-sheet-row-hint">N/A</span>
+           ) : (
+@@ -170,7 +172,7 @@ export function Sidebar() {
+             id="hon-gender-panel"
+             className="xen-sidebar-expanded-content"
+             role="group"
+-            aria-label="Gender Filter"
++            aria-label={tc("性别筛选", "Gender Filter")}
+           >
+             {GENDERS.map((g) => (
+               <button
+@@ -180,7 +182,7 @@ export function Sidebar() {
+                 aria-pressed={selectedGenders.includes(g.value)}
+                 onClick={() => toggleGender(g.value)}
+               >
+-                {g.label}
++                {genderLabel(g.value)}
+               </button>
+             ))}
+           </div>
+@@ -195,7 +197,7 @@ export function Sidebar() {
+           two options, and Match Type needs three-plus once
+           Champion/Gauntlet ship). Board / Stats / Filter stay single-tap
+           toggles since each is a two-state switch, not a pick-one-of-N. */}
+-      <nav className="hon-mobile-bar" aria-label="Xenith">
++      <nav className="hon-mobile-bar" aria-label={tc("争锋", "Xenith")}>
+         {/* Left half: Record Type + Match Type pickers, pinned to a fixed
+             50% regardless of value length — previously these and
+             the right-half nav split the row by content width, so a longer
+@@ -208,9 +210,9 @@ export function Sidebar() {
+             aria-expanded={openSheet === "record"}
+             onClick={() => setOpenSheet("record")}
+           >
+-            <span className="hon-mobile-picker-caption">Record</span>
++            <span className="hon-mobile-picker-caption">{tc("记录", "Record")}</span>
+             <span className="hon-mobile-picker-value">
+-              <span className="hon-mobile-picker-text">{recordTypeMeta?.label}</span>
++              <span className="hon-mobile-picker-text">{localized(recordTypeMeta)}</span>
+               <span className="hon-mobile-picker-caret" aria-hidden="true">▾</span>
+             </span>
+           </button>
+@@ -222,9 +224,9 @@ export function Sidebar() {
+             aria-expanded={matchOpensSheet ? openSheet === "match" : undefined}
+             onClick={onMatchPickerTap}
+           >
+-            <span className="hon-mobile-picker-caption">Match</span>
++            <span className="hon-mobile-picker-caption">{tc("对局", "Match")}</span>
+             <span className="hon-mobile-picker-value">
+-              <span className="hon-mobile-picker-text">{matchModeMeta?.short}</span>
++              <span className="hon-mobile-picker-text">{localized(matchModeMeta, "short")}</span>
+               {matchOpensSheet && (
+                 <span className="hon-mobile-picker-caret" aria-hidden="true">▾</span>
+               )}
+@@ -234,7 +236,7 @@ export function Sidebar() {
+ 
+         {/* Right half: the remaining nav (tab switcher + gender filter). */}
+         <div className="hon-mobile-bar-half">
+-          <div className="hon-mobile-seg" role="group" aria-label="Stats">
++          <div className="hon-mobile-seg" role="group" aria-label={tc("统计", "Stats")}>
+             <button
+               type="button"
+               className={`hon-mobile-seg-btn ${tab === "leaderboard" ? "active" : ""}`}
+@@ -242,7 +244,7 @@ export function Sidebar() {
+               onClick={() => setTab("leaderboard")}
+             >
+               <span className="hon-mobile-seg-icon" aria-hidden="true">📊</span>
+-              <span className="hon-mobile-seg-label">Board</span>
++              <span className="hon-mobile-seg-label">{tc("榜单", "Board")}</span>
+             </button>
+             <button
+               type="button"
+@@ -251,7 +253,7 @@ export function Sidebar() {
+               onClick={() => setTab("stats")}
+             >
+               <span className="hon-mobile-seg-icon" aria-hidden="true">📈</span>
+-              <span className="hon-mobile-seg-label">Stats</span>
++              <span className="hon-mobile-seg-label">{tc("统计", "Stats")}</span>
+             </button>
+             <button
+               type="button"
+@@ -260,7 +262,7 @@ export function Sidebar() {
+               onClick={() => setTab("log")}
+             >
+               <span className="hon-mobile-seg-icon" aria-hidden="true">📜</span>
+-              <span className="hon-mobile-seg-label">Log</span>
++              <span className="hon-mobile-seg-label">{tc("日志", "Log")}</span>
+             </button>
+           </div>
+ 
+@@ -271,12 +273,12 @@ export function Sidebar() {
+             } ${!genderFilterDisabled && selectedGenders.length ? "filtered" : ""}`}
+             aria-expanded={!genderFilterDisabled && openSheet === "gender"}
+             aria-disabled={genderFilterDisabled || undefined}
+-            aria-label="Gender filter"
++            aria-label={tc("性别筛选", "Gender filter")}
+             disabled={genderFilterDisabled}
+             onClick={() => !genderFilterDisabled && setOpenSheet("gender")}
+           >
+             <span className="hon-mobile-seg-icon" aria-hidden="true">⚧️</span>
+-            <span className="hon-mobile-seg-label">Filter</span>
++            <span className="hon-mobile-seg-label">{tc("筛选", "Filter")}</span>
+           </button>
+         </div>
+       </nav>
+@@ -285,7 +287,7 @@ export function Sidebar() {
+       <OptionSheet
+         open={openSheet === "record"}
+         onClose={closeSheet}
+-        title="Record Type"
++        title={tc("记录类型", "Record Type")}
+         options={RECORD_TYPES}
+         selected={battleType}
+         onSelect={setBattleType}
+@@ -294,7 +296,7 @@ export function Sidebar() {
+       <OptionSheet
+         open={openSheet === "match"}
+         onClose={closeSheet}
+-        title="Match Type"
++        title={tc("对局类型", "Match Type")}
+         options={matchModes}
+         selected={matchMode}
+         onSelect={selectMatchMode}
+@@ -303,7 +305,7 @@ export function Sidebar() {
+       <OptionSheet
+         open={!genderFilterDisabled && openSheet === "gender"}
+         onClose={closeSheet}
+-        title="Gender Filter"
++        title={tc("性别筛选", "Gender Filter")}
+         options={genderOptions}
+         selected={selectedGenders}
+         onSelect={toggleGender}
+diff --git a/src/format.js b/src/format.js
+index 16015e8..403bb53 100644
+--- a/src/format.js
++++ b/src/format.js
+@@ -1,3 +1,5 @@
++import { tc, isZh } from "./i18n";
++
+ // Display formatting only — not rating math. elo.js is the single source of
+ // truth for rating math (K-factor, composite score, etc.) and is imported
+ // into matchmaking.js's hot loops; a "/10 plus an Unrated string" belongs
+@@ -9,7 +11,7 @@
+ // a genuine 0 is a legitimate floored rating and must render as "0.0",
+ // not "Unrated".
+ export function formatDisplayRating(rating100) {
+-  if (rating100 == null) return "Unrated";
++  if (rating100 == null) return tc("未评级", "Unrated");
+   return (rating100 / 10).toFixed(1);
+ }
+ 
+@@ -17,7 +19,7 @@ export function formatDisplayRating(rating100) {
+ // scenes have `title` (falling back to `Scene <id>` when untitled, since an
+ // empty title string is falsy).
+ export function displayName(item) {
+-  return item.name ?? (item.title || `Scene ${item.id}`);
++  return item.name ?? (item.title || tc(`场景 ${item.id}`, `Scene ${item.id}`));
+ }
+ 
+ // Unit system for height/weight chips — backed by xenith.yml's
+@@ -138,11 +140,13 @@ export function formatResolution(width, height) {
+ export function formatDuration(seconds) {
+   if (!seconds || Number.isNaN(seconds) || seconds < 0) return null;
+   const totalMinutes = seconds / 60;
+-  if (totalMinutes < 1) return "< 1 min";
+-  if (totalMinutes < 60) return `${Math.max(5, Math.round(totalMinutes / 5) * 5)} min`;
++  if (totalMinutes < 1) return tc("< 1 分钟", "< 1 min");
++  if (totalMinutes < 60) return tc(`${Math.max(5, Math.round(totalMinutes / 5) * 5)} 分钟`, `${Math.max(5, Math.round(totalMinutes / 5) * 5)} min`);
+   const hours = Math.floor(totalMinutes / 60);
+   const remainder = Math.round((totalMinutes % 60) / 15) * 15;
+-  return remainder === 0 ? `${hours} hr` : `${hours} hr ${remainder} min`;
++  return remainder === 0
++    ? tc(`${hours} 小时`, `${hours} hr`)
++    : tc(`${hours} 小时 ${remainder} 分钟`, `${hours} hr ${remainder} min`);
+ }
+ 
+ // Formats a file size in bytes as a coarse bin (e.g. "800 MB", "1.5 GB").
+@@ -190,16 +194,25 @@ export function formatYear(date) {
+ // labels (formatGenderList below) both need the same value->label mapping,
+ // and this module (not a component) is where non-React callers like
+ // rank-cache.js/usePair.js can safely import display formatting from too.
++// labelZh 与 label 键值一一对应（中文界面显示名）。显示点一律走 genderLabel()，
++// 直接读 label 会在中文界面冻成英文。
+ export const GENDERS = [
+-  { value: "FEMALE", label: "Female" },
+-  { value: "MALE", label: "Male" },
+-  { value: "TRANSGENDER_MALE", label: "Trans Male" },
+-  { value: "TRANSGENDER_FEMALE", label: "Trans Female" },
+-  { value: "INTERSEX", label: "Intersex" },
+-  { value: "NON_BINARY", label: "Non-Binary" },
++  { value: "FEMALE", label: "Female", labelZh: "女" },
++  { value: "MALE", label: "Male", labelZh: "男" },
++  { value: "TRANSGENDER_MALE", label: "Trans Male", labelZh: "跨性别男" },
++  { value: "TRANSGENDER_FEMALE", label: "Trans Female", labelZh: "跨性别女" },
++  { value: "INTERSEX", label: "Intersex", labelZh: "间性" },
++  { value: "NON_BINARY", label: "Non-Binary", labelZh: "非二元" },
+ ];
+ 
+ const GENDER_LABELS = Object.fromEntries(GENDERS.map((g) => [g.value, g.label]));
++const GENDER_LABELS_ZH = Object.fromEntries(GENDERS.map((g) => [g.value, g.labelZh]));
++
++/** 性别枚举值 -> 显示名（渲染期取值，跟随界面语言）。 */
++export function genderLabel(value) {
++  const table = isZh() ? GENDER_LABELS_ZH : GENDER_LABELS;
++  return table[value] ?? value;
++}
+ 
+ // Renders a selectedGenders array (state.js's persisted.selectedGenders
+ // shape, also stamped onto a Gauntlet run as run.genderFilter) as a
+@@ -210,9 +223,9 @@ const GENDER_LABELS = Object.fromEntries(GENDERS.map((g) => [g.value, g.label]))
+ // `undefined` also covers a run started before this field existed.
+ export function formatGenderList(selectedGenders) {
+   if (!selectedGenders || selectedGenders.length === 0) return null;
+-  if (selectedGenders.length === 1) return GENDER_LABELS[selectedGenders[0]] ?? selectedGenders[0];
++  if (selectedGenders.length === 1) return genderLabel(selectedGenders[0]);
+   if (selectedGenders.length === 2) {
+-    return selectedGenders.map((g) => GENDER_LABELS[g] ?? g).join(" + ");
++    return selectedGenders.map((g) => genderLabel(g)).join(" + ");
+   }
+-  return `${selectedGenders.length} genders`;
++  return tc(`${selectedGenders.length} 种性别`, `${selectedGenders.length} genders`);
+ }
+diff --git a/src/gauntlet.js b/src/gauntlet.js
+index b0962a3..00659c9 100644
+--- a/src/gauntlet.js
++++ b/src/gauntlet.js
+@@ -14,6 +14,7 @@
+ // each update multiplies in a likelihood, so one surprising result shifts
+ // belief without discarding the rest of the ladder. See XENITH.md §3.8.
+ import { expectedScore, entropy } from "./elo";
++import { tc } from "./i18n";
+ 
+ export const MIN_MATCHES = 10;
+ export const MAX_MATCHES = 14;
+@@ -66,7 +67,7 @@ function weightedPick(items, weightFn) {
+ // position's rating as its own for likelihood purposes.
+ export function createRun({ challengerId, ladder }) {
+   if (!Array.isArray(ladder) || ladder.length < 2) {
+-    throw new Error("Gauntlet requires a ladder of at least 2 items.");
++    throw new Error(tc("车轮战至少需要 2 个对象的梯级。", "Gauntlet requires a ladder of at least 2 items."));
+   }
+   const n = ladder.length;
+   return {
+diff --git a/src/i18n.js b/src/i18n.js
+new file mode 100644
+index 0000000..d08a057
+--- /dev/null
++++ b/src/i18n.js
+@@ -0,0 +1,85 @@
++// i18n 脚手架（XenithI18n）：界面文案跟随 Stash 界面语言（中文/英文）。
++//
++// _intlLocale 只在桥接组件的 useEffect 里写入 —— 早于它渲染/构建的静态 DOM
++// （导航入口、模态外壳、移动端导航条）会停在英文，需要靠 onLocaleReady 注册的
++// 回填函数（main.js 的 refreshStaticLabels）在语言就绪后修正。
++// 桥接失败时 _intlLocale 保持为空 → tc() 降级英文，任何情况下都不会出现空白文案。
++
++export const PLUGIN_VERSION = "3.2.0";
++
++let _intlLocale = "";
++
++/** 中文为第一参数，英文为第二参数；locale 未就绪或非 zh 时返回英文。 */
++export function tc(zh, en) {
++  return _intlLocale.indexOf("zh") === 0 ? zh : en;
++}
++
++export function isZh() {
++  return _intlLocale.indexOf("zh") === 0;
++}
++
++/**
++ * 表项/选项的显示名（labelZh 优先于 label，shortZh 优先于 short）。
++ * 供 Sidebar/OptionSheet 等以「表项对象」驱动的渲染点使用，避免把中文界面冻在英文。
++ */
++export function localized(entry, key = "label") {
++  if (!entry) return undefined;
++  return isZh() && entry[key + "Zh"] ? entry[key + "Zh"] : entry[key];
++}
++
++/** @type {Array<() => void>} */
++const localeListeners = [];
++
++/** 注册「locale 就绪」回调，用于回填先于 locale 渲染的静态文案。 */
++export function onLocaleReady(fn) {
++  localeListeners.push(fn);
++}
++
++function notifyLocaleReady() {
++  for (const fn of localeListeners) {
++    try {
++      fn();
++    } catch (e) {
++      console.warn("[XenithI18n] static label refresh failed", e);
++    }
++  }
++}
++
++// Bridges Stash's own Intl context into this bundle. The plugin's React tree is
++// portaled into StashApp (see portal-host.js), so patch.before("App") is where
++// a component can sit inside Stash's IntlProvider and read useIntl().
++export function initIntlBridge() {
++  try {
++    const api = window.PluginApi;
++    if (!api || !api.React || !api.patch || !api.libraries || !api.libraries.Intl) return;
++    const React = api.React;
++
++    function IntlBridge() {
++      const intl = api.libraries.Intl.useIntl();
++      // No dep array: runs after every render of the host tree, so a locale
++      // switch in Stash's settings is picked up without a page reload.
++      React.useEffect(() => {
++        const next = intl.locale || "";
++        if (next === _intlLocale) return;
++        _intlLocale = next;
++        notifyLocaleReady();
++      });
++      return null;
++    }
++
++    api.patch.before("App", function (props) {
++      return [
++        {
++          children: React.createElement(
++            React.Fragment,
++            null,
++            React.createElement(IntlBridge),
++            props.children
++          ),
++        },
++      ];
++    });
++  } catch (e) {
++    console.warn("[XenithI18n] i18n bridge failed", e);
++  }
++}
+diff --git a/src/leaderboard-columns.js b/src/leaderboard-columns.js
+index 057ed76..99b1a97 100644
+--- a/src/leaderboard-columns.js
++++ b/src/leaderboard-columns.js
+@@ -5,23 +5,39 @@
+ // rendered — otherwise table-layout: fixed's colgroup would re-widen/shrink
+ // every column on every page change.
+ 
++import { tc, isZh } from "./i18n";
+ import { formatDisplayRating } from "./format";
+ 
+ // Single source of truth for column identity/order/labels — Leaderboard.jsx
+ // imports this instead of keeping its own copy, so the widths computed here
+ // can never drift from what's actually rendered.
++// labelZh 与 label 一一对应；列头显示与测宽都走 columnLabel()，避免两处漂移。
+ export const COLUMNS = [
+-  { key: "tier", label: "Tier" },
+-  { key: "name", label: "Name" },
+-  { key: "rating100", label: "Rating" },
+-  { key: "composite", label: "Score" },
+-  { key: "matches", label: "MP" },
+-  { key: "wins", label: "W" },
+-  { key: "losses", label: "L" },
+-  { key: "draws", label: "D" },
++  { key: "tier", label: "Tier", labelZh: "分档" },
++  { key: "name", label: "Name", labelZh: "名称" },
++  { key: "rating100", label: "Rating", labelZh: "评分" },
++  { key: "composite", label: "Score", labelZh: "得分" },
++  { key: "matches", label: "MP", labelZh: "场次" },
++  { key: "wins", label: "W", labelZh: "胜" },
++  { key: "losses", label: "L", labelZh: "负" },
++  { key: "draws", label: "D", labelZh: "平" },
+   { key: "streak", label: "↯" },
+ ];
+ 
++// 全角字符（CJK/全角标点）在 ch 计量下约占 2 个宽度 —— 用 label.length 测中文
++// 表头会窄一半，table-layout: fixed 下会挤压或换行。
++const FULLWIDTH = /[\u2e80-\u9fff\u3000-\u303f\uff00-\uffef]/;
++function displayWidth(text) {
++  let width = 0;
++  for (const ch of text) width += FULLWIDTH.test(ch) ? 2 : 1;
++  return width;
++}
++
++/** 列头显示名（跟随界面语言）。 */
++export function columnLabel(col) {
++  return isZh() && col.labelZh ? col.labelZh : col.label;
++}
++
+ // name is the flex column (no measured width, just a floor) — every other
+ // column key above must round-trip through this.
+ const NAME_MIN_CH = 12;
+@@ -29,8 +45,8 @@ const NAME_MIN_CH = 12;
+ // Same W{n}/L{n}/0 shape Leaderboard.jsx renders for the streak cell —
+ // exported so the two can't drift, per the module header above.
+ export function formatStreak(streak) {
+-  if (streak > 0) return `W${streak}`;
+-  if (streak < 0) return `L${Math.abs(streak)}`;
++  if (streak > 0) return tc(`${streak}胜`, `W${streak}`);
++  if (streak < 0) return tc(`${Math.abs(streak)}负`, `L${Math.abs(streak)}`);
+   return "0";
+ }
+ 
+@@ -61,9 +77,9 @@ export function computeColumnWidths(rows) {
+       widths.name = NAME_MIN_CH;
+       continue;
+     }
+-    let max = col.label.length;
++    let max = displayWidth(columnLabel(col));
+     for (const row of rows) {
+-      const len = cellText(row, col.key).length;
++      const len = displayWidth(cellText(row, col.key));
+       if (len > max) max = len;
+     }
+     widths[col.key] = max;
+diff --git a/src/main.js b/src/main.js
+index 99c5b62..2aa1347 100644
+--- a/src/main.js
++++ b/src/main.js
+@@ -5,6 +5,7 @@
+ // stash-log.js's flush) alongside it.
+ import "./styles/xenith.css";
+ 
++import { PLUGIN_VERSION, tc, initIntlBridge, onLocaleReady } from "./i18n";
+ import { XenithProvider, SheetProvider, useXenithState } from "./state";
+ import { HeadToHead } from "./components/HeadToHead";
+ import { Leaderboard } from "./components/Leaderboard";
+@@ -100,7 +101,7 @@ function openModal() {
+       <div class="hon-modal-backdrop"></div>
+       <div class="hon-modal-content">
+         ${channelBadge}
+-        <button class="hon-modal-close" aria-label="Close">✕</button>
++        <button class="hon-modal-close" aria-label="${tc("关闭", "Close")}">✕</button>
+         <div id="hon-app-mount"></div>
+       </div>
+     `;
+@@ -187,7 +188,7 @@ function XenithNavItem() {
+           d: "M160 144c-35.3 0-64-28.7-64-64s28.7-64 64-64c15.7 0 30 5.6 41.2 15C212.4 12.4 232.7 0 256 0s43.6 12.4 54.8 31C322 21.6 336.3 16 352 16c35.3 0 64 28.7 64 64s-28.7 64-64 64c-14.7 0-28.3-5-39.1-13.3l-32 48C275.3 187 266 192 256 192s-19.3-5-24.9-13.3l-32-48C188.3 139 174.7 144 160 144zM144 352l48.4-24.2c10.2-5.1 21.6-7.8 33-7.8c19.6 0 38.4 7.8 52.2 21.6l32.5 32.5c6.3 6.3 14.9 9.9 23.8 9.9c11.3 0 21.8-5.6 28-15l9.7-14.6-59-66.3c-9.1-10.2-22.2-16.1-35.9-16.1H235.1c-13.7 0-26.8 5.9-35.9 16.1l-59.9 67.4L144 352zm19.4-95.8c18.2-20.5 44.3-32.2 71.8-32.2h41.8c27.4 0 53.5 11.7 71.8 32.2l150.2 169c8.5 9.5 13.2 21.9 13.2 34.7c0 28.8-23.4 52.2-52.2 52.2H52.2C23.4 512 0 488.6 0 459.8c0-12.8 4.7-25.1 13.2-34.7l150.2-169z",
+         })
+       ),
+-      React.createElement("span", null, "Xenith")
++      React.createElement("span", null, tc("争锋", "Xenith"))
+     )
+   );
+ }
+@@ -223,8 +224,8 @@ function cleanup() {
+   document.body.classList.remove("hon-modal-open");
+   modalRoot = null;
+   mountNode = null;
+-  window.__xenithLoaded = false;
+-  delete window.__xenithCleanup;
++  window.__XenithI18nLoaded = false;
++  delete window.__XenithI18nCleanup;
+ }
+ 
+ function init() {
+@@ -232,8 +233,8 @@ function init() {
+   // whole setup and double-registering the patch, observers, and listeners
+   // below. Cleared at the end of cleanup() so a legitimate
+   // teardown-then-reload can re-run it.
+-  if (window.__xenithLoaded) return;
+-  window.__xenithLoaded = true;
++  if (window.__XenithI18nLoaded) return;
++  window.__XenithI18nLoaded = true;
+ 
+   // Portals XenithApp into StashApp's own React tree via a component that's
+   // always mounted, so native components (e.g. PerformerCard) rendered
+@@ -282,11 +283,11 @@ function init() {
+ 
+   document.addEventListener("keydown", handleEscape);
+ 
+-  window.__xenithCleanup = cleanup;
++  window.__XenithI18nCleanup = cleanup;
+ 
+   // beforeunload is the one event guaranteed to fire in the real world,
+-  // giving __xenithCleanup at least one production run instead of only ever
+-  // running from qa/e2e.
++  // giving __XenithI18nCleanup at least one production run instead of only
++  // ever running from qa/e2e.
+   window.addEventListener("beforeunload", cleanup);
+ 
+   // Run once immediately for the DOM already present at script load —
+@@ -299,4 +300,32 @@ function init() {
+   setupSceneTooltips();
+ }
+ 
++// ---- 回填「先于 locale 渲染」的静态 DOM 文案 ----
++// 导航入口由 MainNavBar.MenuItems 的 patch.before 渲染，其提交早于桥接组件的
++// useEffect（locale 写入 _intlLocale 的时机），因此文案会冻在英文；模态外壳与
++// 移动端导航条同理。语言就绪后由 onLocaleReady 触发这里统一回填。
++// 徽章/悬浮提示（badge-injector、scene-tooltips）不走这里：它们的首次渲染都在
++// 至少一次 GraphQL 往返之后，必然晚于 locale 就绪。
++function refreshStaticLabels() {
++  // 顶部导航入口按钮（原生导航栏里 React 渲染的项）
++  const navLabel = tc("争锋", "Xenith");
++  const navBtn = document.getElementById("hon-floating-btn");
++  if (navBtn) {
++    const span = navBtn.querySelector("span");
++    if (span && span.textContent !== navLabel) span.textContent = navLabel;
++    if (navBtn.getAttribute("title") !== navLabel) navBtn.setAttribute("title", navLabel);
++  }
++  // 模态外壳 innerHTML 里写死的关闭按钮 aria-label（HTML 结构内的文案）
++  const closeBtn = modalRoot?.querySelector(".hon-modal-close");
++  if (closeBtn) closeBtn.setAttribute("aria-label", tc("关闭", "Close"));
++  // 移动端导航条
++  document.querySelectorAll(".hon-mobile-bar").forEach((bar) => bar.setAttribute("aria-label", navLabel));
++}
++
++// ---- i18n 装配 ----
++// 必须在 init() 之前：App 首次提交后桥接组件就会写入 locale 并回调上面的回填。
++onLocaleReady(refreshStaticLabels);
++initIntlBridge();
++console.log(`[XenithI18n] Xenith I18n v${PLUGIN_VERSION} loaded`);
++
+ init();
+diff --git a/src/matchmaking.js b/src/matchmaking.js
+index 54bb7b2..dbf343f 100644
+--- a/src/matchmaking.js
++++ b/src/matchmaking.js
+@@ -18,6 +18,7 @@ import {
+   COUNT_SCENES,
+ } from "./api";
+ import { persisted } from "./state";
++import { tc } from "./i18n";
+ import { computeSystemConfig, DEFAULT_RATING, expectedScore, entropy, priorityScore, uncertainty } from "./elo";
+ import { getRankedItems } from "./rank-cache";
+ import { createRun, nextProbe, runStatus, MIN_LADDER } from "./gauntlet";
+@@ -36,7 +37,7 @@ const MAX_RECORD_ENTRIES = 50;
+ // Gates matchmaking's console.log calls behind a localStorage debug flag
+ // instead of always logging.
+ function isDebugEnabled() {
+-  return typeof localStorage !== "undefined" && localStorage.getItem("xenith:debug") === "true";
++  return typeof localStorage !== "undefined" && localStorage.getItem("XenithI18n:debug") === "true";
+ }
+ function debugLog(...args) {
+   if (isDebugEnabled()) console.log(...args);
+@@ -392,7 +393,7 @@ async function loadCandidatePool(battleType, selectedGenders) {
+     });
+ 
+   const pool = isScenes ? data.findScenes.scenes : data.findPerformers.performers;
+-  if (pool.length < 2) throw new Error("Not enough items to compare — need at least 2.");
++  if (pool.length < 2) throw new Error(tc("可选对局对象不足 —— 至少需要 2 个。", "Not enough items to compare — need at least 2."));
+ 
+   for (let i = 0; i < pool.length; i++) {
+     pool[i]._stats = parseXenithStats(pool[i]);
+@@ -577,7 +578,7 @@ export async function pickRunChallenger(battleType, selectedGenders, excludeIds
+   const isScenes = battleType === "scenes";
+   const { pool, medianMatches } = await loadCandidatePool(battleType, selectedGenders);
+   const eligible = pool.filter((p) => !excludeIds.includes(p.id));
+-  if (eligible.length === 0) throw new Error(`No eligible ${isScenes ? "scenes" : "performers"} left to challenge with.`);
++  if (eligible.length === 0) throw new Error(tc(`已没有可挑战的${isScenes ? "场景" : "演员"}。`, `No eligible ${isScenes ? "scenes" : "performers"} left to challenge with.`));
+ 
+   const weighted = eligible
+     .map((p) => ({
+@@ -626,8 +627,8 @@ export async function startGauntletRun(battleType, challenger, selectedGenders =
+   if (ladder.length < MIN_LADDER) {
+     throw new Error(
+       selectedGenders && selectedGenders.length > 0
+-        ? `Only ${ladder.length} performers match the current gender filter — a Gauntlet run needs at least ${MIN_LADDER}.`
+-        : `Only ${ladder.length} items available — a Gauntlet run needs at least ${MIN_LADDER}.`
++        ? tc(`当前性别筛选下仅有 ${ladder.length} 位演员 —— 车轮战至少需要 ${MIN_LADDER} 位。`, `Only ${ladder.length} performers match the current gender filter — a Gauntlet run needs at least ${MIN_LADDER}.`)
++        : tc(`仅有 ${ladder.length} 个对象可用 —— 车轮战至少需要 ${MIN_LADDER} 个。`, `Only ${ladder.length} items available — a Gauntlet run needs at least ${MIN_LADDER}.`)
+     );
+   }
+   return { ...createRun({ challengerId: challenger.id, ladder }), genderFilter: selectedGenders };
+diff --git a/src/scene-tooltips.js b/src/scene-tooltips.js
+index 2666b57..77ebd0a 100644
+--- a/src/scene-tooltips.js
++++ b/src/scene-tooltips.js
+@@ -5,6 +5,7 @@
+ import { getRankedItems, invalidateRankCache } from "./rank-cache";
+ import { formatDisplayRating } from "./format";
+ import { parseEntityHref } from "./entity-href";
++import { tc } from "./i18n";
+ 
+ // invalidateSceneTooltipCache is the pre-existing export name usePair.js
+ // imports; it now just delegates to the shared rank-cache module, which
+@@ -48,7 +49,7 @@ async function handleHover(host) {
+   // field onto each entry); p.rank/p.composite are the composite-derived
+   // sort — rank and displayed rating are two different, correctly-paired
+   // values here, not the same number twice.
+-  /** @type {HTMLElement} */(host).title = `Rank #${p.rank} of ${items.length}\nRating: ${formatDisplayRating(p.rating100)}\nRecord: ${p.stats.wins}W-${p.stats.losses}L (${winRate}%)`;
++  /** @type {HTMLElement} */(host).title = tc(`排名 #${p.rank} / 共 ${items.length}\n评分：${formatDisplayRating(p.rating100)}\n战绩：${p.stats.wins}胜 ${p.stats.losses}负 (${winRate}%)`, `Rank #${p.rank} of ${items.length}\nRating: ${formatDisplayRating(p.rating100)}\nRecord: ${p.stats.wins}W-${p.stats.losses}L (${winRate}%)`);
+ }
+ 
+ /** @type {((e: MouseEvent) => void) | null} */
+diff --git a/src/stash-log.js b/src/stash-log.js
+index ef41dbc..5394bba 100644
+--- a/src/stash-log.js
++++ b/src/stash-log.js
+@@ -48,7 +48,7 @@ export function flushStashLog() {
+   const lines = buffer;
+   buffer = [];
+   gqlMutate(RUN_PLUGIN_OPERATION, {
+-    plugin_id: "xenith",
++    plugin_id: "XenithI18n",
+     args: { mode: "log", level: "debug", lines },
+   }).catch(() => {});
+ }
+diff --git a/src/styles/xenith.css b/src/styles/xenith.css
+index 713a1f8..a046bdb 100644
+--- a/src/styles/xenith.css
++++ b/src/styles/xenith.css
+@@ -2192,10 +2192,13 @@ body.hon-modal-open {
+   bottom: 2.5rem;
+ }
+ 
++/* 中文战绩「N胜 N负 N平」比英文 W/L/D 宽，收紧紧凑徽章的字号与内距
++   （同 Ascension 封面徽章的处理），避免在封面上横向铺满。
++   仅作用于封面缩略图，不改单页详情的大徽章。 */
+ .xen-battle-rank-badge-compact {
+-  padding: 2px 7px;
+-  font-size: 0.72rem;
+-  gap: 3px;
++  padding: 2px 6px;
++  font-size: 0.68rem;
++  gap: 2px;
+   white-space: nowrap;
+ }
+ 
