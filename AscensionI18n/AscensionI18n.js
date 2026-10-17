@@ -1,6 +1,6 @@
 (() => {
   // ==================== i18n (AscensionI18n) ====================
-  var PLUGIN_VERSION = '1.4.1';
+  var PLUGIN_VERSION = '1.4.2';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -16,7 +16,10 @@
       var React = api.React;
       function IntlBridge() {
         var intl = api.libraries.Intl.useIntl();
-        React.useEffect(function () { _intlLocale = intl.locale || ''; });
+        React.useEffect(function () {
+          _intlLocale = intl.locale || '';
+          refreshStaticLabels();
+        });
         return null;
       }
       api.patch.before('App', function (props) {
@@ -27,6 +30,18 @@
     }
   })();
   console.log('[AscensionI18n] Ascension I18n v' + PLUGIN_VERSION + ' loaded');
+
+  // ---- 语言就绪后回填「先于 locale 渲染」的静态 DOM 文案 ----
+  // 导航入口按钮由 document.body 上的 MutationObserver 创建，可能早于桥接 useEffect 写入 _intlLocale，
+  // 只在那时取过一次 tc()，之后无人重绘 → 文案会永久停在英文。locale 到达后统一回填。
+  function refreshStaticLabels() {
+    var navBtn = document.getElementById("plugin_hon");
+    if (!navBtn) return;
+    var label = tc('对决', 'Ascension');
+    var span = navBtn.querySelector("span");
+    if (span && span.textContent !== label) span.textContent = label;
+    if (navBtn.getAttribute("title") !== label) navBtn.setAttribute("title", label);
+  }
 
   // ---- 显示用中/英标签（渲染期取用；英文源表保持冻结不变）----
   function genderLabel(v) {
@@ -3971,17 +3986,17 @@ id
       matchStatsHTML = `
       <span class="hon-match-stats">
         <span class="hon-stats-record">
-          <span class="hon-wins">${stats.wins}W</span>
-          <span class="hon-losses">${stats.losses}L</span>
-          <span class="hon-draws">${stats.draws}D</span>
+          <span class="hon-wins">${stats.wins}${tc('胜', 'W')}</span>
+          <span class="hon-losses">${stats.losses}${tc('负', 'L')}</span>
+          <span class="hon-draws">${stats.draws}${tc('平', 'D')}</span>
         </span>
         <span class="hon-win-rate">${winRate}%</span>
         ${streakDisplay}
       </span>
     `;
     }
-    const rankText = isCompact ? `<span class="hon-rank-text" style="color: ${tierColor}">Rank #${rank}</span>` : `<span class="hon-rank-text" style="color: ${tierColor}">Rank #${rank}</span>
-       <span class="hon-rank-total">of ${total}</span>`;
+    const rankText = isCompact ? `<span class="hon-rank-text" style="color: ${tierColor}">${tc('排名', 'Rank')} #${rank}</span>` : `<span class="hon-rank-text" style="color: ${tierColor}">${tc('排名', 'Rank')} #${rank}</span>
+       <span class="hon-rank-total">${tc('共', 'of')} ${total}</span>`;
     badge.innerHTML = `
     ${ascScoreHTML}
     ${rankText}
@@ -4061,17 +4076,17 @@ ${tc('对局统计：', 'Match Stats:')}`;
       matchStatsHTML = `
       <span class="hon-match-stats">
         <span class="hon-stats-record">
-          <span class="hon-wins">${stats.wins}W</span>
-          <span class="hon-losses">${stats.losses}L</span>
-          <span class="hon-draws">${stats.draws}D</span>
+          <span class="hon-wins">${stats.wins}${tc('胜', 'W')}</span>
+          <span class="hon-losses">${stats.losses}${tc('负', 'L')}</span>
+          <span class="hon-draws">${stats.draws}${tc('平', 'D')}</span>
         </span>
         <span class="hon-win-rate">${winRate}%</span>
         ${streakDisplay}
       </span>
     `;
     }
-    const rankText = isCompact ? `<span class="hon-rank-text" style="color: ${tierColor}">Rank #${rankInfo.rank}</span>` : `<span class="hon-rank-text" style="color: ${tierColor}">Rank #${rankInfo.rank}</span>
-       <span class="hon-rank-total">of ${rankInfo.total}</span>`;
+    const rankText = isCompact ? `<span class="hon-rank-text" style="color: ${tierColor}">${tc('排名', 'Rank')} #${rankInfo.rank}</span>` : `<span class="hon-rank-text" style="color: ${tierColor}">${tc('排名', 'Rank')} #${rankInfo.rank}</span>
+       <span class="hon-rank-total">${tc('共', 'of')} ${rankInfo.total}</span>`;
     badge.innerHTML = `${ascScoreHTML}${rankText}${matchStatsHTML}`;
     let tooltipText = tc(`对战排名 #${rankInfo.rank} / 共 ${rankInfo.total} 个场景`, `Battle Rank #${rankInfo.rank} of ${rankInfo.total} scenes`);
     if (rankInfo.battleScore !== null && !isNaN(rankInfo.battleScore)) {
@@ -5735,18 +5750,18 @@ custom_fields
     logContainer.className = "hon-event-log-container";
     logContainer.innerHTML = `
     <div class="hon-event-log-header">
-      <span class="hon-event-log-title">\u{1F4D1} Log</span>
+      <span class="hon-event-log-title">\u{1F4D1} ${tc('日志', 'Log')}</span>
       <div class="hon-event-log-controls">
-        <button id="hon-event-log-export" class="hon-event-log-btn" title="Export Log">\u{1F4BE}</button>
-        <button id="hon-event-log-clear" class="hon-event-log-btn" title="Clear Log">\u{1F5D1}\uFE0F</button>
-        <button id="hon-event-log-toggle" class="hon-event-log-btn" title="Toggle Visibility">\u{1F441}\uFE0F</button>
-        <button id="hon-event-log-close" class="hon-event-log-btn" title="Close Log">\u2715</button>
+        <button id="hon-event-log-export" class="hon-event-log-btn" title="${tc('导出日志', 'Export Log')}">\u{1F4BE}</button>
+        <button id="hon-event-log-clear" class="hon-event-log-btn" title="${tc('清空日志', 'Clear Log')}">\u{1F5D1}\uFE0F</button>
+        <button id="hon-event-log-toggle" class="hon-event-log-btn" title="${tc('切换显示', 'Toggle Visibility')}">\u{1F441}\uFE0F</button>
+        <button id="hon-event-log-close" class="hon-event-log-btn" title="${tc('关闭日志', 'Close Log')}">\u2715</button>
       </div>
     </div>
     <div class="hon-event-log-content" id="hon-event-log-content"></div>
-    <div class="hon-event-log-resize-handle-left" id="hon-event-log-resize-left" title="Resize left"></div>
-    <div class="hon-event-log-resize-handle" id="hon-event-log-resize" title="Resize height"></div>
-    <div class="hon-event-log-resize-handle-diagonal-left" id="hon-event-log-resize-diagonal-left" title="Resize left and height"></div>
+    <div class="hon-event-log-resize-handle-left" id="hon-event-log-resize-left" title="${tc('向左调整宽度', 'Resize left')}"></div>
+    <div class="hon-event-log-resize-handle" id="hon-event-log-resize" title="${tc('调整高度', 'Resize height')}"></div>
+    <div class="hon-event-log-resize-handle-diagonal-left" id="hon-event-log-resize-diagonal-left" title="${tc('向左并调整高度', 'Resize left and height')}"></div>
   `;
     const savedState = loadEventLogState();
     if (savedState.height)
@@ -5786,11 +5801,11 @@ custom_fields
     if (savedState.closed) {
       content.style.display = "none";
       toggleBtn.textContent = "\u{1F441}\uFE0F";
-      toggleBtn.title = "Show Log";
+      toggleBtn.title = tc('显示日志', 'Show Log');
     } else {
       content.style.display = "block";
       toggleBtn.textContent = "\u{1F6AB}";
-      toggleBtn.title = "Hide Log";
+      toggleBtn.title = tc('隐藏日志', 'Hide Log');
     }
   }
   function setupLayoutConstraints(pluginLayout, logContainer) {
@@ -5857,7 +5872,7 @@ custom_fields
         const isVisible = content.style.display !== "none";
         content.style.display = isVisible ? "none" : "block";
         toggleBtn.textContent = isVisible ? "\u{1F441}\uFE0F" : "\u{1F6AB}";
-        toggleBtn.title = isVisible ? "Show Log" : "Hide Log";
+        toggleBtn.title = isVisible ? tc('显示日志', 'Show Log') : tc('隐藏日志', 'Hide Log');
         saveEventLogState({ closed: !isVisible });
       });
     }
@@ -10667,13 +10682,13 @@ custom_fields
       </div>
 
       <div class="hon-options-section">
-        <h3 class="hon-options-section-title">Event Log</h3>
-        <p class="hon-options-hint">Show or hide the live event log panel.</p>
+        <h3 class="hon-options-section-title">${tc('事件日志', 'Event Log')}</h3>
+        <p class="hon-options-hint">${tc('显示或隐藏实时事件日志面板。', 'Show or hide the live event log panel.')}</p>
         <div class="hon-options-gender-grid">
           <label class="hon-options-checkbox ${getDisableEventLog() ? "active" : ""}" data-disable-event-log>
             <input type="checkbox" ${getDisableEventLog() ? "checked" : ""}>
             <span class="hon-options-checkmark">\u2713</span>
-            <span class="hon-options-label-text">Disable Event Log</span>
+            <span class="hon-options-label-text">${tc('禁用事件日志', 'Disable Event Log')}</span>
           </label>
         </div>
       </div>
@@ -12089,7 +12104,7 @@ custom_fields
       score.style.marginBottom = "4px";
       tooltip.appendChild(score);
       const record = document.createElement("div");
-      record.innerHTML = `<span style="color: #4caf50; font-weight: bold;">${stats.wins || 0}W</span> / <span style="color: #f44336; font-weight: bold;">${stats.losses || 0}L</span> / ${stats.draws || 0}D`;
+      record.innerHTML = `<span style="color: #4caf50; font-weight: bold;">${stats.wins || 0}${tc('胜', 'W')}</span> / <span style="color: #f44336; font-weight: bold;">${stats.losses || 0}${tc('负', 'L')}</span> / ${stats.draws || 0}${tc('平', 'D')}`;
       record.style.fontSize = "0.8rem";
       record.style.marginBottom = "2px";
       tooltip.appendChild(record);
