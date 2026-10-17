@@ -25,8 +25,17 @@ Usage:
     python3 scripts/check_i18n.py LockdownI18n        # 只扫某个插件（ID 或路径）
     python3 scripts/check_i18n.py --show-all          # 连被过滤掉的候选一起列
     python3 scripts/check_i18n.py --skip-fn tc,kl,kp  # 只看 i18n 包装之外的文本
+    python3 scripts/check_i18n.py AscensionI18n --group          # 按 bundle 模块聚类候选
+    python3 scripts/check_i18n.py AscensionI18n --keep 44-85,900-1230   # 核对候选是否都在保留区间内
 
 `--strict` 让发现候选时以退出码 1 结束（供 CI 使用），默认始终为 0。
+
+报告出候选后，两个复核辅助开关（可选）：
+- `--group`：按 bundle 里的 `// <模块>.js` 边界把候选聚类，并给出每个模块的条数
+  与前几条样本 —— 用来把翻译工作切成互不重叠的区块（见 i18n-playbook.md 第 7 节）。
+- `--keep`：声明「有意保留英文」的行区间（逗号分隔，`a-b` 或单个行号，如
+  `44-85,900-1230,1321`）；区间之外的候选单独列出，用来确认没有新增漏译 ——
+  区间随改动漂移，按当前版本维护。
 """
 import argparse
 import re
@@ -50,6 +59,11 @@ ALLOW_WORDS = {
 CODE_CHARS_RE = re.compile(r"[{}<>\[\]=\"#$@&*+^~\\|;`_]")
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\u2019]*")
 HTML_NODE_RE = re.compile(r">([^<>]{2,})<")
+
+# bundle 的模块边界注释（esbuild 打包后每个源文件一段）：`  // math-utils.js`
+MODULE_RE = re.compile(r"^\s*//\s*([A-Za-z0-9_.\-]+\.js)\s*$")
+# 保留区间：`a-b` 或单个行号
+RANGE_RE = re.compile(r"^\s*(\d+)\s*(?:-\s*(\d+))?\s*$")
 
 
 def read_string(src, i, line):
@@ -287,6 +301,38 @@ def visible_phrases(text):
     return out
 
 
+def module_spans(src):
+    """Return [(start_line, module_name)] — bundle module boundaries."""
+    spans = []
+    for i, ln in enumerate(src.splitlines(), 1):
+        m = MODULE_RE.match(ln)
+        if m:
+            spans.append((i, m.group(1)))
+    return spans
+
+
+def module_of(spans, line):
+    """Name of the bundle module containing `line` (or '?' before the first)."""
+    name = "?"
+    for pos, nm in spans:
+        if pos > line:
+            break
+        name = nm
+    return name
+
+
+def parse_ranges(spec):
+    """Parse '44-85,900-1230,1321' into a list of (lo, hi) line ranges."""
+    out = []
+    for part in spec.split(","):
+        m = RANGE_RE.match(part)
+        if not m:
+            continue
+        lo = int(m.group(1))
+        out.append((lo, int(m.group(2)) if m.group(2) else lo))
+    return out
+
+
 def plugin_files(targets):
     """Resolve CLI targets to a list of (label, path) JS files to scan."""
     files = []
@@ -317,6 +363,10 @@ def main():
                          % ",".join(DEFAULT_SKIP_FN))
     ap.add_argument("--show-all", action="store_true", help="连被过滤掉的候选一起列出")
     ap.add_argument("--strict", action="store_true", help="发现候选时以退出码 1 结束")
+    ap.add_argument("--group", action="store_true",
+                    help="按 bundle 模块边界聚类候选，便于划分翻译区块")
+    ap.add_argument("--keep", default="",
+                    help="有意保留英文的行区间（如 44-85,900-1230），核对区间外是否还有候选")
     args = ap.parse_args()
 
     skip_fns = tuple(f.strip() for f in args.skip_fn.split(",") if f.strip())
@@ -356,6 +406,28 @@ def main():
             print("   （已过滤 %d 条候选）" % len(filtered))
             for ln, text in filtered:
                 print("   %5d  %s" % (ln, text))
+        if args.group and hits:
+            spans = module_spans(src)
+            per = {}
+            for ln, kind, phrase in hits:
+                per.setdefault(module_of(spans, ln), []).append((ln, kind, phrase))
+            print("   -- 按模块聚类（%d 个）--" % len(per))
+            for nm in sorted(per, key=lambda k: per[k][0][0]):
+                items = per[nm]
+                sample = " | ".join(p for _, _, p in items[:3])
+                print("   %-26s %3d 条  %s" % (nm, len(items), sample[:72]))
+            print()
+        if args.keep:
+            keep = parse_ranges(args.keep)
+            outside = [(ln, kind, phrase) for ln, kind, phrase in hits
+                       if not any(a <= ln <= b for a, b in keep)]
+            if outside:
+                print("   -- 保留区间外候选 %d 条 --" % len(outside))
+                for ln, kind, phrase in outside:
+                    print("   %5d  [%-4s] %s" % (ln, kind, phrase))
+            else:
+                print("   -- 全部 %d 条候选均落在声明的保留区间内 --" % len(hits))
+            print()
         print()
         total += len(hits)
 

@@ -63,7 +63,8 @@ JS 标识符、GraphQL 字段与枚举值、filter type、CSS 与 `<style>` 内�
 ## 8. 校验清单
 
 1. `node --check <插件ID>.js`
-2. `python scripts/check_i18n.py <插件ID>` → 逐条复核补漏，残留英文须能归入「英文源表 / 插件名 / GraphQL 类型 / 数据值 / 日志 / 归因串」之一
+2. `python scripts/check_i18n.py <插件ID>` → 逐条复核补漏，残留英文须能归入「英文源表 / 插件名 / GraphQL 类型 / 数据值 / 日志 / 归因串」之一；
+   候选多时用 `--group` 按 bundle 模块聚类来切分区块，用 `--keep <行区间>`（如 `44-85,900-1230`）核对是否还有区间外的新增漏译
 3. 版本四处一致：JS `PLUGIN_VERSION`、yml `version`、根 README 插手表、插件 README 头部
 4. yml 的 `description` 与各 `settings` 的 `displayName`/`description` 全中文
 
