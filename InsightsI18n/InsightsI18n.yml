@@ -1,6 +1,6 @@
 name: Insights I18n
-description: "Stash 统计页上的数据仪表盘，共六个标签页：你（O 次数、连续天数、年历、观看时长、按演员与场景特征看什么对你有效、你的队列）、操作（配合 toolkit 插件：库待办清单——每个插件上次扫描发现了什么、一键扫描全部及其一键任务；重复文件清理器，保留 HEVC/AV1 副本，并在移除其余副本前转移 O 次数、播放次数与标签；需要转码或升级的文件；占用空间大户；元数据修复）、库（体积、记录、时间线）、文件与画质（编码、分辨率、码率、空间去向）、元数据健康（评分、缺什么、可能哪里错了）以及收藏（增长、标签、工作室网络、国家、配对）。装有 Movies Toolkit 插件时另有影片标签页（按播放次数排列的影片、场景编号的空缺、每部的观看进度、详情缺什么、章节）。每个条形与每一行都能跳转到 Stash。打开时即时呈现，只读取自上次访问以来发生变化的内容。装有 Lockdown 插件时，你标签页还会显示你的对局；装有 Slideshow 插件时，显示你在图片上花的时间。取代 O Stats 与 Stats Enhancer。"
-version: 2.10.1
+description: "Stash 统计页的数据仪表盘：你、操作、库、文件与画质、元数据健康、收藏六个标签页（与 Lockdown、Slideshow 有联动），装有 Movies Toolkit 时另有影片标签页。取代 O Stats 与 Stats Enhancer。中文/英文跟随 Stash 界面语言。"
+version: 2.10.2
 url: https://gitlab.com/allisless0/stash-plugins
 
 settings:

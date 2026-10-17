@@ -22,7 +22,7 @@
   window.__InsightsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.10.1';
+  var PLUGIN_VERSION = '2.10.2';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
