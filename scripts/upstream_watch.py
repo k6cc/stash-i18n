@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Detect upstream updates for the plugins recorded in UPSTREAM.md.
 
-Reads the UPSTREAM.md bookkeeping table, then asks the GitHub API for the
-newest commit touching each plugin's upstream path. Any plugin whose upstream
-HEAD differs from the recorded baseline is reported.
+Reads the UPSTREAM.md bookkeeping table, then asks the GitHub or GitLab API for
+the newest commit touching each plugin's upstream path. Any plugin whose
+upstream HEAD differs from the recorded baseline is reported.
 
 Output is a Markdown report on stdout, suitable to be pasted into a GitHub
 issue body. Nothing is written to stdout when everything is up to date, so
@@ -12,6 +12,10 @@ callers can simply test for empty output.
 Usage:
     python3 scripts/upstream_watch.py            # report to stdout
     GITHUB_TOKEN=xxx python3 scripts/upstream_watch.py
+    GITLAB_TOKEN=xxx python3 scripts/upstream_watch.py
+
+Tokens are optional (public repos); when set they lift API rate limits and
+allow private upstreams.
 
 Exit code is always 0 (the report itself is the signal).
 """
@@ -20,32 +24,99 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 UPSTREAM_MD = ROOT / "UPSTREAM.md"
-API = "https://api.github.com"
+GH_API = "https://api.github.com"
+GL_API = "https://gitlab.com/api/v4"
 REPO_URL_RE = re.compile(r"\((https?://[^)]+)\)")
 
 
-def github_get(path):
-    req = urllib.request.Request(API + path)
-    req.add_header("Accept", "application/vnd.github+json")
-    req.add_header("User-Agent", "stash-i18n-upstream-watch")
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        req.add_header("Authorization", "Bearer " + token)
+def http_get(url, headers=None):
+    req = urllib.request.Request(url)
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.load(resp)
 
 
-def owner_repo(repo_url):
-    """https://github.com/owner/repo(.git) -> (owner, repo)"""
-    m = re.match(r"https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", repo_url.strip())
-    if not m:
-        return None
-    return m.group(1), m.group(2)
+def github_get(path):
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "stash-i18n-upstream-watch",
+    }
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    return http_get(GH_API + path, headers)
+
+
+def gitlab_get(path):
+    headers = {"User-Agent": "stash-i18n-upstream-watch"}
+    token = os.environ.get("GITLAB_TOKEN")
+    if token:
+        headers["PRIVATE-TOKEN"] = token
+    return http_get(GL_API + path, headers)
+
+
+def parse_repo(repo_url):
+    """Map an upstream URL to (host, slug).
+
+    slug keeps the full owner path, so GitLab subgroups work too:
+      https://github.com/sanjiswe/plugins      -> ("github", "sanjiswe/plugins")
+      https://gitlab.com/allisless0/stash-plugins
+                                               -> ("gitlab", "allisless0/stash-plugins")
+    Returns (None, None) when the URL is not a supported host.
+    """
+    m = re.match(r"https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$", repo_url.strip())
+    if m:
+        return "github", m.group(1)
+    m = re.match(r"https?://gitlab\.com/(.+?)(?:\.git)?/?$", repo_url.strip())
+    if m:
+        return "gitlab", m.group(1)
+    return None, None
+
+
+def upstream_commits(host, slug, path):
+    """Return (web_root, branch, commits) for the newest commits touching path.
+
+    commits is newest-first, each {sha, message, date}; raises urllib.error.HTTPError
+    on API failure.
+    """
+    if host == "github":
+        owner, repo = slug.split("/", 1)
+        info = github_get("/repos/%s/%s" % (owner, repo))
+        branch = info.get("default_branch", "main")
+        raw = github_get("/repos/%s/%s/commits?path=%s&sha=%s&per_page=20"
+                         % (owner, repo, urllib.parse.quote(path), branch))
+        web_root = "https://github.com/%s" % slug
+        commits = [{
+            "sha": c["sha"],
+            "message": c["commit"]["message"].splitlines()[0],
+            "date": c["commit"]["author"]["date"][:10],
+        } for c in raw]
+    else:
+        enc = urllib.parse.quote(slug, safe="")
+        info = gitlab_get("/projects/%s" % enc)
+        branch = info.get("default_branch", "main")
+        raw = gitlab_get("/projects/%s/repository/commits?path=%s&ref_name=%s&per_page=20"
+                         % (enc, urllib.parse.quote(path), urllib.parse.quote(branch)))
+        web_root = "https://gitlab.com/%s" % slug
+        commits = [{
+            "sha": c["id"],
+            "message": (c.get("title") or c.get("message", "").splitlines()[0]),
+            "date": (c.get("authored_date") or c.get("committed_date") or "")[:10],
+        } for c in raw]
+    return web_root, branch, commits
+
+
+def compare_url(host, web_root, base, head):
+    if host == "github":
+        return "%s/compare/%s...%s" % (web_root, base, head)
+    return "%s/-/compare/%s...%s" % (web_root, base, head)
 
 
 def parse_records(text):
@@ -93,32 +164,26 @@ def main():
         if not rec["repo_url"]:
             print("WARN: %s has no upstream repo url, skipped" % rec["id"], file=sys.stderr)
             continue
-        slug = owner_repo(rec["repo_url"])
-        if not slug:
+        host, slug = parse_repo(rec["repo_url"])
+        if not host:
             print("WARN: %s upstream url not parseable: %s" % (rec["id"], rec["repo_url"]),
                   file=sys.stderr)
             continue
-        owner, repo = slug
         try:
-            info = github_get("/repos/%s/%s" % (owner, repo))
-            branch = info.get("default_branch", "main")
-            commits = github_get(
-                "/repos/%s/%s/commits?path=%s&sha=%s&per_page=5"
-                % (owner, repo, urllib.request.quote(rec["path"]), branch))
+            web_root, branch, commits = upstream_commits(host, slug, rec["path"])
         except urllib.error.HTTPError as e:
-            print("WARN: %s GitHub API error %s for %s/%s" % (rec["id"], e.code, owner, repo),
+            print("WARN: %s %s API error %s for %s" % (rec["id"], host, e.code, slug),
                   file=sys.stderr)
             continue
 
         if not commits:
-            print("WARN: %s no commits found at %s in %s/%s"
-                  % (rec["id"], rec["path"], owner, repo), file=sys.stderr)
+            print("WARN: %s no commits found at %s in %s"
+                  % (rec["id"], rec["path"], slug), file=sys.stderr)
             continue
 
-        head = commits[0]
-        head_sha = head["sha"]
+        head_sha = commits[0]["sha"]
         base = rec["base"]
-        if head_sha.startswith(base) or base.startswith(head_sha[:len(base)]):
+        if head_sha.startswith(base) or (base and base.startswith(head_sha[:len(base)])):
             continue  # up to date
 
         new = []
@@ -126,22 +191,18 @@ def main():
             if c["sha"].startswith(base):
                 break
             new.append(c)
-        lines = []
-        for c in new:
-            msg = c["commit"]["message"].splitlines()[0]
-            date = c["commit"]["author"]["date"][:10]
-            lines.append("- `%s` %s (%s)" % (c["sha"][:7], msg, date))
-        compare = "https://github.com/%s/%s/compare/%s...%s" % (owner, repo, base, head_sha[:7])
+        lines = ["- `%s` %s (%s)" % (c["sha"][:7], c["message"], c["date"]) for c in new]
+        compare = compare_url(host, web_root, base, head_sha[:7])
         pending.append(
             "### %s\n\n"
-            "- 上游仓库：https://github.com/%s/%s\n"
+            "- 上游仓库：%s\n"
             "- 上游路径：`%s`\n"
             "- 记账基线：`%s` (%s)\n"
-            "- 上游 HEAD：`%s`\n"
+            "- 上游 HEAD：`%s`（%s 分支）\n"
             "- 对比：%s\n\n"
-            "自基线以来的上游提交（最多最近 5 条）：\n\n%s\n" % (
-                rec["id"], owner, repo, rec["path"], base, rec["date"],
-                head_sha[:7], compare, "\n".join(lines)))
+            "自基线以来的上游提交（最多最近 20 条）：\n\n%s\n" % (
+                rec["id"], web_root, rec["path"], base, rec["date"],
+                head_sha[:7], branch, compare, "\n".join(lines)))
 
     if not pending:
         return
