@@ -1,11 +1,9 @@
-<!--
-  weekly upstream watch
-
-  每周比对 UPSTREAM.md 记账基线与上游仓库的 HEAD；发现上游有新提交时开/更新 issue
-  （label: upstream-watch），提醒按 UPSTREAM.md 的流程同步。全部同步完成后自动关闭该 issue。
-
-  检测逻辑在 scripts/upstream_watch.py（本地也可直接跑，便于随时手动检查）。
--->
+# 每周上游检测
+#
+# 每周比对 UPSTREAM.md 记账基线与上游仓库的 HEAD；发现上游有新提交时开/更新 issue
+# （label: upstream-watch），提醒按 UPSTREAM.md 的流程同步。全部同步完成后自动关闭该 issue。
+#
+# 检测逻辑在 scripts/upstream_watch.py（本地也可直接跑，便于随时手动检查）。
 name: upstream-watch
 
 on:
