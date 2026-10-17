@@ -1,0 +1,3 @@
+# 汉化 patch（scripts/*.patch）必须保持 LF：带 CRLF 的 patch 在 git apply 时会报
+# "trailing whitespace"/上下文不匹配，或在源文件里写入 CRLF，破坏逐字节复现。
+*.patch text eol=lf
