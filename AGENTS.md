@@ -16,7 +16,7 @@
   - **唯一例外**：上游用自身 ID 调 `runPluginOperation` 时（如 `XenithI18n` 的 `stash-log.js`），`plugin_id` 必须换成汉化版 ID，否则请求会打到未安装的上游插件上，批量日志上报静默失效。
 - **模块级 `const` 表会被冻结**：模块加载时 `_intlLocale` 还是空串，表里所有 `tc()` 会定格成英文。处理方式：保留英文原表 + 另建 `*_ZH` 并列表，或给条目加 `labelZh`、或把表改成函数，在渲染期才取值。
 - **时序**：静态 DOM 的构建早于 locale 就绪。导航入口、面板外壳这类一次性写入的文案，必须在「locale 到达」与「面板注入弹窗」两个时机各刷新一次，否则反复开关弹窗会变回英文。
-- **中文宽度**：全角字约占 2ch。用 `label.length` 估列宽的表格（`table-layout: fixed` 下）必须改用 `displayWidth()` 加权；封面上的「N胜 N负 N平」比 `W/L/D` 宽，要用纯 CSS 收紧封面那档紧凑徽章的字号与内距，**只动封面缩略图，别动详情页大徽章**。
+- **中文宽度**：全角字约占 2ch。用 `label.length` 估列宽的表格（`table-layout: fixed` 下）必须改用 `displayWidth()` 加权。封面徽章**不要无条件改尺寸**：只有该插件的封面徽章会折行时才收紧（Ascension 用 `max-width: 80%` 限宽 + 折行，中文「N胜 N负 N平」比 `W/L/D` 宽会撑成两行），且只动封面缩略图、不动详情页大徽章；若上游封面档本身 `white-space: nowrap`（如 Xenith 的 `.xen-battle-rank-badge-compact`）就不折行，保持上游尺寸即可——小幅缩字号（如 0.72→0.68rem）既防不住横向溢出，又白白扩大与上游的差异（Xenith v3.2.1 已因此回退）。
 - **扫描器有盲区**：`check_i18n.py` 看不见写死在 JSX 结构里的裸文本节点（`<span>History</span>`、`of {total}`、`{kind}`）、CSS `content:`、HTML 字符串、以 `` `${name}: `` 开头的模板字面量、部分 `throw new Error()`。发版前必须人工扫一遍全部 `.jsx`（`>[A-Za-z]…` 与行首裸文本两条正则）。
 
 ### 不译清单
@@ -40,7 +40,7 @@ Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻�
 | LockdownI18n | `LockdownI18n.js` 顶部 `PLUGIN_VERSION` |
 | InsightsI18n | `InsightsI18n.js` 顶部 `PLUGIN_VERSION` |
 | AscensionI18n | `AscensionI18n.js` 顶部 `PLUGIN_VERSION` |
-| XenithI18n | 压缩 bundle 里没有 `PLUGIN_VERSION` 标识符，版本是 `` var e=`3.2.0` `` 形式的模板字面量——直接搜 `X.Y.Z` 字面量核对 |
+| XenithI18n | 版本在 `src/i18n.js` 的 `PLUGIN_VERSION`（**`package.json` 的 `version` 不参与打包，改它无效**）；压缩后常量被改名，bundle 首行形如 `` var e=`3.2.1` `` 的模板字面量——搜 `X.Y.Z` 字面量核对 |
 
 ### 流程
 

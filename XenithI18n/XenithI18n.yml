@@ -1,6 +1,6 @@
 name: Xenith I18n
 description: "Stash 演员与场景的 Elo 对决评分与排行榜，含对决、车轮战、挑战冠军三种模式，评分与战绩写入 Stash custom fields。中文/英文跟随 Stash 界面语言。"
-version: 3.2.0
+version: 3.2.1
 
 interface: raw
 errLog: debug

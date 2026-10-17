@@ -1156,7 +1156,7 @@ index b0962a3..00659c9 100644
    return {
 diff --git a/src/i18n.js b/src/i18n.js
 new file mode 100644
-index 0000000..d08a057
+index 0000000..6a5d58a
 --- /dev/null
 +++ b/src/i18n.js
 @@ -0,0 +1,85 @@
@@ -1167,7 +1167,7 @@ index 0000000..d08a057
 +// 回填函数（main.js 的 refreshStaticLabels）在语言就绪后修正。
 +// 桥接失败时 _intlLocale 保持为空 → tc() 降级英文，任何情况下都不会出现空白文案。
 +
-+export const PLUGIN_VERSION = "3.2.0";
++export const PLUGIN_VERSION = "3.2.1";
 +
 +let _intlLocale = "";
 +
@@ -1504,24 +1504,3 @@ index ef41dbc..5394bba 100644
      args: { mode: "log", level: "debug", lines },
    }).catch(() => {});
  }
-diff --git a/src/styles/xenith.css b/src/styles/xenith.css
-index 713a1f8..a046bdb 100644
---- a/src/styles/xenith.css
-+++ b/src/styles/xenith.css
-@@ -2192,10 +2192,13 @@ body.hon-modal-open {
-   bottom: 2.5rem;
- }
- 
-+/* 中文战绩「N胜 N负 N平」比英文 W/L/D 宽，收紧紧凑徽章的字号与内距
-+   （同 Ascension 封面徽章的处理），避免在封面上横向铺满。
-+   仅作用于封面缩略图，不改单页详情的大徽章。 */
- .xen-battle-rank-badge-compact {
--  padding: 2px 7px;
--  font-size: 0.72rem;
--  gap: 3px;
-+  padding: 2px 6px;
-+  font-size: 0.68rem;
-+  gap: 2px;
-   white-space: nowrap;
- }
- 
