@@ -698,6 +698,28 @@
   max-width: 80% !important;
 }
 
+/* 封面紧凑徽章：中文「胜/负/平」比 W/L/D 宽，整体收一号以保证一行放下并把高度压低。
+   仅作用于封面缩略图上的徽章，不影响单页详情的大徽章与其余界面。 */
+.thumbnail-section .hon-battle-rank-badge-compact {
+  padding: 5px 7px !important;
+  font-size: 0.72rem !important;
+  line-height: 1.25 !important;
+}
+
+.thumbnail-section .hon-battle-rank-badge-compact .hon-match-stats {
+  font-size: 0.95rem !important;
+  gap: 2px !important;
+  padding-left: 4px !important;
+  margin-left: 4px !important;
+}
+
+.thumbnail-section .hon-battle-rank-badge-compact .hon-wins,
+.thumbnail-section .hon-battle-rank-badge-compact .hon-losses,
+.thumbnail-section .hon-battle-rank-badge-compact .hon-draws,
+.thumbnail-section .hon-battle-rank-badge-compact .hon-win-rate {
+  font-size: 0.62em !important;
+}
+
 @media (max-width: 180px) {
   .hon-battle-rank-badge-compact .hon-match-stats {
     display: none !important;

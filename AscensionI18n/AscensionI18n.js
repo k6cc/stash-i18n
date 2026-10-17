@@ -1,6 +1,6 @@
 (() => {
   // ==================== i18n (AscensionI18n) ====================
-  var PLUGIN_VERSION = '1.4.3';
+  var PLUGIN_VERSION = '1.4.4';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
