@@ -17,6 +17,7 @@ git fetch upstream
 | oStatsI18n | [sanjiswe/plugins](https://github.com/sanjiswe/plugins) | `plugins/ostats` | AGPL-3.0 | `323af04` | 2026-10-17 |
 | LockdownI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Lockdown` | MIT | `4befb2a` | 2026-10-17 |
 | InsightsI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Insights` | MIT | `4befb2a` | 2026-10-17 |
+| AscensionI18n | [Servbot91/Sakotos-Stash-Repo](https://github.com/Servbot91/Sakotos-Stash-Repo) | `plugins/Ascension/plugins/Ascension/Release` | GPL-3.0 | `07ef96d` | 2026-10-17 |
 
 ## 候选（未汉化）
 
@@ -25,9 +26,8 @@ git fetch upstream
 | 插件 | 上游仓库 | 上游路径 | 安装源 | 状态 |
 |---|---|---|---|---|
 | Stash Curator | [mrx-31415/stash-curator](https://github.com/mrx-31415/stash-curator) | `plugin` | <https://mrx-31415.github.io/stash-curator/index.yml> | 候选（JS + Python 后端 + `settings:` 段，体量最大） |
-| Ascension | [Servbot91/Sakotos-Stash-Repo](https://github.com/Servbot91/Sakotos-Stash-Repo) | `plugins/Ascension/plugins/Ascension/Release` | <https://raw.githubusercontent.com/Servbot91/Sakotos-Stash-Repo/main/plugins/manifest.yml> | 候选（评级系统，JS + CSS + Python 任务） |
 
-> 注：Stash Curator / Ascension 为构建产物仓库（上游有 CI 打包），同步时取仓库内已发布的产物目录。
+> 注：Stash Curator 为构建产物仓库（上游有 CI 打包），同步时取仓库内已发布的产物目录。
 
 ## 同步流程
 

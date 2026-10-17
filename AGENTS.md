@@ -20,6 +20,7 @@
 | oStatsI18n | `oStatsI18n.js` 顶部 `PLUGIN_VERSION` |
 | LockdownI18n | `LockdownI18n.js` 顶部 `PLUGIN_VERSION` |
 | InsightsI18n | `InsightsI18n.js` 顶部 `PLUGIN_VERSION` |
+| AscensionI18n | `AscensionI18n.js` 顶部 `PLUGIN_VERSION` |
 
 ### 流程
 

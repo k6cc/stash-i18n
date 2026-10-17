@@ -1,0 +1,72 @@
+name: Ascension I18n
+description: "Stash 演员与场景的评级/分档系统（对决）：基于 Elo 引擎实时对战评分并给出 S~F 分档，含对决、排位、冠军、场景四种模式，评级与战绩写入 Stash custom fields。中文/英文跟随 Stash 界面语言。"
+version: 1.4.1
+url: https://discourse.stashapp.cc/t/ascension/6714
+exec:
+  - python
+  - "{pluginDir}/asc_taskmaster.py"
+
+ui:
+  javascript:
+    - AscensionI18n.js
+  css:
+    - AscensionI18n.css
+  assets:
+    /: snapshots
+
+interface: raw
+
+tasks:
+  - name: "预置未评级演员评分"
+    description: 为所有演员随机分配 1（F 档）至 40（C 档）的评分，并保持正确的分布。
+    defaultArgs:
+      mode: processAll
+      task: prime
+
+  - name: "清除演员对局历史"
+    description: 删除 custom fields 中所有演员的对决历史。
+    defaultArgs:
+      mode: processAll
+      task: wipe
+
+  - name: "重置全部演员评分"
+    description: 将所有演员评分重置为 0。
+    defaultArgs:
+      mode: processAll
+      task: reset
+
+  - name: "预置未评级场景评分"
+    description: 为所有场景随机分配 1（F 档）至 40（C 档）的评分，并保持正确的分布。
+    defaultArgs:
+      mode: processAll
+      task: sceneprimeunrated
+
+  - name: "按演员评分为场景预置评分"
+    description: 结合演员对决评分、对局历史与场景元数据，为未评级场景生成基准评分。
+    defaultArgs:
+      mode: processAll
+      task: sceneprime
+
+  - name: "清除场景对局历史"
+    description: 删除 custom fields 中所有场景的对决历史。
+    defaultArgs:
+      mode: processAll
+      task: scenewipe
+
+  - name: "重置全部场景评分"
+    description: 将所有场景评分重置为 0。
+    defaultArgs:
+      mode: processAll
+      task: scenereset
+
+  - name: "导出快照"
+    description: 将全部评分、对局历史与账本写入 json 文件。示例：DATE-TIME - Ascension Database Snapshot.json
+    defaultArgs:
+      mode: processAll
+      task: snapshotexport
+
+  - name: "导入对决快照"
+    description: 查找最新的对决快照并还原数据库。
+    defaultArgs:
+      mode: processAll
+      task: snapshotimport
