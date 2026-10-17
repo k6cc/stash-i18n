@@ -1,6 +1,6 @@
 name: Ascension I18n
 description: "Stash 演员与场景的评级/分档系统（对决）：基于 Elo 引擎实时对战评分并给出 S~F 分档，含对决、排位、冠军、场景四种模式，评级与战绩写入 Stash custom fields。中文/英文跟随 Stash 界面语言。"
-version: 1.4.2
+version: 1.4.3
 url: https://discourse.stashapp.cc/t/ascension/6714
 exec:
   - python

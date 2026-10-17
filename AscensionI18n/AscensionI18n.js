@@ -1,6 +1,6 @@
 (() => {
   // ==================== i18n (AscensionI18n) ====================
-  var PLUGIN_VERSION = '1.4.2';
+  var PLUGIN_VERSION = '1.4.3';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -31,16 +31,58 @@
   })();
   console.log('[AscensionI18n] Ascension I18n v' + PLUGIN_VERSION + ' loaded');
 
-  // ---- 语言就绪后回填「先于 locale 渲染」的静态 DOM 文案 ----
-  // 导航入口按钮由 document.body 上的 MutationObserver 创建，可能早于桥接 useEffect 写入 _intlLocale，
-  // 只在那时取过一次 tc()，之后无人重绘 → 文案会永久停在英文。locale 到达后统一回填。
+  // ---- 回填「先于 locale 渲染」的静态 DOM 文案 ----
+  // 以下文案的宿主 DOM 会在页面加载阶段（早于桥接 useEffect 写入 _intlLocale）就创建，
+  // 甚至被缓存后延迟注入（如事件日志面板在弹窗打开时才挂载），
+  // 只在那时取过一次 tc()，之后无人重绘 → 文案会永久停在英文。
+  // 语言就绪后、以及每次注入已构建好的 DOM 时，统一回填。
   function refreshStaticLabels() {
+    // 顶部导航入口按钮
     var navBtn = document.getElementById("plugin_hon");
-    if (!navBtn) return;
-    var label = tc('对决', 'Ascension');
-    var span = navBtn.querySelector("span");
-    if (span && span.textContent !== label) span.textContent = label;
-    if (navBtn.getAttribute("title") !== label) navBtn.setAttribute("title", label);
+    if (navBtn) {
+      var label = tc('对决', 'Ascension');
+      var span = navBtn.querySelector("span");
+      if (span && span.textContent !== label) span.textContent = label;
+      if (navBtn.getAttribute("title") !== label) navBtn.setAttribute("title", label);
+    }
+    // 事件日志面板外壳（标题 / 按钮与拖拽手柄的 title）
+    var logEl = document.getElementById("hon-event-log");
+    if (logEl) {
+      var titleSpan = logEl.querySelector(".hon-event-log-title");
+      if (titleSpan) titleSpan.textContent = "\u{1F4D1} " + tc('日志', 'Log');
+      var btnTitle = function (id, zh, en) {
+        var b = logEl.querySelector("#" + id);
+        if (b) b.setAttribute("title", tc(zh, en));
+      };
+      btnTitle("hon-event-log-export", '导出日志', 'Export Log');
+      btnTitle("hon-event-log-clear", '清空日志', 'Clear Log');
+      btnTitle("hon-event-log-close", '关闭日志', 'Close Log');
+      var toggleBtn2 = logEl.querySelector("#hon-event-log-toggle");
+      if (toggleBtn2) {
+        var content = logEl.querySelector(".hon-event-log-content");
+        var isVisible = !content || content.style.display !== "none";
+        toggleBtn2.title = isVisible ? tc('显示日志', 'Show Log') : tc('隐藏日志', 'Hide Log');
+      }
+      var handleTitle = function (id, zh, en) {
+        var h = logEl.querySelector("#" + id);
+        if (h) h.setAttribute("title", tc(zh, en));
+      };
+      handleTitle("hon-event-log-resize-left", '向左调整宽度', 'Resize left');
+      handleTitle("hon-event-log-resize", '调整高度', 'Resize height');
+      handleTitle("hon-event-log-resize-diagonal-left", '向左并调整高度', 'Resize left and height');
+    }
+    // 详情页自定义字段的标题
+    document.querySelectorAll(".detail-item-title.custom-field-hotornot-stats, .detail-item-title.hotornot-stats").forEach(function (n) {
+      n.textContent = tc('对局历史', 'Match History');
+    });
+    document.querySelectorAll(".detail-item-title.custom-field-performer-record, .detail-item-title.custom-field-scene-record").forEach(function (n) {
+      n.textContent = tc('往期对局', 'Past Matchups');
+    });
+    // 已渲染的自定义字段网格：把仍是英文的统计键替换为中文
+    document.querySelectorAll(".stats-grid .stats-key").forEach(function (n) {
+      var zh = STAT_LABEL_ZH[n.textContent.trim()];
+      if (zh) n.textContent = zh;
+    });
   }
 
   // ---- 显示用中/英标签（渲染期取用；英文源表保持冻结不变）----
@@ -68,6 +110,8 @@
     "Streak": "连场",
     "Best Streak": "最佳连场",
     "Worst Streak": "最差连场",
+    "Streaks Killed": "终结连场",
+    "Last Match": "最近对局",
     "Win Margin": "净胜分",
     "Scenes": "场景",
     "Avg Scene Rating": "平均场景评分",
@@ -1447,7 +1491,7 @@
     const grid = document.createElement("div");
     grid.className = isScene ? "stats-grid scene-stats-grid" : "stats-grid";
     Object.entries(normalized).forEach(([key, value]) => {
-      const label = formatLabel(key);
+      const label = statHeadingLabel(formatLabel(key));
       const displayValue = formatStatValue(key, value);
       const emoji = getStreakEmoji2(key, value);
       const valueClass = getValueClass(key, value);
@@ -1469,10 +1513,10 @@
     if (isSceneRecord) {
       if (match.opponentId) {
         oppId = match.opponentId.toString();
-        oppName = `Scene ${oppId}`;
+        oppName = `${tc('场景', 'Scene')} ${oppId}`;
       } else if (match.opponent && typeof match.opponent === "string" && match.opponent.includes(":")) {
         oppId = match.opponent.split(":")[0];
-        oppName = `Scene ${oppId}`;
+        oppName = `${tc('场景', 'Scene')} ${oppId}`;
       }
     } else {
       if (match.opponent && typeof match.opponent === "string") {
@@ -1482,7 +1526,7 @@
           oppName = parts.slice(1).join(":") || "Unknown";
         } else {
           oppId = match.opponent;
-          oppName = `Performer ${oppId}`;
+          oppName = `${tc('演员', 'Performer')} ${oppId}`;
         }
       }
     }
@@ -1501,7 +1545,7 @@
       });
       const won = match.won;
       const statusClass = won === true ? "win" : won === false ? "loss" : "draw";
-      const statusText = won === true ? "WIN" : won === false ? "LOSS" : "DRAW";
+      const statusText = won === true ? tc('胜', 'WIN') : won === false ? tc('负', 'LOSS') : tc('平', 'DRAW');
       const symbol = won === true ? "\u25CF" : won === false ? "\u25CF" : "\u25CB";
       const { truncatedName, profileUrl, oppName, oppId } = parseMatchOpponent(match, isSceneRecord);
       const rawRating = getRecordRating(match);
@@ -1565,7 +1609,7 @@
       }
     });
   }
-  function observeStatsFields(textSelector, containerSelector, titleSelector, titleText) {
+  function observeStatsFields(textSelector, containerSelector, titleSelector) {
     const observer3 = new MutationObserver(() => {
       document.querySelectorAll(textSelector).forEach((el) => {
         if (el.dataset.parsed)
@@ -1580,7 +1624,7 @@
             return;
           const titleSpan = container.querySelector(titleSelector);
           if (titleSpan)
-            titleSpan.textContent = titleText;
+            titleSpan.textContent = tc('对局历史', "Match History");
           const customFields = container.closest(".custom-fields");
           const isScene = !!customFields?.querySelector(".custom-field-scene_record");
           const grid = buildStatsGrid(data, isScene);
@@ -1644,15 +1688,13 @@
     const statsObserver1 = observeStatsFields(
       ".custom-field-hotornot_stats .TruncatedText",
       ".custom-field-hotornot_stats",
-      ".detail-item-title.custom-field-hotornot-stats",
-      tc('对局历史', "Match History")
+      ".detail-item-title.custom-field-hotornot-stats"
     );
     ascensionObservers.push(statsObserver1);
     const statsObserver2 = observeStatsFields(
       ".hotornot_stats .TruncatedText",
       ".hotornot_stats",
-      ".detail-item-title.hotornot-stats",
-      tc('对局历史', "Match History")
+      ".detail-item-title.hotornot-stats"
     );
     ascensionObservers.push(statsObserver2);
     const recordObserver = observeRecordFields();
@@ -5788,6 +5830,7 @@ custom_fields
         }
         applySavedLogState(loadEventLogState());
         updateEventLogDisplay();
+        refreshStaticLabels();
         clearInterval(checkInterval);
       }
     }, 100);
