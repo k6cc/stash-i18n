@@ -1,0 +1,21 @@
+# Python 运行时产物
+__pycache__/
+*.pyc
+
+# 插件运行时数据/日志（写入插件目录，不随仓库发布）
+oStatsI18n/watch_data.json
+*_backend.log
+*_auto.log
+
+# 备份/临时文件
+*_original.js
+*_v*.js
+*.tmp
+*.bak
+
+# agent 工作区数据（记忆/会话，不提交）
+.workbuddy/
+
+# 系统文件
+Thumbs.db
+Desktop.ini

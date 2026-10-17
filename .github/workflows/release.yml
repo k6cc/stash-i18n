@@ -1,0 +1,129 @@
+name: release
+
+# 发布本仓库的汉化插件（第三方插件的 i18n 版）：
+#   1. 从 tag 提取插件名和版本号（oStatsI18n-v1.0.0 → oStatsI18n + 1.0.0）
+#   2. 打包对应子目录的 zip
+#   3. 计算 sha256 + 北京时间戳 + 下载 URL
+#   4. clone stash-plugins 仓库 → 同一 commit 更新 index.yml + README 版本表 → push
+#      （单次 push 只触发一次 Pages 部署；stash-plugins 侧 sync-readme.yml 保留作兜底，
+#        README 已同步时其幂等检查不会再产生 commit）
+#   5. 创建 GitHub Release（上传 zip）
+# tag 白名单用通用模式 "*-v*.*.*"：本仓库只发汉化插件，新增插件无需改本文件。
+# 需要 STASH_PLUGINS_TOKEN secret（PAT with repo scope）跨仓库 push。
+# secret 未设置时跳过 index.yml 更新，仅创建 release。
+
+on:
+  push:
+    tags:
+      - "*-v*.*.*"
+
+# 不使用 concurrency 串行：GitHub Actions 同组排队只保留最新一个 pending run，
+# 多 tag 同时推送会把中间的运行直接取消。index.yml + README 更新步骤已做竞争安全
+# 处理（fetch + reset + push 重试），可安全并发。
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve plugin and version
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PLUGIN_ID="${TAG%%-v*}"
+          VERSION="${TAG#*-v}"
+          echo "plugin_id=${PLUGIN_ID}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Pack zip
+        run: |
+          cd ${{ steps.ver.outputs.plugin_id }}
+          zip "../${{ steps.ver.outputs.plugin_id }}-v${{ steps.ver.outputs.version }}.zip" *
+
+      - name: Compute metadata
+        id: meta
+        run: |
+          ZIP="${{ steps.ver.outputs.plugin_id }}-v${{ steps.ver.outputs.version }}.zip"
+          SHA=$(sha256sum "$ZIP" | awk '{print $1}')
+          TS=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+          PATH_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/${ZIP}"
+          {
+            echo "sha=$SHA"
+            echo "ts=$TS"
+            echo "path_url=$PATH_URL"
+          } >> "$GITHUB_OUTPUT"
+          echo "=== Metadata ==="
+          echo "plugin   : ${{ steps.ver.outputs.plugin_id }}"
+          echo "zip      : $ZIP"
+          echo "sha256   : $SHA"
+          echo "date     : $TS"
+          echo "path     : $PATH_URL"
+
+      - name: Update stash-plugins index.yml and README
+        env:
+          PLUGIN_ID: ${{ steps.ver.outputs.plugin_id }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          DATE: ${{ steps.meta.outputs.ts }}
+          PATH_URL: ${{ steps.meta.outputs.path_url }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          STASH_PLUGINS_TOKEN: ${{ secrets.STASH_PLUGINS_TOKEN }}
+        run: |
+          if [ -z "$STASH_PLUGINS_TOKEN" ]; then
+            echo "⚠ STASH_PLUGINS_TOKEN secret not set — skipping index.yml update"
+            echo "  Manual update needed: clone k6cc/stash-plugins, update plugins/main/index.yml"
+            exit 0
+          fi
+          git clone https://x-access-token:${STASH_PLUGINS_TOKEN}@github.com/k6cc/stash-plugins.git /tmp/stash-plugins
+          cd /tmp/stash-plugins
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 竞争安全：多个 release 并发推送时 push 可能被拒（non-fast-forward），
+          # 每次重试前 fetch + reset 到远程最新（已包含其他插件刚推的改动），
+          # 再重新套用本插件的 index.yml 更新与 README 同步。
+          # index.yml 与 README 版本表放同一个 commit：一次 push 只触发一次 Pages 部署
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            # awk 只更新匹配 PLUGIN_ID 的条目，避免误改其他插件
+            awk -v id="$PLUGIN_ID" -v version="$VERSION" -v date="$DATE" -v path="$PATH_URL" -v sha="$SHA" '
+            /^- id: / { in_block = ($3 == id) }
+            in_block && /^  version: / { print "  version: " version; next }
+            in_block && /^  date: / { print "  date: " date; next }
+            in_block && /^  path: / { print "  path: " path; next }
+            in_block && /^  sha256: / { print "  sha256: " sha; next }
+            { print }
+            ' plugins/main/index.yml > /tmp/index.yml && mv /tmp/index.yml plugins/main/index.yml
+            # 从 index.yml 同步 README 版本表（复用仓库自带脚本，幂等）；
+            # 失败不阻塞 index.yml 提交，README 由 stash-plugins 的 sync-readme.yml 兜底
+            python3 scripts/sync_readme.py || echo "⚠ sync_readme.py failed — README left to fallback workflow"
+            git add plugins/main/index.yml README.md
+            if git diff --cached --quiet; then
+              echo "index.yml and README.md already up to date — nothing to commit"
+              exit 0
+            fi
+            git commit -m "chore: bump ${PLUGIN_ID} to ${TAG}"
+            if git push; then
+              echo "=== Pushed index.yml + README update (attempt ${attempt}) ==="
+              cat plugins/main/index.yml
+              exit 0
+            fi
+            echo "⚠ push failed (attempt ${attempt}) — concurrent release detected, retrying"
+            sleep $((attempt * 5))
+          done
+          echo "✗ failed to push index.yml after 5 attempts"
+          exit 1
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          files: ${{ steps.ver.outputs.plugin_id }}-v${{ steps.ver.outputs.version }}.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
