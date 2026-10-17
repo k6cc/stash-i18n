@@ -8,7 +8,7 @@ Stash 第三方插件汉化集（i18n）——只做**界面文案本地化**，
 
 | 插件 | 版本 | 上游插件 | 说明 |
 |------|------|---------|------|
-| [oStatsI18n](./oStatsI18n/) | 1.0.0 | [O Stats](https://discourse.stashapp.cc/t/o-stats/4766/7)（sanjiswe） | 统计页 O 统计与观看时长追踪，UI 文案跟随 Stash 界面语言（中文/英文） |
+| [oStatsI18n](./oStatsI18n/) | 1.1.0 | [O Stats](https://discourse.stashapp.cc/t/o-stats/4766/7)（sanjiswe） | 统计页 O 统计与观看时长追踪，UI 文案跟随 Stash 界面语言（中文/英文） |
 
 ## 安装
 
@@ -29,12 +29,13 @@ https://k6cc.github.io/stash-plugins/plugins/main/index.yml
 
 ## 与上游的关系
 
-- 汉化版是上游插件在**文案层**的本地化分支，功能逻辑沿用上游实现
-- 上游发布新版本后，本仓库在对应插件目录内按上游变更跟进同步
+- 汉化版是上游插件在**文案层**的本地化分支，功能逻辑沿用上游实现；版权归上游作者，各插件目录内附上游 LICENSE
+- 上游发布新版本后，本仓库在对应插件目录内按上游变更跟进同步：基线记账见 [UPSTREAM.md](./UPSTREAM.md)，增量查看用 `scripts/upstream-diff.ps1`
+- 每周由 `upstream-watch` workflow 自动检测上游新提交并开 issue 提醒同步
 - 与上游原版是否可共存，以各插件目录 `README.md` 的说明为准
 
 各插件的详细说明见对应目录下的 `README.md`。
 
 ## License
 
-各插件版权归上游作者所有，License 见对应目录或上游仓库。
+各插件版权归上游作者所有。上游为 AGPL-3.0 等许可证时，许可证全文随对应插件目录一并附上（如 [oStatsI18n/LICENSE](./oStatsI18n/LICENSE)）。

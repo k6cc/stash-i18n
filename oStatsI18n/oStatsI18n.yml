@@ -1,12 +1,93 @@
 name: O Stats I18n
 description: Adds O stats to the stats page with bilingual (中文/EN) UI following the Stash interface language
-version: 1.0.0
+version: 1.1.0
 url: https://discourse.stashapp.cc/t/o-stats/4766/7
 ui:
   javascript:
     - oStatsI18n.js
   assets:
     /: .
+settings:
+  01_hideTopStats:
+    displayName: 隐藏顶部统计行
+    type: BOOLEAN
+    description: 隐藏整个顶部统计行（今日 O 数、纪录日、连续天数、最长记录和平均分钟/O）。默认关闭。
+  02_hideTopStatsOsToday:
+    displayName: '[顶部统计行] 隐藏今日 O 数'
+    type: BOOLEAN
+    description: 隐藏「今日 O 数」。开启「隐藏顶部统计行」时该项无效。默认关闭。
+  03_hideTopStatsRecordDay:
+    displayName: '[顶部统计行] 隐藏纪录日'
+    type: BOOLEAN
+    description: 隐藏「纪录日」（单日 O 次数最多）。开启「隐藏顶部统计行」时该项无效。默认关闭。
+  04_hideTopStatsStreak:
+    displayName: '[顶部统计行] 隐藏连续天数'
+    type: BOOLEAN
+    description: 隐藏「连续天数」。开启「隐藏顶部统计行」时该项无效。默认关闭。
+  05_hideTopStatsRecordSession:
+    displayName: '[顶部统计行] 隐藏最长记录'
+    type: BOOLEAN
+    description: 隐藏「最长记录」（单日观看时长最多）。开启「隐藏顶部统计行」时该项无效。默认关闭。
+  06_hideTopStatsAverageMinPerO:
+    displayName: '[顶部统计行] 隐藏平均分钟/O'
+    type: BOOLEAN
+    description: 隐藏「平均分钟/O」。开启「隐藏顶部统计行」时该项无效。默认关闭。
+  07_hideSceneHighlights:
+    displayName: 隐藏场景亮点
+    type: BOOLEAN
+    description: 隐藏整个场景亮点行（最 O 场景、最长播放时长、最近 O 和最早 O）。默认关闭。
+  08_hideSceneHighlightsMostOs:
+    displayName: '[场景亮点行] 隐藏最 O 场景'
+    type: BOOLEAN
+    description: 隐藏「最 O 场景」亮点。开启「隐藏场景亮点」时该项无效。默认关闭。
+  09_hideSceneHighlightsLongestPlay:
+    displayName: '[场景亮点行] 隐藏最长播放时长'
+    type: BOOLEAN
+    description: 隐藏「最长播放时长」亮点。开启「隐藏场景亮点」时该项无效。默认关闭。
+  10_hideSceneHighlightsMostRecentO:
+    displayName: '[场景亮点行] 隐藏最近 O'
+    type: BOOLEAN
+    description: 隐藏「最近 O」亮点。开启「隐藏场景亮点」时该项无效。默认关闭。
+  11_hideSceneHighlightsOldestO:
+    displayName: '[场景亮点行] 隐藏最早 O'
+    type: BOOLEAN
+    description: 隐藏「最早 O」亮点。开启「隐藏场景亮点」时该项无效。默认关闭。
+  12_hideOGraph:
+    displayName: 隐藏 O 次数图表
+    type: BOOLEAN
+    description: 隐藏 O 次数柱状图。默认关闭。
+  13_hideWatchTimeGraph:
+    displayName: 隐藏观看时长图表
+    type: BOOLEAN
+    description: 隐藏观看时长柱状图。默认关闭。
+  14_hideExportImportButtons:
+    displayName: 隐藏导出/导入按钮
+    type: BOOLEAN
+    description: 隐藏「导出 JSON」与「导入 JSON」按钮。默认关闭。
+  15_hideOnThisDay:
+    displayName: 隐藏当日回顾
+    type: BOOLEAN
+    description: 隐藏整个「当日回顾」区块（含其中的统计）。默认关闭。
+  16_hideOnThisDayTimelineOs:
+    displayName: '[当日回顾] 隐藏时间线上的 O 标记'
+    type: BOOLEAN
+    description: 隐藏「当日回顾」时间线上的蓝色 O 标记。默认关闭。
+  17_showOnThisDayTimelineWatches:
+    displayName: '[当日回顾] 显示时间线上的观看标记'
+    type: BOOLEAN
+    description: 在「当日回顾」时间线上显示灰色标记，表示没有 O 但观看过的视频。悬停查看缩略图，点击打开场景。默认关闭。
+  18_expandOnThisDayTimeline:
+    displayName: '[当日回顾] 默认展开时间线'
+    type: BOOLEAN
+    description: 「当日回顾」时间线默认显示得更高，便于分辨靠得很近的标记。仍可用按钮收起。默认关闭。
+  19_expandOnThisDayList:
+    displayName: '[当日回顾] 默认展开观看视频列表'
+    type: BOOLEAN
+    description: 「当日回顾」中的「观看的视频」列表默认显示完整内容，而非较短的滚动列表。仍可用按钮收起。默认关闭。
+  20_hideOnThisDayStats:
+    displayName: '[当日回顾] 隐藏统计'
+    type: BOOLEAN
+    description: 隐藏「当日回顾」区块底部的统计（O 总数、观看时长、观看视频数和平均分钟/O）。默认关闭。
 
 exec:
   - python

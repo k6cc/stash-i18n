@@ -4,7 +4,7 @@
   if (window.__oStatsI18nLoaded) return
   window.__oStatsI18nLoaded = true
 
-  var PLUGIN_VERSION = '1.0.0'
+  var PLUGIN_VERSION = '1.1.0'
   var PLUGIN_ID = 'oStatsI18n'
   console.log('[oStatsI18n] O Stats I18n v' + PLUGIN_VERSION + ' loaded')
 
@@ -115,70 +115,43 @@
     return result.data
   }
 
-  // ===== DATA CACHE HELPERS =====
-  const SCENES_CORE_CACHE_KEY = 'oStatsI18n_scenes_core_v1'
-  const SCENES_FULL_CACHE_KEY = 'oStatsI18n_scenes_full_v1'
-  const STATS_CACHE_TTL_MS = 10 * 60 * 1000 // 10 minutes
-  const STATS_USE_CACHE_KEY = 'oStatsI18n_use_cache'
+  // ===== PLUGIN SETTINGS =====
+  // Settings are defined in oStatsI18n.yml and saved by Stash. Stash lists them
+  // sorted by key, so the keys are numbered (01_hideTopStats) to keep them
+  // in page order; the number is stripped off here.
+  async function getPluginSettings() {
+    try {
+      const data = await callGQL({ query: 'query { configuration { plugins } }' })
+      const saved = data.configuration?.plugins?.oStatsI18n || {}
+      const settings = {}
+      Object.keys(saved).forEach((key) => {
+        settings[key.replace(/^\d+_/, '')] = saved[key]
+      })
+      return settings
+    } catch (e) {
+      console.warn('[oStatsI18n] Failed to load plugin settings:', e)
+      return {}
+    }
+  }
 
+  // ===== SCENE DATA HELPERS =====
   const inFlightDataRequests = {
     scenesCore: null,
     scenesFull: null,
   }
 
-  function shouldUseCache() {
-    try {
-      const pref = localStorage.getItem(STATS_USE_CACHE_KEY)
-      return pref === 'true'
-    } catch (e) {
-      return false
-    }
-  }
+  // Remove data left behind by the old "Use cache" option (upstream's keys and
+  // this fork's own oStatsI18n_* keys, in case they were written before 1.1).
+  try {
+    localStorage.removeItem('ostats_scenes_core_v1')
+    localStorage.removeItem('ostats_scenes_full_v1')
+    localStorage.removeItem('ostats_use_cache')
+    localStorage.removeItem('oStatsI18n_scenes_core_v1')
+    localStorage.removeItem('oStatsI18n_scenes_full_v1')
+    localStorage.removeItem('oStatsI18n_use_cache')
+  } catch (e) {}
 
-  function setShouldUseCache(value) {
-    try {
-      localStorage.setItem(STATS_USE_CACHE_KEY, value ? 'true' : 'false')
-    } catch (e) {
-      console.warn('[oStatsI18n] Failed to save cache preference:', e)
-    }
-  }
-
-  function safeReadCache(cacheKey, maxAgeMs = STATS_CACHE_TTL_MS) {
-    if (!shouldUseCache()) return null
-
-    try {
-      const raw = localStorage.getItem(cacheKey)
-      if (!raw) return null
-
-      const parsed = JSON.parse(raw)
-      if (!parsed || !Array.isArray(parsed.data)) return null
-
-      const age = Date.now() - (parsed.savedAt || 0)
-      if (age > maxAgeMs) return null
-
-      return parsed.data
-    } catch (e) {
-      console.warn('[oStatsI18n] Failed to read cache:', cacheKey, e)
-      return null
-    }
-  }
-
-  function safeWriteCache(cacheKey, data) {
-    try {
-      localStorage.setItem(
-        cacheKey,
-        JSON.stringify({
-          savedAt: Date.now(),
-          data,
-        }),
-      )
-    } catch (e) {
-      // Large payloads can exceed localStorage quota. This should not block rendering.
-      console.warn('[oStatsI18n] Failed to write cache:', cacheKey, e)
-    }
-  }
-
-  function sanitizeSceneForCache(scene, includePlayHistory) {
+  function sanitizeScene(scene, includePlayHistory) {
     return {
       id: scene.id,
       title: scene.title || null,
@@ -217,48 +190,32 @@
 
     const data = await callGQL({ query })
     const scenes = data.findScenes?.scenes || []
-    return scenes.map((scene) =>
-      sanitizeSceneForCache(scene, includePlayHistory),
-    )
+    return scenes.map((scene) => sanitizeScene(scene, includePlayHistory))
   }
 
-  async function getScenesData(includePlayHistory = false, options = {}) {
-    const { forceRefresh = false } = options
-    const cacheKey = includePlayHistory
-      ? SCENES_FULL_CACHE_KEY
-      : SCENES_CORE_CACHE_KEY
+  async function getScenesData(includePlayHistory = false) {
     const inFlightKey = includePlayHistory ? 'scenesFull' : 'scenesCore'
-
-    if (!forceRefresh) {
-      const cached = safeReadCache(cacheKey)
-      if (cached) {
-        return cached
-      }
-    }
 
     if (inFlightDataRequests[inFlightKey]) {
       return inFlightDataRequests[inFlightKey]
     }
 
-    inFlightDataRequests[inFlightKey] = fetchScenesData(includePlayHistory)
-      .then((scenes) => {
-        safeWriteCache(cacheKey, scenes)
-        return scenes
-      })
-      .finally(() => {
-        inFlightDataRequests[inFlightKey] = null
-      })
+    inFlightDataRequests[inFlightKey] = fetchScenesData(
+      includePlayHistory,
+    ).finally(() => {
+      inFlightDataRequests[inFlightKey] = null
+    })
 
     return inFlightDataRequests[inFlightKey]
   }
 
-  async function getScenesWithOHistory(options = {}) {
+  async function getScenesWithOHistory() {
     // Core data for top-level stats does not require play history.
-    return getScenesData(false, options)
+    return getScenesData(false)
   }
 
-  async function getScenesWithPlayHistory(options = {}) {
-    return getScenesData(true, options)
+  async function getScenesWithPlayHistory() {
+    return getScenesData(true)
   }
 
   // Path element listener - waits for specific page elements to load
@@ -770,6 +727,12 @@
 
   // Start tracking watch time for a specific video element.
   function startWatchTimeTracking(videoElement) {
+    // Only count playback in the main scene player, not previews or other
+    // plugins' videos.
+    if (!isOnScenePage() || !isMainScenePlayer(videoElement)) {
+      return
+    }
+
     if (videoElement && activeVideoElements.has(videoElement)) {
       return
     }
@@ -828,10 +791,16 @@
     return /\/scenes\/\d+/.test(window.location.pathname)
   }
 
+  // Check if a video element is Stash's main scene player
+  function isMainScenePlayer(videoElement) {
+    return !!videoElement?.closest('.scene-player-container')
+  }
+
   // Hook into video player events
   function setupVideoPlayerTracking() {
     function attachTrackingToVideo(videoPlayer) {
       if (!videoPlayer || videoPlayer.dataset.oStatsI18nTracking) return
+      if (!isMainScenePlayer(videoPlayer)) return
 
       videoPlayer.dataset.oStatsI18nTracking = 'true'
 
@@ -982,6 +951,8 @@
       statEl.title = tooltip
       statEl.style.cursor = 'help'
     }
+
+    return statHeading
   }
 
   function createImageStatElement(container, scene, title, heading) {
@@ -1038,6 +1009,45 @@
     const month = String(date.getMonth() + 1).padStart(2, '0')
     const day = String(date.getDate()).padStart(2, '0')
     return `${year}-${month}-${day}`
+  }
+
+  // Show a YYYY-MM-DD day in the On This Day section and scroll to it
+  function openDayInOnThisDay(dayStr) {
+    // Parse date string properly to avoid timezone issues
+    const [year, month, day] = dayStr.split('-').map(Number)
+    const targetDate = new Date(year, month - 1, day)
+    const now = new Date()
+    const nowLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const dayDiff = Math.round((targetDate - nowLocal) / (1000 * 60 * 60 * 24))
+
+    if (window.onThisDayRender) {
+      window.onThisDayRender(dayDiff)
+    }
+
+    const section = document.getElementById('on-this-day-section')
+    if (section) {
+      section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+
+  // Replace a stat heading with "<label>: <date>" where the date opens
+  // that day in the On This Day section
+  function setHeadingWithDayLink(headingEl, label, dayStr) {
+    headingEl.innerText = `${label}${tc('：', ': ')}`
+
+    const dateLink = document.createElement('span')
+    dateLink.innerText = formatLocalDateShort(dayStr)
+    dateLink.title = tc('在「当日回顾」中打开', 'Open in On This Day')
+    dateLink.style.cursor = 'pointer'
+    dateLink.style.textDecoration = 'underline dotted'
+    dateLink.addEventListener('mouseenter', () => {
+      dateLink.style.textDecoration = 'underline'
+    })
+    dateLink.addEventListener('mouseleave', () => {
+      dateLink.style.textDecoration = 'underline dotted'
+    })
+    dateLink.addEventListener('click', () => openDayInOnThisDay(dayStr))
+    headingEl.appendChild(dateLink)
   }
 
   function openSceneInNewTab(sceneId) {
@@ -1113,13 +1123,13 @@
     let heading = tc('最长记录', 'Record Session')
 
     if (maxDay && maxDuration > 0) {
-      const formatted = formatLocalDateShort(maxDay)
-
       title = formatShortDuration(maxDuration) + ' ⌛'
-      heading = tc(`最长记录：${formatted}`, `Record Session: ${formatted}`)
     }
 
-    createStatElement(row, title, heading)
+    const headingEl = createStatElement(row, title, heading)
+    if (maxDay && maxDuration > 0) {
+      setHeadingWithDayLink(headingEl, tc('最长记录', 'Record Session'), maxDay)
+    }
   }
 
   // Export/Import watch time data as JSON
@@ -1386,11 +1396,12 @@
     let heading = maxCount.toString()
     let title = tc('纪录日', 'Record Day')
     if (bestDay) {
-      const formatted = formatLocalDateShort(bestDay)
-      heading = tc(`纪录日：${formatted}`, `Record Day: ${formatted}`)
       title = `${maxCount} ☔`
     }
-    createStatElement(row, title, heading)
+    const headingEl = createStatElement(row, title, heading)
+    if (bestDay) {
+      setHeadingWithDayLink(headingEl, tc('纪录日', 'Record Day'), bestDay)
+    }
   }
 
   // consecutive days streak
@@ -2139,7 +2150,7 @@
         bar.style.transition = 'opacity 0.2s'
         barContainer.appendChild(bar)
 
-        if (item.count > 0 && view !== 'year') {
+        if (item.count > 0) {
           bar.addEventListener('mouseenter', () => {
             bar.style.opacity = '0.7'
           })
@@ -2147,36 +2158,20 @@
             bar.style.opacity = '1'
           })
           bar.addEventListener('click', () => {
-            // Parse date string properly to avoid timezone issues
-            const dateParts = item.date.split('-')
-            const targetDate = new Date(
-              parseInt(dateParts[0]),
-              parseInt(dateParts[1]) - 1,
-              parseInt(dateParts[2]),
-            )
-            const now = new Date()
-            const nowLocal = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate(),
-            )
-            const dayDiff = Math.round(
-              (targetDate - nowLocal) / (1000 * 60 * 60 * 24),
-            )
-
-            if (window.onThisDayRender) {
-              window.onThisDayRender(dayDiff)
-            }
-
-            const section = document.getElementById('on-this-day-section')
-            if (section) {
-              section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            if (view === 'year') {
+              // Switch to the month view for the clicked month
+              const [year, month] = item.date.split('-').map(Number)
+              selectedMonthOffset =
+                (year - now.getFullYear()) * 12 + (month - now.getMonth())
+              renderChart('month')
+            } else {
+              openDayInOnThisDay(item.date)
             }
           })
         }
 
-        // Update cursor for year view or if no data
-        if (view === 'year' || item.count === 0) {
+        // Update cursor if no data
+        if (item.count === 0) {
           bar.style.cursor = 'default'
         }
 
@@ -2632,7 +2627,7 @@
         bar.style.transition = 'opacity 0.2s'
         barContainer.appendChild(bar)
 
-        if (item.duration > 0 && view !== 'year') {
+        if (item.duration > 0) {
           bar.addEventListener('mouseenter', () => {
             bar.style.opacity = '0.7'
           })
@@ -2640,36 +2635,20 @@
             bar.style.opacity = '1'
           })
           bar.addEventListener('click', () => {
-            // Parse date string properly to avoid timezone issues
-            const dateParts = item.date.split('-')
-            const targetDate = new Date(
-              parseInt(dateParts[0]),
-              parseInt(dateParts[1]) - 1,
-              parseInt(dateParts[2]),
-            )
-            const now = new Date()
-            const nowLocal = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate(),
-            )
-            const dayDiff = Math.round(
-              (targetDate - nowLocal) / (1000 * 60 * 60 * 24),
-            )
-
-            if (window.onThisDayRender) {
-              window.onThisDayRender(dayDiff)
-            }
-
-            const section = document.getElementById('on-this-day-section')
-            if (section) {
-              section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            if (view === 'year') {
+              // Switch to the month view for the clicked month
+              const [year, month] = item.date.split('-').map(Number)
+              selectedMonthOffset =
+                (year - now.getFullYear()) * 12 + (month - now.getMonth())
+              renderChart('month')
+            } else {
+              openDayInOnThisDay(item.date)
             }
           })
         }
 
-        // Update cursor for year view or if no data
-        if (view === 'year' || item.duration === 0) {
+        // Update cursor if no data
+        if (item.duration === 0) {
           bar.style.cursor = 'default'
         }
 
@@ -2753,7 +2732,19 @@
   }
 
   // on this day section
-  async function createOnThisDaySection(row, scenes, oHistoryCache) {
+  async function createOnThisDaySection(
+    row,
+    scenes,
+    oHistoryCache,
+    options = {},
+  ) {
+    const {
+      hideStats = false,
+      expandedByDefault = false,
+      timelineExpandedByDefault = false,
+      hideTimelineOs = false,
+      showTimelineWatches = false,
+    } = options
     // Create main container
     const mainContainer = document.createElement('div')
     mainContainer.style.width = '100%'
@@ -2765,8 +2756,9 @@
 
     // Track selected day offset (0 = today, -1 = yesterday, etc.)
     let selectedDayOffset = 0
-    // Track expanded state
-    let isExpanded = false
+    // Track expanded state of the video list and timeline
+    let isExpanded = expandedByDefault
+    let isTimelineExpanded = timelineExpandedByDefault
 
     // Function to render the day
     async function renderDay(dayOffset) {
@@ -2943,10 +2935,29 @@
       timelineTitle.style.fontSize = '1.1rem'
       timelineContainer.appendChild(timelineTitle)
 
+      // Add timeline expand button
+      const timelineExpandButton = document.createElement('button')
+      timelineExpandButton.innerText = isTimelineExpanded
+        ? tc('收起 ▲', 'Collapse ▲')
+        : tc('展开 ▼', 'Expand ▼')
+      timelineExpandButton.style.padding = '0.5rem 1rem'
+      timelineExpandButton.style.marginLeft = '1rem'
+      timelineExpandButton.style.cursor = 'pointer'
+      timelineExpandButton.style.border = '1px solid #555'
+      timelineExpandButton.style.backgroundColor = 'transparent'
+      timelineExpandButton.style.color = '#fff'
+      timelineExpandButton.style.borderRadius = '4px'
+      timelineExpandButton.style.fontSize = '0.9rem'
+      timelineExpandButton.addEventListener('click', () => {
+        isTimelineExpanded = !isTimelineExpanded
+        renderDay(selectedDayOffset)
+      })
+      timelineTitle.appendChild(timelineExpandButton)
+
       // Timeline visualization
       const timelineViz = document.createElement('div')
       timelineViz.style.position = 'relative'
-      timelineViz.style.height = '400px'
+      timelineViz.style.height = isTimelineExpanded ? '600px' : '400px'
       timelineViz.style.border = '1px solid #555'
       timelineViz.style.borderRadius = '8px'
       timelineViz.style.padding = '1rem 2rem'
@@ -3011,9 +3022,29 @@
       pmSection.style.pointerEvents = 'none'
       timelineViz.insertBefore(pmSection, centerLine)
 
-      // Draw O markers with improved styling
-      dayOs.forEach((o, index) => {
-        const timePercent = (o.hour * 60 + o.minute) / (24 * 60)
+      // Timeline markers: blue for O's, gray for watches without an O.
+      // Both are sorted together so they alternate sides by time.
+      const timelineEvents = [
+        ...(hideTimelineOs
+          ? []
+          : dayOs.map((o) => ({ time: o.time, scene: o.scene, isO: true }))),
+        ...(showTimelineWatches
+          ? daySceneEvents
+              .filter((event) => !event.hasO)
+              .map((event) => ({
+                time: event.time,
+                scene: event.scene,
+                isO: false,
+              }))
+          : []),
+      ].sort((a, b) => a.time - b.time)
+
+      timelineEvents.forEach((event, index) => {
+        const color = event.isO ? '#007bff' : '#6c757d'
+        const shadowRgb = event.isO ? '0, 123, 255' : '108, 117, 125'
+        const hour = event.time.getHours()
+        const minute = event.time.getMinutes()
+        const timePercent = (hour * 60 + minute) / (24 * 60)
 
         // Connector line from center to marker
         const connector = document.createElement('div')
@@ -3022,12 +3053,12 @@
         connector.style.top = `calc(${timePercent * 100}%)`
         connector.style.width = '30px'
         connector.style.height = '2px'
-        connector.style.backgroundColor = '#007bff'
+        connector.style.backgroundColor = color
         connector.style.transform =
           index % 2 === 0
             ? 'translateY(-50%)'
             : 'translateY(-50%) translateX(-100%)'
-        connector.style.zIndex = '5'
+        connector.style.zIndex = event.isO ? '5' : '4'
         timelineViz.appendChild(connector)
 
         const marker = document.createElement('div')
@@ -3037,20 +3068,20 @@
         marker.style.top = `calc(${timePercent * 100}% - 10px)`
         marker.style.width = '20px'
         marker.style.height = '20px'
-        marker.style.backgroundColor = '#007bff'
+        marker.style.backgroundColor = color
         marker.style.borderRadius = '50%'
         marker.style.border = '3px solid #fff'
         marker.style.cursor = 'pointer'
-        marker.style.zIndex = '10'
-        marker.style.boxShadow = '0 2px 8px rgba(0, 123, 255, 0.5)'
+        marker.style.zIndex = event.isO ? '10' : '9'
+        marker.style.boxShadow = `0 2px 8px rgba(${shadowRgb}, 0.5)`
         marker.style.transition = 'transform 0.2s, box-shadow 0.2s'
 
         // Format time for tooltip
-        marker.title = `${formatClockTime(o.hour, o.minute)} - ${
-          o.scene.title ||
-          (o.scene.files && o.scene.files[0]?.basename) ||
+        marker.title = `${formatClockTime(hour, minute)} - ${
+          event.scene.title ||
+          (event.scene.files && event.scene.files[0]?.basename) ||
           tc('未命名', 'Untitled')
-        }`
+        }${event.isO ? '' : tc('（已观看）', ' (watched)')}`
 
         // Create thumbnail preview element
         const thumbnailPreview = document.createElement('div')
@@ -3061,7 +3092,7 @@
         thumbnailPreview.style.display = 'none'
         thumbnailPreview.style.zIndex = '100'
         thumbnailPreview.style.pointerEvents = 'none'
-        thumbnailPreview.style.border = '2px solid #007bff'
+        thumbnailPreview.style.border = `2px solid ${color}`
         thumbnailPreview.style.borderRadius = '4px'
         thumbnailPreview.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.5)'
         thumbnailPreview.style.overflow = 'hidden'
@@ -3076,7 +3107,7 @@
         }
 
         const thumbnailImg = document.createElement('img')
-        thumbnailImg.src = o.scene.paths.screenshot
+        thumbnailImg.src = event.scene.paths.screenshot
         thumbnailImg.style.width = '100%'
         thumbnailImg.style.height = '100%'
         thumbnailImg.style.objectFit = 'cover'
@@ -3086,16 +3117,16 @@
 
         marker.addEventListener('mouseenter', () => {
           marker.style.transform = 'scale(1.3)'
-          marker.style.boxShadow = '0 4px 12px rgba(0, 123, 255, 0.8)'
+          marker.style.boxShadow = `0 4px 12px rgba(${shadowRgb}, 0.8)`
           thumbnailPreview.style.display = 'block'
         })
         marker.addEventListener('mouseleave', () => {
           marker.style.transform = 'scale(1)'
-          marker.style.boxShadow = '0 2px 8px rgba(0, 123, 255, 0.5)'
+          marker.style.boxShadow = `0 2px 8px rgba(${shadowRgb}, 0.5)`
           thumbnailPreview.style.display = 'none'
         })
         marker.addEventListener('click', () => {
-          openSceneInNewTab(o.scene.id)
+          openSceneInNewTab(event.scene.id)
         })
 
         timelineViz.appendChild(marker)
@@ -3131,8 +3162,9 @@
       videoListTitle.appendChild(expandButton)
 
       const videoList = document.createElement('div')
-      videoList.style.maxHeight = isExpanded ? '800px' : '400px'
-      videoList.style.overflowY = 'auto'
+      // Expanded shows the whole list; collapsed scrolls inside a short box.
+      videoList.style.maxHeight = isExpanded ? 'none' : '400px'
+      videoList.style.overflowY = isExpanded ? 'visible' : 'auto'
       videoList.style.border = '1px solid #555'
       videoList.style.borderRadius = '8px'
       videoList.style.backgroundColor = 'rgba(0,0,0,0.2)'
@@ -3251,6 +3283,7 @@
       summaryContainer.style.padding = '1.5rem'
       summaryContainer.style.borderTop = '2px solid #555'
       summaryContainer.style.marginTop = '1rem'
+      if (hideStats) summaryContainer.style.display = 'none'
       mainContainer.appendChild(summaryContainer)
 
       // Total O's today
@@ -3392,21 +3425,6 @@
     separator.style.borderTop = '2px solid rgba(255, 255, 255, 0.2)'
     el.insertBefore(separator, changelog)
 
-    // Create header container
-    const headerContainer = document.createElement('div')
-    headerContainer.style.marginTop = '2rem'
-    headerContainer.style.marginBottom = '2rem'
-    headerContainer.style.display = 'flex'
-    headerContainer.style.justifyContent = 'center'
-    headerContainer.style.alignItems = 'center'
-    el.insertBefore(headerContainer, changelog)
-
-    const oStatsHeader = document.createElement('h3')
-    oStatsHeader.style.fontSize = '3rem'
-    oStatsHeader.style.margin = '0'
-    oStatsHeader.innerText = ''
-    headerContainer.appendChild(oStatsHeader)
-
     const rowOne = document.createElement('div')
     rowOne.classList = 'custom-stats-row col col-sm-8 m-sm-auto row stats'
     rowOne.style.justifyContent = 'center'
@@ -3441,7 +3459,8 @@
     el.insertBefore(rowSix, changelog)
 
     // Fast path: load lightweight stats data first.
-    const [scenes, watchTimeData] = await Promise.all([
+    const [settings, scenes, watchTimeData] = await Promise.all([
+      getPluginSettings(),
       getScenesWithOHistory(),
       loadWatchTimeData(),
     ])
@@ -3449,25 +3468,95 @@
     // OPTIMIZATION: Pre-process O history for faster lookups
     const oHistoryCache = buildOHistoryDayMap(scenes)
 
+    // Individual stats, skipped when their own setting is on. The whole-row
+    // setting overrides these, so a hidden row never shows any of its stats.
+    const topStats = settings.hideTopStats
+      ? []
+      : [
+          [
+            settings.hideTopStatsOsToday,
+            () => createOrgasmsToday(rowOne, scenes, oHistoryCache),
+          ],
+          [
+            settings.hideTopStatsRecordDay,
+            () => createBestOrgasmDay(rowOne, scenes, oHistoryCache),
+          ],
+          [
+            settings.hideTopStatsStreak,
+            () => createOrgasmStreak(rowOne, scenes, oHistoryCache),
+          ],
+          [
+            settings.hideTopStatsRecordSession,
+            () => createWatchTimeToday(rowOne, watchTimeData),
+          ],
+          [
+            settings.hideTopStatsAverageMinPerO,
+            () =>
+              createAverageOPerMinute(
+                rowOne,
+                scenes,
+                watchTimeData,
+                oHistoryCache,
+              ),
+          ],
+        ].filter(([hidden]) => !hidden)
+
+    const sceneHighlights = settings.hideSceneHighlights
+      ? []
+      : [
+          [
+            settings.hideSceneHighlightsMostOs,
+            () => createMostOScene(rowTwo, scenes),
+          ],
+          [
+            settings.hideSceneHighlightsLongestPlay,
+            () => createLongestWatchedScene(rowTwo, scenes),
+          ],
+          [
+            settings.hideSceneHighlightsMostRecentO,
+            () => createMostRecentOScene(rowTwo, scenes),
+          ],
+          [
+            settings.hideSceneHighlightsOldestO,
+            () => createOldestOScene(rowTwo, scenes),
+          ],
+        ].filter(([hidden]) => !hidden)
+
+    // Hide rows that have nothing to show. The On This Day row always stays
+    // since its padding spaces out the bottom of the page.
+    const hiddenRows = [
+      [rowOne, topStats.length === 0],
+      [rowTwo, sceneHighlights.length === 0],
+      [rowThree, settings.hideOGraph],
+      [rowFour, settings.hideWatchTimeGraph],
+      [rowFive, settings.hideExportImportButtons],
+    ]
+    hiddenRows.forEach(([row, hidden]) => {
+      if (hidden) row.style.display = 'none'
+    })
+
+    // The first visible row gets the same top spacing as the top stats row,
+    // so hiding rows above it doesn't leave a big gap under the separator.
+    const firstVisibleRow = [rowOne, rowTwo, rowThree, rowFour, rowFive, rowSix]
+      .find((row) => row.style.display !== 'none')
+    firstVisibleRow.style.paddingTop = '0'
+    firstVisibleRow.style.marginTop = rowOne.style.marginTop
+
     // OPTIMIZATION: Run all stat calculations in parallel
-    await Promise.all([
-      createOrgasmsToday(rowOne, scenes, oHistoryCache),
-      createBestOrgasmDay(rowOne, scenes, oHistoryCache),
-      createOrgasmStreak(rowOne, scenes, oHistoryCache),
-      createWatchTimeToday(rowOne, watchTimeData),
-      createAverageOPerMinute(rowOne, scenes, watchTimeData, oHistoryCache),
-    ])
+    await Promise.all(topStats.map(([, create]) => create()))
+    await Promise.all(sceneHighlights.map(([, create]) => create()))
 
-    await Promise.all([
-      createMostOScene(rowTwo, scenes),
-      createLongestWatchedScene(rowTwo, scenes),
-      createMostRecentOScene(rowTwo, scenes),
-      createOldestOScene(rowTwo, scenes),
-    ])
+    if (!settings.hideOGraph) {
+      await createWeeklyBarChart(rowThree, scenes, oHistoryCache)
+    }
+    if (!settings.hideWatchTimeGraph) {
+      await createWatchTimeBarChart(rowFour, watchTimeData)
+    }
+    if (!settings.hideExportImportButtons) {
+      createWatchTimeExportButton(rowFive, scenes)
+    }
 
-    await createWeeklyBarChart(rowThree, scenes, oHistoryCache)
-    await createWatchTimeBarChart(rowFour, watchTimeData)
-    createWatchTimeExportButton(rowFive, scenes)
+    if (settings.hideOnThisDay) return
 
     const onThisDayLoading = document.createElement('div')
     onThisDayLoading.style.textAlign = 'center'
@@ -3482,64 +3571,17 @@
       .then(async (fullScenes) => {
         rowSix.innerHTML = ''
         const fullHistoryCache = buildOHistoryDayMap(fullScenes)
-        await createOnThisDaySection(rowSix, fullScenes, fullHistoryCache)
+        await createOnThisDaySection(rowSix, fullScenes, fullHistoryCache, {
+          hideStats: settings.hideOnThisDayStats,
+          expandedByDefault: settings.expandOnThisDayList,
+          timelineExpandedByDefault: settings.expandOnThisDayTimeline,
+          hideTimelineOs: settings.hideOnThisDayTimelineOs,
+          showTimelineWatches: settings.showOnThisDayTimelineWatches,
+        })
       })
       .catch((err) => {
         console.error('[oStatsI18n] Failed loading On This Day data:', err)
         onThisDayLoading.innerText = tc('加载当日数据失败。', 'Failed to load On This Day data.')
       })
-
-    // Create bottom footer with cache toggle
-    const footerContainer = document.createElement('div')
-    footerContainer.style.marginTop = '4rem'
-    footerContainer.style.marginBottom = '2rem'
-    footerContainer.style.display = 'flex'
-    footerContainer.style.justifyContent = 'center'
-    footerContainer.style.alignItems = 'center'
-    footerContainer.style.gap = '0.5rem'
-    footerContainer.style.fontSize = '0.9rem'
-    el.insertBefore(footerContainer, changelog)
-
-    const cacheCheckbox = document.createElement('input')
-    cacheCheckbox.type = 'checkbox'
-    cacheCheckbox.checked = shouldUseCache()
-    cacheCheckbox.style.cursor = 'pointer'
-    footerContainer.appendChild(cacheCheckbox)
-
-    const cacheLabel = document.createElement('label')
-    cacheLabel.innerText = tc('使用缓存', 'Use cache')
-    cacheLabel.style.cursor = 'pointer'
-    cacheLabel.style.userSelect = 'none'
-    footerContainer.appendChild(cacheLabel)
-
-    const helpIcon = document.createElement('div')
-    helpIcon.innerText = '?'
-    helpIcon.style.width = '18px'
-    helpIcon.style.height = '18px'
-    helpIcon.style.borderRadius = '50%'
-    helpIcon.style.backgroundColor = '#555'
-    helpIcon.style.color = '#ccc'
-    helpIcon.style.display = 'flex'
-    helpIcon.style.alignItems = 'center'
-    helpIcon.style.justifyContent = 'center'
-    helpIcon.style.fontSize = '0.75rem'
-    helpIcon.style.fontWeight = 'bold'
-    helpIcon.style.cursor = 'help'
-    helpIcon.style.transition = 'background-color 0.2s, color 0.2s'
-    helpIcon.title = tc('启用后统计数据将缓存 10 分钟以加快加载；禁用后始终加载最新数据。您的偏好会被保存。', 'When enabled, stats are cached for 10 minutes to load faster. When disabled, stats always load fresh. Your preference is saved.')
-    helpIcon.addEventListener('mouseenter', () => {
-      helpIcon.style.backgroundColor = '#666'
-      helpIcon.style.color = '#fff'
-    })
-    helpIcon.addEventListener('mouseleave', () => {
-      helpIcon.style.backgroundColor = '#555'
-      helpIcon.style.color = '#ccc'
-    })
-    footerContainer.appendChild(helpIcon)
-
-    // Save preference when checkbox changes
-    cacheCheckbox.addEventListener('change', () => {
-      setShouldUseCache(cacheCheckbox.checked)
-    })
   }
 })()
