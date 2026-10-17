@@ -43,7 +43,10 @@ jobs:
       - name: Pack zip
         run: |
           cd ${{ steps.ver.outputs.plugin_id }}
-          zip "../${{ steps.ver.outputs.plugin_id }}-v${{ steps.ver.outputs.version }}.zip" *
+          # -r 必须保留：插件目录含子目录时（如 XenithI18n/backend/ 的 Python
+          # 后端），不带 -r 只会写入目录条目、丢掉里面的文件，插件装上是坏的。
+          # `*` 不匹配点开头文件，正好排除 .git 之类。
+          zip -r "../${{ steps.ver.outputs.plugin_id }}-v${{ steps.ver.outputs.version }}.zip" *
 
       - name: Compute metadata
         id: meta
