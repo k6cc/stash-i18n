@@ -1,0 +1,64 @@
+<!--
+  weekly upstream watch
+
+  每周比对 UPSTREAM.md 记账基线与上游仓库的 HEAD；发现上游有新提交时开/更新 issue
+  （label: upstream-watch），提醒按 UPSTREAM.md 的流程同步。全部同步完成后自动关闭该 issue。
+
+  检测逻辑在 scripts/upstream_watch.py（本地也可直接跑，便于随时手动检查）。
+-->
+name: upstream-watch
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # 每周一 06:00 UTC = 14:00 北京时间
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect upstream updates
+        id: detect
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/upstream_watch.py > /tmp/report.md
+          if [ -s /tmp/report.md ]; then
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+            echo "=== Upstream updates detected ==="
+            cat /tmp/report.md
+          else
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+            echo "All plugins are up to date with upstream."
+          fi
+
+      - name: Open or update tracking issue
+        if: steps.detect.outputs.pending == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create upstream-watch --color FBCA04 \
+            --description "上游有新提交，待同步" 2>/dev/null || true
+          NUM=$(gh issue list --label upstream-watch --state open --limit 1 --json number --jq '.[0].number')
+          if [ -z "$NUM" ] || [ "$NUM" = "null" ]; then
+            gh issue create --title "[upstream] 汉化插件上游有新提交" \
+              --label upstream-watch --body-file /tmp/report.md
+          else
+            gh issue comment "$NUM" --body-file /tmp/report.md
+          fi
+
+      - name: Close tracking issue when up to date
+        if: steps.detect.outputs.pending == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NUM=$(gh issue list --label upstream-watch --state open --limit 1 --json number --jq '.[0].number')
+          if [ -n "$NUM" ] && [ "$NUM" != "null" ]; then
+            gh issue close "$NUM" --comment "所有插件已与上游同步，基线已推进。"
+          fi

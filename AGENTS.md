@@ -37,3 +37,27 @@
    - 占位符不在远程时，release workflow 的 awk 找不到 `- id:` 会静默跳过，链接推不上
 3. `release.yml` 无需改动（tag 白名单为通用模式 `*-v*.*.*`）
 4. 同步更新根 `README.md` 插手表与「上游插件」链接
+5. 在根 `UPSTREAM.md` 记账表加一行（上游仓库 / 上游路径 / License / 基线 commit / 同步日期），并在插件目录内附上游 LICENSE、在插件 `README.md` 注明派生关系（见下节）
+
+## 上游跟踪与同步
+
+每个汉化插件都对应一个上游仓库，同步基线（「汉化版当前对应上游哪个 commit」）记在根 [UPSTREAM.md](./UPSTREAM.md)，**必须放在插件目录之外**（`release.yml` 用 `zip "*"` 打包插件目录，目录内任何文件都会进发布包）。
+
+工具（都在 `scripts/`，属可复用工具，不随插件发布）：
+
+| 脚本 | 用途 |
+|---|---|
+| `upstream-diff.ps1` | 拉取上游 + 查看指定插件的上游增量 + 推进基线 |
+| `upstream_watch.py` | 检测各插件上游是否有新提交（供 workflow 与本地使用） |
+
+同步流程：
+
+1. `powershell -File scripts/upstream-diff.ps1 -Fetch` 拉取上游（按记账表里的仓库地址自动解析/新增 remote）
+2. `powershell -File scripts/upstream-diff.ps1 -Plugin <插件ID>` 看该插件自基线以来的上游提交与完整 diff
+3. 套用上游改动：以「上游基线版本 = base、本地汉化版 = ours、上游新版 = theirs」做三方合并（`git merge-file`）最省事，冲突处保留本地 `tc()` 包裹与中文文案；上游原生新增的用户可见文案需补 `tc(zh, en)`
+4. 上游新增/变更的 yml 段（如 `settings:`）照抄，`displayName` / `description` 走中文；上游删除的功能（如某开关）跟随删除，不自行保留
+5. 插件目录内附上游 LICENSE，插件 `README.md` 注明派生关系
+6. `powershell -File scripts/upstream-diff.ps1 -Plugin <插件ID> -Record` 把基线推进到上游 HEAD
+7. 按上节「发版」流程升版本（汉化同步属 `feat`/`fix`，版本号随上游语义：上游 1.1 → 本仓库 1.1.0）
+
+`.github/workflows/upstream-watch.yml` 每周一检测一次，有新版则开/更新 label 为 `upstream-watch` 的 issue，全部同步后自动关闭。
