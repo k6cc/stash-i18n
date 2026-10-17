@@ -22,7 +22,7 @@
   window.__InsightsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.10.0';
+  var PLUGIN_VERSION = '2.10.1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -3672,7 +3672,7 @@
       { label: tc("已评分", "Rated"), value: L.rated, go: S([{ type: "rating100", modifier: "NOT_NULL", value: { value: 0 } }], "rating"), color: "var(--ye)", icon: ic("star") },
       m.noO ? null : { label: tc("有 O", "With an O"), value: L.withO, go: S([{ type: "o_counter", modifier: "GREATER_THAN", value: { value: 0 } }], "o_counter"), color: "var(--o)", icon: ic("drop") },
       withMarkers === null || withMarkers === undefined ? null : { label: tc("有标记", "With markers"), value: withMarkers, go: S([{ type: "has_markers", value: "true" }]), color: "var(--pu)", icon: ic("tag") },
-      inGroup === null ? null : { label: tc("在影片中", "In a group"), value: inGroup, color: "var(--bl)", icon: ic("film") },
+      inGroup === null ? null : { label: app.set.moviesName ? tc("在影片中", "In a group") : tc("在合集中", "In a group"), value: inGroup, color: "var(--bl)", icon: ic("film") },
       { label: tc("可交互", "Interactive"), value: m.scenes.filter((s) => s.interactive).length, go: S([{ type: "interactive", value: "true" }]), color: "var(--or)", icon: ic("pulse") },
     ].filter(Boolean).map((r) => ({ ...r, text: `${pct(share(r.value))} <small>${fmtN(r.value)}</small>`, icon: `<span style="color:${r.color}">${r.icon}</span>` }));
     const rbands = [[90, 101, tc("5 星", "5 stars")], [70, 90, tc("4 星", "4 stars")], [50, 70, tc("3 星", "3 stars")], [30, 50, tc("2 星", "2 stars")], [0, 30, tc("1 星", "1 star")]].map(([a, b, label]) => {
@@ -3709,7 +3709,7 @@
         ${tile("studio", "or", tc("工作室", "Studios"), fmtN(m.studios.length || net.studios.length), `${plural(net.networks.length, "network")}`, "/studios")}
         ${tile("tag", "gr", tc("标签", "Tags"), fmtN(tagN), tc(`${tagPer.toFixed(1)} 每个场景`, `${tagPer.toFixed(1)} per scene`), "/tags")}
         ${st.gallery_count !== undefined ? tile("image", "bl", tc("图库", "Galleries"), fmtN(st.gallery_count), tc(`${fmtN(st.image_count || 0)} 张图片`, `${fmtN(st.image_count || 0)} images`), "/galleries") : ""}
-        ${groups !== undefined ? tile("film", "pu", app.set.moviesName ? tc("影片", "Movies") : tc("影片", "Groups"), fmtN(groups), inGroup !== null ? tc(`${fmtN(inGroup)} 个场景在同一影片中`, `${fmtN(inGroup)} scenes in one`) : "", "/groups") : ""}
+        ${groups !== undefined ? tile("film", "pu", app.set.moviesName ? tc("影片", "Movies") : tc("合集", "Groups"), fmtN(groups), inGroup !== null ? (app.set.moviesName ? tc(`${fmtN(inGroup)} 个场景在同一影片中`, `${fmtN(inGroup)} scenes in one`) : tc(`${fmtN(inGroup)} 个场景在同一合集中`, `${fmtN(inGroup)} scenes in one`)) : "", "/groups") : ""}
       </div>
       <div class="ins-notable">
         ${nb.longest ? nbCard("ruler", "pu", tc("最长", "Longest"), fmtDur(nb.longest.dur), nb.longest.title, sc(nb.longest)) : ""}

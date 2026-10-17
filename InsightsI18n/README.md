@@ -1,4 +1,4 @@
-> v2.10.0：基于 allisless0 的 Insights 插件的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；已同步上游 2.10.0。
+> v2.10.1：基于 allisless0 的 Insights 插件的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；已同步上游 2.10.0（2.10.1 为汉化措辞修订）。
 
 # InsightsI18n
 
@@ -41,4 +41,5 @@ Stash 统计页上的数据仪表盘（Insights 的汉化版），挂在 Stash �
 
 - 与上游原版 Insights **不建议同时启用**：两者都会在统计页挂载内容并读取同一批数据
 - 插件 ID、localStorage 键（`insightsI18n*`）、IndexedDB 库名（`insightsI18n`）与 Suite Data 中的存储命名均以 `InsightsI18n` 为前缀，与上游原版各自独立
-- 上游版本号随汉化版同步：上游 2.10.0 → 本仓库 2.10.0
+- 上游版本号随汉化版同步：上游 2.10.0 → 本仓库 2.10.1（补丁号用于汉化自身的措辞修订）
+- Stash 的 Groups 采用官方中文「合集」；装有 Movies Toolkit 且未开启其 `keepGroupsName` 时，Stash 会把「合集」显示为「影片」，本插件同一处也会跟着显示「影片」

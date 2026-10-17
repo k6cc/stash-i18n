@@ -10,7 +10,7 @@ Stash 第三方插件汉化集（i18n）——只做**界面文案本地化**，
 |------|------|---------|------|
 | [oStatsI18n](./oStatsI18n/) | 1.1.0 | [O Stats](https://discourse.stashapp.cc/t/o-stats/4766/7)（sanjiswe） | 统计页 O 统计与观看时长追踪，UI 文案跟随 Stash 界面语言（中文/英文） |
 | [LockdownI18n](./LockdownI18n/) | 2.7.0 | [Lockdown](https://gitlab.com/allisless0/stash-plugins)（allisless0） | 把 Stash 锁在演员/工作室/标签上直到脱身的「锁定游戏」，UI 文案跟随 Stash 界面语言（中文/英文） |
-| [InsightsI18n](./InsightsI18n/) | 2.10.0 | [Insights](https://gitlab.com/allisless0/stash-plugins)（allisless0） | 统计页数据仪表盘：你/操作/库/文件与画质/元数据健康/收藏（装有 Movies Toolkit 时另有影片），UI 文案跟随 Stash 界面语言（中文/英文） |
+| [InsightsI18n](./InsightsI18n/) | 2.10.1 | [Insights](https://gitlab.com/allisless0/stash-plugins)（allisless0） | 统计页数据仪表盘：你/操作/库/文件与画质/元数据健康/收藏（装有 Movies Toolkit 时另有影片），UI 文案跟随 Stash 界面语言（中文/英文） |
 
 ## 安装
 
