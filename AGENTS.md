@@ -37,6 +37,7 @@
 1. 新建子目录 `<插件ID>/`，目录名 = 插件 ID，放入 `<插件ID>.js` / `<插件ID>.yml` / `README.md` 等
 2. 在 `E:\Temp\stash-plugins`（远程 `k6cc/stash-plugins`）加**占位条目并推送**：`version: 0.0.0`、`sha256:` 全 0、`path:` 按 `https://github.com/k6cc/stash-i18n/releases/download/<插件ID>-v0.0.0/<插件ID>-v0.0.0.zip` 约定、`date:` 当前时间；`README.md` 插手表与依赖清单**手动加行**（`scripts/sync_readme.py` 只更新已有行）
    - 占位符不在远程时，release workflow 的 awk 找不到 `- id:` 会静默跳过，链接推不上
+   - `description:` 等文本里含 ASCII 冒号+空格（`xxx: yyy`）时必须加引号，否则 YAML 非法、Stash 读不出整个插件源（报 `yaml: line N: mapping values are not allowed in this context`）；推送前本地先跑 `python scripts/validate_index.py plugins/main/index.yml` 自检，推送后 stash-plugins 的 `validate-index.yml` 会再校验一次，release workflow 推送前也有同款校验闸
 3. `release.yml` 无需改动（tag 白名单为通用模式 `*-v*.*.*`）
 4. 同步更新根 `README.md` 插手表与「上游插件」链接
 5. 在根 `UPSTREAM.md` 记账表加一行（上游仓库 / 上游路径 / License / 基线 commit / 同步日期），并在插件目录内附上游 LICENSE、在插件 `README.md` 注明派生关系（见下节）
