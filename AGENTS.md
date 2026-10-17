@@ -50,12 +50,13 @@
 |---|---|
 | `upstream-diff.ps1` | 拉取上游 + 查看指定插件的上游增量 + 推进基线 |
 | `upstream_watch.py` | 检测各插件上游是否有新提交（供 workflow 与本地使用） |
+| `check_i18n.py` | 复核漏译：剔除 `tc()` 包装与日志调用后，列出仍像界面文案的英文候选 |
 
 同步流程：
 
 1. `powershell -File scripts/upstream-diff.ps1 -Fetch` 拉取上游（按记账表里的仓库地址自动解析/新增 remote）
 2. `powershell -File scripts/upstream-diff.ps1 -Plugin <插件ID>` 看该插件自基线以来的上游提交与完整 diff
-3. 套用上游改动：以「上游基线版本 = base、本地汉化版 = ours、上游新版 = theirs」做三方合并（`git merge-file`）最省事，冲突处保留本地 `tc()` 包裹与中文文案；上游原生新增的用户可见文案需补 `tc(zh, en)`
+3. 套用上游改动：以「上游基线版本 = base、本地汉化版 = ours、上游新版 = theirs」做三方合并（`git merge-file`）最省事，冲突处保留本地 `tc()` 包裹与中文文案；上游原生新增的用户可见文案需补 `tc(zh, en)`，合并后用 `python scripts/check_i18n.py <插件ID>` 复核有无漏译
 4. 上游新增/变更的 yml 段（如 `settings:`）照抄，`displayName` / `description` 走中文；上游删除的功能（如某开关）跟随删除，不自行保留
 5. 插件目录内附上游 LICENSE，插件 `README.md` 注明派生关系
 6. `powershell -File scripts/upstream-diff.ps1 -Plugin <插件ID> -Record` 把基线推进到上游 HEAD
