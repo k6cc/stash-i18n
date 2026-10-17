@@ -1,0 +1,93 @@
+name: Xenith I18n
+description: "Stash 演员与场景的 Elo 对决评分与排行榜，含对决、车轮战、挑战冠军三种模式，评分与战绩写入 Stash custom fields。中文/英文跟随 Stash 界面语言。"
+version: 3.2.0
+
+interface: raw
+errLog: debug
+exec:
+  - python
+  - "{pluginDir}/backend/main.py"
+
+ui:
+  javascript:
+    - XenithI18n.js
+  css:
+    - XenithI18n.css
+  assets:
+    /: snapshots
+
+tasks:
+  - name: "清空对局历史"
+    description: 清除演员与场景上的 Xenith custom fields，保留评分。
+    execArgs:
+      - wipe
+
+  - name: "清空对局历史（仅演员）"
+    description: 仅清除演员上的 Xenith custom fields，保留评分。
+    execArgs:
+      - wipe
+      - performers
+
+  - name: "清空对局历史（仅场景）"
+    description: 仅清除场景上的 Xenith custom fields，保留评分。
+    execArgs:
+      - wipe
+      - scenes
+
+  - name: "重置评分"
+    description: 将所有演员与场景评分重置为 null。
+    execArgs:
+      - reset
+
+  - name: "重置评分（仅演员）"
+    description: 将演员评分重置为 null。
+    execArgs:
+      - reset
+      - performers
+
+  - name: "重置评分（仅场景）"
+    description: 将场景评分重置为 null。
+    execArgs:
+      - reset
+      - scenes
+
+  - name: "导出快照"
+    description: 将评分与对局历史写入带时间戳的 JSON 文件。
+    execArgs:
+      - snapshot_export
+
+  - name: "导入最新快照"
+    description: 从最近的快照还原评分与对局历史。
+    execArgs:
+      - snapshot_import
+
+  - name: "迁移旧字段名"
+    description: 把旧版 hotornot_stats/performer_record 数据复制到 xenith_ 键，迁移前先导出一份快照，可安全重复执行。
+    execArgs:
+      - migrate
+
+settings:
+  HideXenRankBadge:
+    displayName: 隐藏 Xenith 排名徽章
+    description: 隐藏演员/场景详情页与卡片上的排名徽章。
+    type: BOOLEAN
+
+  LeaderboardRowsPerPage:
+    displayName: 排行榜每页行数（移动端）
+    description: 移动端排行榜每页行数，桌面端显示为该值的 5 倍。填 0 表示自动（移动端 100 / 桌面端 500）。表格卡顿时调小，想减少页数则调大。
+    type: NUMBER
+
+  UseCustomaryUnits:
+    displayName: 使用英制单位
+    description: 以英尺/英寸与磅显示身高体重，代替厘米与千克。默认关闭（公制），勾选后显示英制单位。
+    type: BOOLEAN
+
+  HiddenChips:
+    displayName: 隐藏的演员卡片胶囊
+    description: "在对决的演员卡片上隐藏哪些胶囊，逗号分隔，例如 \"measurements, piercings\"。可选值：favorite, age, ethnicity, height, weight, eye_color, hair_color, measurements, breasts, scene_count, o_counter, gallery_count, tattoos, piercings, tags。留空显示全部；评分始终显示。"
+    type: STRING
+
+  HiddenSceneChips:
+    displayName: 隐藏的场景卡片胶囊
+    description: "在对决的场景卡片上隐藏哪些胶囊，逗号分隔，例如 \"video_codec, bit_rate\"。可选值：year, duration, resolution, studio, performers, o_counter, play_count, marker_count, gallery_count, groups, size, video_codec, audio_codec, frame_rate, bit_rate, tags。留空显示全部；评分始终显示。"
+    type: STRING
