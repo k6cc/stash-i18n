@@ -1,0 +1,10 @@
+/* Insights: Stash's own rows of numbers on the Stats page are hidden (since
+   2.1, by user request; Insights shows every one of them). This file loads
+   with the plugin, before Stash draws a page, so the rows never show first;
+   up to 2.3 a script added the rule once it noticed the page, up to a second
+   late. The selector is the Stats page's own markup in Stash 0.31 (three
+   "col col-sm-8 m-sm-auto row stats" rows in a "mt-5" wrapper); no other
+   page has a .stats row, and the wrapper keeps a plugin's own .stats safe.
+   The "Show Stash's own numbers" setting puts data-ins-native on <html>
+   (Insights.js), which brings them back. */
+html:not([data-ins-native]) .mt-5 > .row.stats { display: none !important; }

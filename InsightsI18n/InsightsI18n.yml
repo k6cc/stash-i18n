@@ -1,0 +1,28 @@
+name: Insights I18n
+description: "Stash 统计页上的数据仪表盘，共六个标签页：你（O 次数、连续天数、年历、观看时长、按演员与场景特征看什么对你有效、你的队列）、操作（配合 toolkit 插件：库待办清单——每个插件上次扫描发现了什么、一键扫描全部及其一键任务；重复文件清理器，保留 HEVC/AV1 副本，并在移除其余副本前转移 O 次数、播放次数与标签；需要转码或升级的文件；占用空间大户；元数据修复）、库（体积、记录、时间线）、文件与画质（编码、分辨率、码率、空间去向）、元数据健康（评分、缺什么、可能哪里错了）以及收藏（增长、标签、工作室网络、国家、配对）。装有 Movies Toolkit 插件时另有影片标签页（按播放次数排列的影片、场景编号的空缺、每部的观看进度、详情缺什么、章节）。每个条形与每一行都能跳转到 Stash。打开时即时呈现，只读取自上次访问以来发生变化的内容。装有 Lockdown 插件时，你标签页还会显示你的对局；装有 Slideshow 插件时，显示你在图片上花的时间。取代 O Stats 与 Stats Enhancer。"
+version: 2.10.0
+url: https://gitlab.com/allisless0/stash-plugins
+
+settings:
+  showStashNumbers:
+    displayName: 显示 Stash 自带的数据
+    description: "关闭（默认）：统计页上 Stash 自带的那几行数据被隐藏，Insights 显示全部数据。开启：它们保留在 Insights 上方。下次打开统计页时生效。"
+    type: BOOLEAN
+  hideO:
+    displayName: 隐藏 O
+    description: "关闭（默认）：Insights 显示 O 次数、连续天数、O 日历以及按 O 排序的榜单。开启：Insights 中任何地方都不显示与 O 有关的内容（例如自拍视频库）；你标签页改为统计播放次数，Lockdown 的对局也不再显示。使用 Flexoki 主题时卡片同样不显示 O 次数（需重新加载页面）。下次打开统计页时生效。"
+    type: BOOLEAN
+  imagePerformers:
+    displayName: 只统计有图片的演员
+    description: "关闭（默认）：收藏页的「谁在里面」（性别分布与国家）只统计有场景的演员。开启：只出现在图片或图库中的演员也计入其中，演员磁贴会显示其数量，「一无所有」的检查则不再把他们算进去。下次打开统计页时生效。"
+    type: BOOLEAN
+  hideMovies:
+    displayName: 隐藏影片标签页
+    description: "关闭（默认）：安装并启用 Movies Toolkit 插件时显示影片标签页（未安装则无论如何都没有该标签页）。开启：影片标签页永不显示。下次打开统计页时生效。"
+    type: BOOLEAN
+
+ui:
+  javascript:
+    - InsightsI18n.js
+  css:
+    - InsightsI18n.css

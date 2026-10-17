@@ -16,6 +16,7 @@ git fetch upstream
 |---|---|---|---|---|---|
 | oStatsI18n | [sanjiswe/plugins](https://github.com/sanjiswe/plugins) | `plugins/ostats` | AGPL-3.0 | `323af04` | 2026-10-17 |
 | LockdownI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Lockdown` | MIT | `4befb2a` | 2026-10-17 |
+| InsightsI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Insights` | MIT | `4befb2a` | 2026-10-17 |
 
 ## 候选（未汉化）
 
@@ -25,7 +26,7 @@ git fetch upstream
 |---|---|---|---|---|
 | Stash Curator | [mrx-31415/stash-curator](https://github.com/mrx-31415/stash-curator) | `plugin` | <https://mrx-31415.github.io/stash-curator/index.yml> | 候选（JS + Python 后端 + `settings:` 段，体量最大） |
 | Lockdown | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Lockdown` | <https://allisless0.gitlab.io/stash-plugins/main/index.yml> | 已汉化 → `LockdownI18n`（见记账表） |
-| Insights | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Insights` | <https://allisless0.gitlab.io/stash-plugins/main/index.yml> | 候选（统计仪表盘，含 `settings:` 段） |
+| Insights | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Insights` | <https://allisless0.gitlab.io/stash-plugins/main/index.yml> | 已汉化 → `InsightsI18n`（见记账表） |
 | Ascension | [Servbot91/Sakotos-Stash-Repo](https://github.com/Servbot91/Sakotos-Stash-Repo) | `plugins/Ascension/plugins/Ascension/Release` | <https://raw.githubusercontent.com/Servbot91/Sakotos-Stash-Repo/main/plugins/manifest.yml> | 候选（评级系统，JS + CSS + Python 任务） |
 
 > 注：Stash Curator / Ascension 为构建产物仓库（上游有 CI 打包），同步时取仓库内已发布的产物目录；Lockdown / Insights 上游 `url:` 指向 GitLab 仓库（无论坛帖）。
