@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   汉化插件上游增量查看 / 基线记账工具。
 
@@ -103,7 +103,10 @@ function Resolve-UpstreamRemote {
     }
   }
   # 未关联过：按 owner-repo 命名新增只读 remote
-  $slug = ($want -replace '^https?://github\.com/', '' -replace '[^\w.-]', '-')
+  # 先剥掉 scheme+host（GitHub / GitLab 通用），再把路径分隔符压成 -，得到
+  # upstream-<owner>-<repo>。若只剥 github.com，GitLab 地址会变成
+  # upstream-https---gitlab.com-<owner>-<repo> 这种丑名字。
+  $slug = ($want -replace '^https?://[^/]+/', '' -replace '[^\w.-]', '-')
   $name = "upstream-$slug"
   Write-Host "[remote] 新增 $name -> $RepoUrl" -ForegroundColor DarkGray
   Invoke-Git @('remote', 'add', $name, $RepoUrl) | Out-Null
