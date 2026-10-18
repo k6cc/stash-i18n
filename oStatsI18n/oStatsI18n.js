@@ -4,7 +4,7 @@
   if (window.__oStatsI18nLoaded) return
   window.__oStatsI18nLoaded = true
 
-  var PLUGIN_VERSION = '1.1.0'
+  var PLUGIN_VERSION = '2.0.0-1'
   var PLUGIN_ID = 'oStatsI18n'
   console.log('[oStatsI18n] O Stats I18n v' + PLUGIN_VERSION + ' loaded')
 
@@ -57,20 +57,6 @@
     return tc(`${year}年${month}月${day}日`, `${month}/${day}/${year}`)
   }
 
-  function formatLocalDateShort(dateStr) {
-    const [year, month, day] = dateStr.split('-')
-    return tc(`${year}年${month}月${day}日`, `${month}/${day}/${year.slice(2)}`)
-  }
-
-  function formatShortDuration(seconds) {
-    const hours = Math.floor(seconds / 3600)
-    const minutes = Math.floor((seconds % 3600) / 60)
-    if (hours > 0) return tc(`${hours}时 ${minutes}分`, `${hours}h ${minutes}m`)
-    if (minutes > 0) return tc(`${minutes}分`, `${minutes}m`)
-    if (seconds > 0) return tc(`${Math.floor(seconds)}秒`, `${Math.floor(seconds)}s`)
-    return tc('0分', '0m')
-  }
-
   function formatHourLabel(hour) {
     if (isZh()) return `${hour}时`
     if (hour === 0 || hour === 24) return '12am'
@@ -117,15 +103,15 @@
 
   // ===== PLUGIN SETTINGS =====
   // Settings are defined in oStatsI18n.yml and saved by Stash. Stash lists them
-  // sorted by key, so the keys are numbered (01_hideTopStats) to keep them
-  // in page order; the number is stripped off here.
+  // sorted by key, so the keys are numbered (01_hideTopStats, 06a_...) to
+  // keep them in page order; the number is stripped off here.
   async function getPluginSettings() {
     try {
       const data = await callGQL({ query: 'query { configuration { plugins } }' })
       const saved = data.configuration?.plugins?.oStatsI18n || {}
       const settings = {}
       Object.keys(saved).forEach((key) => {
-        settings[key.replace(/^\d+_/, '')] = saved[key]
+        settings[key.replace(/^\d+[a-z]?_/, '')] = saved[key]
       })
       return settings
     } catch (e) {
@@ -931,76 +917,138 @@
 
   // ===== END WATCH TIME TRACKING =====
 
-  function createStatElement(container, title, heading, tooltip) {
-    const statEl = document.createElement('div')
-    statEl.classList.add('stats-element')
-    container.appendChild(statEl)
-
-    const statTitle = document.createElement('p')
-    statTitle.classList.add('title')
-    statTitle.innerText = title
-    statEl.appendChild(statTitle)
-
-    const statHeading = document.createElement('p')
-    statHeading.classList.add('heading')
-    statHeading.innerText = heading
-    statEl.appendChild(statHeading)
-
-    // Add tooltip if provided
-    if (tooltip) {
-      statEl.title = tooltip
-      statEl.style.cursor = 'help'
-    }
-
-    return statHeading
+  // ===== UI BUILDING BLOCKS =====
+  // Styles live in oStatsI18n.css; elements only get classes here.
+  function createEl(tag, className, text) {
+    const node = document.createElement(tag)
+    if (className) node.className = className
+    if (text !== undefined && text !== null) node.innerText = text
+    return node
   }
 
-  function createImageStatElement(container, scene, title, heading) {
-    const statEl = document.createElement('div')
-    statEl.classList.add('stats-element')
-    statEl.style.maxWidth = '250px'
-    statEl.style.textAlign = 'center'
-    container.appendChild(statEl)
+  // Section with a small uppercase heading. Returns the section element.
+  function createSection(parent, title, note) {
+    const section = createEl('section', 'os-section')
+    const head = createEl('div', 'os-section-head')
+    head.appendChild(createEl('h3', 'os-section-title', title))
+    if (note) head.appendChild(createEl('span', 'os-section-note', note))
+    section.appendChild(head)
+    parent.appendChild(section)
+    return section
+  }
 
-    const link = document.createElement('a')
-    link.href = `/scenes/${scene.id}`
-    link.style.textDecoration = 'none'
-    link.style.display = 'block'
-    statEl.appendChild(link)
+  // Stat card: icon chip, big value, label and an optional sub line.
+  // Returns the sub line element so callers can add links to it.
+  function createStatCard(
+    container,
+    { icon, value, label, sub, accent, tooltip, href },
+  ) {
+    const card = createEl(href ? 'a' : 'div', 'os-card os-stat')
+    if (href) card.href = href
+    if (accent) card.style.setProperty('--os-accent', accent)
+    if (tooltip) card.title = tooltip
 
-    const imgContainer = document.createElement('div')
-    imgContainer.style.width = '100%'
-    imgContainer.style.height = '140px'
-    imgContainer.style.backgroundColor = '#000'
-    imgContainer.style.borderRadius = '4px'
-    imgContainer.style.marginBottom = '0.5rem'
-    imgContainer.style.display = 'flex'
-    imgContainer.style.alignItems = 'center'
-    imgContainer.style.justifyContent = 'center'
-    imgContainer.style.overflow = 'hidden'
-    link.appendChild(imgContainer)
+    if (icon) card.appendChild(createEl('div', 'os-stat-icon', icon))
+    card.appendChild(createEl('div', 'os-stat-value', value))
+    card.appendChild(createEl('div', 'os-stat-label', label))
+    const subEl = createEl('div', 'os-stat-sub', sub || '')
+    if (!sub) subEl.style.display = 'none'
+    card.appendChild(subEl)
 
-    const img = document.createElement('img')
+    container.appendChild(card)
+    return subEl
+  }
+
+  // Scene highlight card: cover image with the value and label on top and
+  // the scene title underneath. Links to the scene.
+  function createHighlightCard(container, scene, value, label, accent) {
+    const card = createEl('a', 'os-card os-highlight')
+    card.href = `/scenes/${scene.id}`
+    if (accent) card.style.setProperty('--os-accent', accent)
+
+    const media = createEl('div', 'os-highlight-media')
+    const img = createEl('img')
     img.src = scene.paths.screenshot
-    img.style.maxWidth = '100%'
-    img.style.maxHeight = '100%'
-    img.style.objectFit = 'contain'
-    img.style.display = 'block'
-    imgContainer.appendChild(img)
+    img.loading = 'lazy'
+    img.alt = ''
+    media.appendChild(img)
 
-    const statTitle = document.createElement('p')
-    statTitle.classList.add('title')
-    statTitle.innerText = title
-    statTitle.style.margin = '0'
-    statTitle.style.fontSize = '0.9rem'
-    link.appendChild(statTitle)
+    const overlay = createEl('div', 'os-highlight-overlay')
+    overlay.appendChild(createEl('div', 'os-highlight-value', value))
+    overlay.appendChild(createEl('span', 'os-highlight-label', label))
+    media.appendChild(overlay)
+    card.appendChild(media)
 
-    const statHeading = document.createElement('p')
-    statHeading.classList.add('heading')
-    statHeading.innerText = heading
-    statHeading.style.margin = '0'
-    statHeading.style.fontSize = '0.85rem'
-    link.appendChild(statHeading)
+    card.appendChild(createEl('div', 'os-highlight-title', getSceneTitle(scene)))
+    container.appendChild(card)
+  }
+
+  function getSceneTitle(scene) {
+    return (
+      scene.title ||
+      (scene.files && scene.files[0]?.basename) ||
+      tc('未命名', 'Untitled')
+    )
+  }
+
+  // "1h 5m", "12m", "40s"
+  function formatDuration(seconds) {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    if (hours > 0) return tc(`${hours}时 ${minutes}分`, `${hours}h ${minutes}m`)
+    if (minutes > 0) return tc(`${minutes}分`, `${minutes}m`)
+    if (seconds > 0)
+      return tc(`${Math.floor(seconds)}秒`, `${Math.floor(seconds)}s`)
+    return tc('0分', '0m')
+  }
+
+  // Longer spans get days: "1d 17h 41m"
+  function formatLongDuration(seconds) {
+    const days = Math.floor(seconds / 86400)
+    if (days === 0) return formatDuration(seconds)
+    const hours = Math.floor((seconds % 86400) / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    return tc(
+      `${days}天 ${hours}时 ${minutes}分`,
+      `${days}d ${hours}h ${minutes}m`,
+    )
+  }
+
+  // Same units Stash uses on its own stats page: "143.9 GiB"
+  function formatBytes(bytes) {
+    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
+    let value = bytes || 0
+    let i = 0
+    while (value >= 1024 && i < units.length - 1) {
+      value /= 1024
+      i++
+    }
+    return `${i === 0 ? value : value.toFixed(1)} ${units[i]}`
+  }
+
+  function formatNumber(n) {
+    return (n || 0).toLocaleString()
+  }
+
+  // "MM/DD/YY" from "YYYY-MM-DD"
+  function formatShortDate(dayStr) {
+    const [year, month, day] = dayStr.split('-')
+    return tc(`${year}年${month}月${day}日`, `${month}/${day}/${year.slice(2)}`)
+  }
+
+  // Parse "YYYY-MM-DD" as local midnight. new Date('YYYY-MM-DD') would be
+  // UTC midnight, which is the previous evening west of UTC.
+  function parseLocalDate(dayStr) {
+    const [year, month, day] = dayStr.split('-').map(Number)
+    return new Date(year, month - 1, day)
+  }
+
+  // Watch time per day as plain seconds (older data stored { totalTime })
+  function getWatchSeconds(dayData) {
+    if (dayData && typeof dayData === 'object' && 'totalTime' in dayData) {
+      return dayData.totalTime || 0
+    }
+    return dayData || 0
   }
 
   // Helper function to get consistent YYYY-MM-DD date string in local timezone
@@ -1013,9 +1061,7 @@
 
   // Show a YYYY-MM-DD day in the On This Day section and scroll to it
   function openDayInOnThisDay(dayStr) {
-    // Parse date string properly to avoid timezone issues
-    const [year, month, day] = dayStr.split('-').map(Number)
-    const targetDate = new Date(year, month - 1, day)
+    const targetDate = parseLocalDate(dayStr)
     const now = new Date()
     const nowLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate())
     const dayDiff = Math.round((targetDate - nowLocal) / (1000 * 60 * 60 * 24))
@@ -1030,24 +1076,16 @@
     }
   }
 
-  // Replace a stat heading with "<label>: <date>" where the date opens
+  // Fill a stat card's sub line with "<label> <date>" where the date opens
   // that day in the On This Day section
-  function setHeadingWithDayLink(headingEl, label, dayStr) {
-    headingEl.innerText = `${label}${tc('：', ': ')}`
+  function setSubWithDayLink(subEl, label, dayStr) {
+    subEl.innerText = label ? label + tc('', ' ') : ''
+    subEl.style.display = ''
 
-    const dateLink = document.createElement('span')
-    dateLink.innerText = formatLocalDateShort(dayStr)
+    const dateLink = createEl('span', 'os-day-link', formatShortDate(dayStr))
     dateLink.title = tc('在「当日回顾」中打开', 'Open in On This Day')
-    dateLink.style.cursor = 'pointer'
-    dateLink.style.textDecoration = 'underline dotted'
-    dateLink.addEventListener('mouseenter', () => {
-      dateLink.style.textDecoration = 'underline'
-    })
-    dateLink.addEventListener('mouseleave', () => {
-      dateLink.style.textDecoration = 'underline dotted'
-    })
     dateLink.addEventListener('click', () => openDayInOnThisDay(dayStr))
-    headingEl.appendChild(dateLink)
+    subEl.appendChild(dateLink)
   }
 
   function openSceneInNewTab(sceneId) {
@@ -1095,7 +1133,12 @@
     // Use pre-processed cache for instant lookup
     const todayCount = oHistoryCache.dayTotals[today] || 0
 
-    createStatElement(row, `${todayCount} 💦`, tc("今日 O 数", "O's Today"))
+    createStatCard(row, {
+      icon: '💦',
+      value: todayCount,
+      label: tc("今日 O 数", "O's Today"),
+      accent: 'var(--os-blue)',
+    })
   }
 
   // record session - day with longest watch time
@@ -1105,53 +1148,31 @@
 
     // Find day with most watch time
     Object.keys(watchTimeData).forEach((day) => {
-      // Simplified format: just numbers (with migration from old format)
-      let duration = watchTimeData[day]
-      if (typeof duration === 'object' && 'totalTime' in duration) {
-        // Migrate old format
-        duration = duration.totalTime || 0
-      }
-      duration = duration || 0
-
+      const duration = getWatchSeconds(watchTimeData[day])
       if (duration > maxDuration) {
         maxDuration = duration
         maxDay = day
       }
     })
 
-    let title = tc('0分', '0m')
-    let heading = tc('最长记录', 'Record Session')
-
+    const subEl = createStatCard(row, {
+      icon: '⌛',
+      value: formatDuration(maxDuration),
+      label: tc('最长记录', 'Record Session'),
+      accent: 'var(--os-green)',
+    })
     if (maxDay && maxDuration > 0) {
-      title = formatShortDuration(maxDuration) + ' ⌛'
-    }
-
-    const headingEl = createStatElement(row, title, heading)
-    if (maxDay && maxDuration > 0) {
-      setHeadingWithDayLink(headingEl, tc('最长记录', 'Record Session'), maxDay)
+      setSubWithDayLink(subEl, tc('于', 'on'), maxDay)
     }
   }
 
   // Export/Import watch time data as JSON
   function createWatchTimeExportButton(row, scenesForExport = null) {
-    const container = document.createElement('div')
-    container.style.display = 'flex'
-    container.style.gap = '1rem'
-    container.style.justifyContent = 'center'
-    container.style.alignItems = 'center'
-    container.style.marginTop = '2rem'
+    const container = createEl('div', 'os-toolbar')
     row.appendChild(container)
 
     // JSON Export Button
-    const jsonBtn = document.createElement('button')
-    jsonBtn.innerText = tc('💾 导出 JSON', '💾 Export JSON')
-    jsonBtn.style.padding = '0.5rem 1rem'
-    jsonBtn.style.cursor = 'pointer'
-    jsonBtn.style.border = '1px solid #555'
-    jsonBtn.style.backgroundColor = 'transparent'
-    jsonBtn.style.color = '#fff'
-    jsonBtn.style.borderRadius = '4px'
-    jsonBtn.style.fontSize = '1rem'
+    const jsonBtn = createEl('button', 'os-btn', tc('💾 导出 JSON', '💾 Export JSON'))
     container.appendChild(jsonBtn)
 
     jsonBtn.addEventListener('click', async () => {
@@ -1231,46 +1252,15 @@
     })
 
     // Import JSON Button
-    const importBtn = document.createElement('button')
-    importBtn.innerText = tc('📥 导入 JSON', '📥 Import JSON')
-    importBtn.style.padding = '0.5rem 1rem'
-    importBtn.style.cursor = 'pointer'
-    importBtn.style.border = '1px solid #555'
-    importBtn.style.backgroundColor = 'transparent'
-    importBtn.style.color = '#fff'
-    importBtn.style.borderRadius = '4px'
-    importBtn.style.fontSize = '1rem'
+    const importBtn = createEl('button', 'os-btn', tc('📥 导入 JSON', '📥 Import JSON'))
     container.appendChild(importBtn)
 
     // Help icon with tooltip (on the right)
-    const helpIcon = document.createElement('div')
-    helpIcon.style.width = '24px'
-    helpIcon.style.height = '24px'
-    helpIcon.style.borderRadius = '50%'
-    helpIcon.style.backgroundColor = '#555'
-    helpIcon.style.color = '#ccc'
-    helpIcon.style.display = 'flex'
-    helpIcon.style.alignItems = 'center'
-    helpIcon.style.justifyContent = 'center'
-    helpIcon.style.fontSize = '0.9rem'
-    helpIcon.style.fontWeight = 'bold'
-    helpIcon.style.cursor = 'help'
-    helpIcon.style.transition = 'background-color 0.2s, color 0.2s'
-    helpIcon.innerText = '?'
+    const helpIcon = createEl('div', 'os-help', '?')
     helpIcon.title = tc(
       '观看时长数据存储在您的 Stash 服务器上，并在所有设备间同步。使用导出可将数据备份为 JSON 文件，使用导入可恢复数据。',
       'Watch time data is stored on your Stash server and syncs across all devices. Use Export to backup your data to a JSON file and Import to restore it.',
     )
-
-    helpIcon.addEventListener('mouseenter', () => {
-      helpIcon.style.backgroundColor = '#666'
-      helpIcon.style.color = '#fff'
-    })
-    helpIcon.addEventListener('mouseleave', () => {
-      helpIcon.style.backgroundColor = '#555'
-      helpIcon.style.color = '#ccc'
-    })
-
     container.appendChild(helpIcon)
 
     importBtn.addEventListener('click', () => {
@@ -1393,14 +1383,14 @@
       }
     }
 
-    let heading = maxCount.toString()
-    let title = tc('纪录日', 'Record Day')
+    const subEl = createStatCard(row, {
+      icon: '☔',
+      value: maxCount,
+      label: tc('纪录日', 'Record Day'),
+      accent: 'var(--os-purple)',
+    })
     if (bestDay) {
-      title = `${maxCount} ☔`
-    }
-    const headingEl = createStatElement(row, title, heading)
-    if (bestDay) {
-      setHeadingWithDayLink(headingEl, tc('纪录日', 'Record Day'), bestDay)
+      setSubWithDayLink(subEl, tc('于', 'on'), bestDay)
     }
   }
 
@@ -1497,18 +1487,22 @@
 
     let displayStreak
     let streakHeading
+    let streakIcon
     if (isNoNutMode) {
       // No Nut Streak Counter mode
-      displayStreak = `${daysSinceLastO} 🥜`
+      displayStreak = daysSinceLastO
       streakHeading = tc('戒撸天数', 'No Nut Streak')
+      streakIcon = '🥜'
     } else if (streak > 0 && !hasOToday) {
       // Show tombstone if there's a streak but no O today (streak will be lost)
-      displayStreak = streak > 1 ? `${streak} 🪦` : `${streak} 🪦`
+      displayStreak = streak
       streakHeading = tc('连续', 'Streak')
+      streakIcon = '🪦'
     } else {
       // Normal streak mode
-      displayStreak = streak > 1 ? `${streak} 🔥` : streak
+      displayStreak = streak
       streakHeading = tc('连续', 'Streak')
+      streakIcon = '🔥'
     }
 
     // Format tooltip with dates
@@ -1522,7 +1516,20 @@
         `Highest Streak: ${highestStreak} days\n${formatDate(highestStreakStart)}\nto\n${formatDate(highestStreakEnd)}`,
       )
     }
-    createStatElement(row, displayStreak, streakHeading, tooltip)
+    createStatCard(row, {
+      icon: streakIcon,
+      value: displayStreak,
+      label: streakHeading,
+      sub:
+        highestStreak > 0
+          ? tc(
+              `最佳：${highestStreak} 天`,
+              `Best: ${highestStreak} day${highestStreak === 1 ? '' : 's'}`,
+            )
+          : '',
+      accent: 'var(--os-orange)',
+      tooltip,
+    })
   }
 
   // average O per minute of watch time (overall)
@@ -1542,11 +1549,7 @@
     }
 
     Object.values(watchTimeData).forEach((dayData) => {
-      if (typeof dayData === 'object' && 'totalTime' in dayData) {
-        totalWatchTimeSeconds += dayData.totalTime || 0
-      } else {
-        totalWatchTimeSeconds += dayData || 0
-      }
+      totalWatchTimeSeconds += getWatchSeconds(dayData)
     })
 
     // Count total O's only from first watch day onward using cache
@@ -1594,56 +1597,13 @@
       }
     }
 
-    createStatElement(
-      row,
-      `${displayText} ⏱️`,
-      tc('平均分钟/O', 'Average min/O'),
-      tc('平均每次高潮所需分钟数', 'Average minutes to orgasm ratio'),
-    )
-  }
-
-  // longest watched day
-  async function createLongestWatchedDay(row, scenes = null) {
-    const sceneList = scenes || (await getScenesWithPlayHistory())
-    const dayTotals = {}
-
-    // Calculate total watch time per day
-    sceneList.forEach((scene) => {
-      if (scene.play_history && scene.play_history.length > 0) {
-        scene.play_history.forEach((timestamp) => {
-          // Convert UTC timestamp to local timezone
-          const date = new Date(timestamp)
-          const day = getLocalDateString(date) // YYYY-MM-DD format
-
-          if (scene.play_duration && scene.play_duration > 0) {
-            const durationPerPlay =
-              scene.play_duration / scene.play_history.length
-            dayTotals[day] = (dayTotals[day] || 0) + durationPerPlay
-          }
-        })
-      }
+    createStatCard(row, {
+      icon: '⏱️',
+      value: displayText,
+      label: tc('平均分钟/O', 'Average min/O'),
+      sub: tc('平均每次 O 的观看时长', 'Watch time per O'),
+      accent: 'var(--os-pink)',
     })
-
-    let maxDuration = 0
-    let maxDay = null
-
-    Object.keys(dayTotals).forEach((day) => {
-      if (dayTotals[day] > maxDuration) {
-        maxDuration = dayTotals[day]
-        maxDay = day
-      }
-    })
-
-    let title = tc('0分', '0m')
-    let heading = tc('最长记录', 'Record Session')
-    if (maxDay) {
-      const formatted = formatLocalDateShort(maxDay)
-
-      title = formatShortDuration(maxDuration) + ' ⌛'
-      heading = tc(`最长记录：${formatted}`, `Record Session: ${formatted}`)
-    }
-
-    createStatElement(row, title, heading)
   }
 
   // scene with most orgasms
@@ -1660,9 +1620,13 @@
     })
 
     if (maxScene) {
-      createImageStatElement(row, maxScene, maxCount, tc("O 次数最多的场景", "Scene with Most O's"))
-    } else {
-      createStatElement(row, tc('暂无', 'N/A'), tc("O 次数最多的场景", "Scene with Most O's"))
+      createHighlightCard(
+        row,
+        maxScene,
+        tc(`${maxCount} 次 O`, `${maxCount} O's`),
+        tc('最 O 场景', "Most O's"),
+        'var(--os-blue)',
+      )
     }
   }
 
@@ -1692,9 +1656,13 @@
       } else {
         timeStr = tc(`${seconds}秒`, `${seconds}s`)
       }
-      createImageStatElement(row, maxScene, timeStr, tc('最长播放时长', 'Longest Play Duration'))
-    } else {
-      createStatElement(row, tc('暂无', 'N/A'), tc('最长播放时长', 'Longest Play Duration'))
+      createHighlightCard(
+        row,
+        maxScene,
+        timeStr,
+        tc('最长播放时长', 'Longest Played'),
+        'var(--os-green)',
+      )
     }
   }
 
@@ -1725,7 +1693,13 @@
     if (recentScene) {
       const date = new Date(recentTimestamp)
       const timeAgo = formatTimeAgo(date)
-      createImageStatElement(row, recentScene, timeAgo, tc('最近 O', 'Most Recent O'))
+      createHighlightCard(
+        row,
+        recentScene,
+        timeAgo,
+        tc('最近 O', 'Most Recent O'),
+        'var(--os-purple)',
+      )
     }
   }
 
@@ -1757,8 +1731,130 @@
     if (oldestScene) {
       const date = new Date(oldestRecentTimestamp)
       const timeAgo = formatTimeAgo(date)
-      createImageStatElement(row, oldestScene, timeAgo, tc('最早 O', 'Oldest O'))
+      createHighlightCard(
+        row,
+        oldestScene,
+        timeAgo,
+        tc('最早 O', 'Oldest O'),
+        'var(--os-amber)',
+      )
     }
+  }
+
+  // Stash's own numbers from its Stats page, shown in O Stats' All Time
+  // and Library sections instead of Stash's rows
+  async function getLibraryStats() {
+    try {
+      const data = await callGQL({
+        query: `query {
+          stats {
+            scene_count
+            scenes_size
+            scenes_duration
+            image_count
+            images_size
+            gallery_count
+            performer_count
+            studio_count
+            group_count
+            tag_count
+            total_o_count
+            total_play_duration
+            total_play_count
+            scenes_played
+          }
+        }`,
+      })
+      return data.stats
+    } catch (e) {
+      console.warn('[OStats] Failed to load library stats:', e)
+      return null
+    }
+  }
+
+  function createAllTimeStats(grid, stats) {
+    createStatCard(grid, {
+      icon: '💦',
+      value: formatNumber(stats.total_o_count),
+      label: tc("O 总数", "Total O's"),
+      accent: 'var(--os-blue)',
+    })
+    createStatCard(grid, {
+      icon: '▶️',
+      value: formatNumber(stats.total_play_count),
+      label: tc('播放总数', 'Total Plays'),
+      accent: 'var(--os-amber)',
+    })
+    createStatCard(grid, {
+      icon: '🎬',
+      value: formatNumber(stats.scenes_played),
+      label: tc('已播放场景', 'Scenes Played'),
+      sub: tc(
+        `共 ${formatNumber(stats.scene_count)} 个场景`,
+        `of ${formatNumber(stats.scene_count)} scenes`,
+      ),
+      accent: 'var(--os-purple)',
+    })
+    createStatCard(grid, {
+      icon: '🕒',
+      value: formatDuration(stats.total_play_duration),
+      label: tc('总播放时长', 'Total Play Duration'),
+      accent: 'var(--os-green)',
+    })
+  }
+
+  function createLibraryStats(grid, stats) {
+    const tiles = [
+      {
+        icon: '🎞️',
+        value: formatNumber(stats.scene_count),
+        label: tc('场景', 'Scenes'),
+        sub: `${formatBytes(stats.scenes_size)} · ${formatLongDuration(
+          stats.scenes_duration,
+        )}`,
+        href: '/scenes',
+      },
+      {
+        icon: '🖼️',
+        value: formatNumber(stats.image_count),
+        label: tc('图片', 'Images'),
+        sub: formatBytes(stats.images_size),
+        href: '/images',
+      },
+      {
+        icon: '📚',
+        value: formatNumber(stats.gallery_count),
+        label: tc('图库', 'Galleries'),
+        href: '/galleries',
+      },
+      {
+        icon: '👤',
+        value: formatNumber(stats.performer_count),
+        label: tc('演员', 'Performers'),
+        href: '/performers',
+      },
+      {
+        icon: '🏢',
+        value: formatNumber(stats.studio_count),
+        label: tc('工作室', 'Studios'),
+        href: '/studios',
+      },
+      {
+        icon: '🗂️',
+        value: formatNumber(stats.group_count),
+        label: tc('合集', 'Groups'),
+        href: '/groups',
+      },
+      {
+        icon: '🏷️',
+        value: formatNumber(stats.tag_count),
+        label: tc('标签', 'Tags'),
+        href: '/tags',
+      },
+    ]
+    tiles.forEach((tile) =>
+      createStatCard(grid, { ...tile, accent: 'var(--os-gray)' }),
+    )
   }
 
   // helper to format time ago
@@ -1784,954 +1880,261 @@
     }
   }
 
-  // weekly bar chart
-  async function createWeeklyBarChart(row, scenes, oHistoryCache) {
-    // Create chart container
-    const chartContainer = document.createElement('div')
-    chartContainer.style.width = '100%'
-    chartContainer.style.maxWidth = '800px'
-    chartContainer.style.margin = '0 auto'
-    chartContainer.style.padding = '1rem'
-    row.appendChild(chartContainer)
+  // ===== CHARTS =====
+  // One bar chart used by both the O's and watch time graphs. Week and
+  // month views show days (click a day to open it in On This Day); the year
+  // view shows months (click a month to switch to it).
+  function createBarChart(
+    row,
+    { title, accent, dayTotals, formatValue, formatTotal },
+  ) {
+    const card = createEl('div', 'os-card os-chart')
+    card.style.setProperty('--os-accent', accent)
+    row.appendChild(card)
 
-    // Create header with title and buttons
-    const headerContainer = document.createElement('div')
-    headerContainer.style.display = 'flex'
-    headerContainer.style.justifyContent = 'space-between'
-    headerContainer.style.alignItems = 'center'
-    headerContainer.style.marginBottom = '1rem'
-    chartContainer.appendChild(headerContainer)
+    // Header: title and period total on the left, view switcher on the right
+    const head = createEl('div', 'os-chart-head')
+    card.appendChild(head)
+    const titleWrap = createEl('div')
+    titleWrap.appendChild(createEl('h4', 'os-chart-title', title))
+    const totalEl = createEl('div', 'os-chart-total')
+    titleWrap.appendChild(totalEl)
+    head.appendChild(titleWrap)
 
-    const chartTitle = document.createElement('h4')
-    chartTitle.innerText = tc("O 统计", "O'S")
-    chartTitle.style.textAlign = 'center'
-    chartTitle.style.fontSize = '1.2rem'
-    chartTitle.style.margin = '0'
-    headerContainer.appendChild(chartTitle)
+    const switcher = createEl('div', 'os-segmented')
+    head.appendChild(switcher)
+    const viewButtons = {}
+    ;[
+      ['week', tc('本周', 'Week')],
+      ['month', tc('本月', 'Month')],
+      ['year', tc('今年', 'Year')],
+    ].forEach(([view, label]) => {
+      const btn = createEl('button', '', label)
+      btn.type = 'button'
+      btn.addEventListener('click', () => {
+        offset = 0
+        renderChart(view)
+      })
+      switcher.appendChild(btn)
+      viewButtons[view] = btn
+    })
 
-    // Create button container
-    const buttonContainer = document.createElement('div')
-    buttonContainer.style.display = 'flex'
-    buttonContainer.style.gap = '0.5rem'
-    headerContainer.appendChild(buttonContainer)
+    const plot = createEl('div', 'os-chart-plot')
+    card.appendChild(plot)
 
-    // Create view buttons
-    const weekBtn = document.createElement('button')
-    weekBtn.innerText = tc('本周', 'This Week')
-    weekBtn.style.padding = '0.25rem 0.75rem'
-    weekBtn.style.cursor = 'pointer'
-    weekBtn.style.border = '1px solid #007bff'
-    weekBtn.style.backgroundColor = '#007bff'
-    weekBtn.style.color = '#fff'
-    weekBtn.style.borderRadius = '4px'
-    buttonContainer.appendChild(weekBtn)
+    // Footer: previous / period label / next
+    const foot = createEl('div', 'os-chart-foot')
+    const pager = createEl('div', 'os-pager')
+    const prevBtn = createEl('button', 'os-btn os-btn-icon', '‹')
+    prevBtn.title = tc('上一个', 'Previous')
+    const periodLabel = createEl('span', 'os-pager-label')
+    const nextBtn = createEl('button', 'os-btn os-btn-icon', '›')
+    nextBtn.title = tc('下一个', 'Next')
+    pager.append(prevBtn, periodLabel, nextBtn)
+    foot.appendChild(pager)
+    card.appendChild(foot)
 
-    const monthBtn = document.createElement('button')
-    monthBtn.innerText = tc('本月', 'This Month')
-    monthBtn.style.padding = '0.25rem 0.75rem'
-    monthBtn.style.cursor = 'pointer'
-    monthBtn.style.border = '1px solid #555'
-    monthBtn.style.backgroundColor = 'transparent'
-    monthBtn.style.color = '#fff'
-    monthBtn.style.borderRadius = '4px'
-    buttonContainer.appendChild(monthBtn)
+    let currentView = 'week'
+    // 0 = the current week/month/year, -1 = the one before, etc.
+    let offset = 0
 
-    const yearBtn = document.createElement('button')
-    yearBtn.innerText = tc('今年', 'This Year')
-    yearBtn.style.padding = '0.25rem 0.75rem'
-    yearBtn.style.cursor = 'pointer'
-    yearBtn.style.border = '1px solid #555'
-    yearBtn.style.backgroundColor = 'transparent'
-    yearBtn.style.color = '#fff'
-    yearBtn.style.borderRadius = '4px'
-    buttonContainer.appendChild(yearBtn)
+    prevBtn.addEventListener('click', () => {
+      offset--
+      renderChart(currentView)
+    })
+    nextBtn.addEventListener('click', () => {
+      if (offset < 0) {
+        offset++
+        renderChart(currentView)
+      }
+    })
 
-    // Create bars container
-    const barsContainer = document.createElement('div')
-    barsContainer.style.display = 'flex'
-    barsContainer.style.alignItems = 'flex-end'
-    barsContainer.style.justifyContent = 'space-around'
-    barsContainer.style.height = '300px'
-    barsContainer.style.gap = '4px'
-    chartContainer.appendChild(barsContainer)
-
-    // Create week navigation (initially visible)
-    const weekNavContainer = document.createElement('div')
-    weekNavContainer.style.display = 'flex'
-    weekNavContainer.style.justifyContent = 'center'
-    weekNavContainer.style.alignItems = 'center'
-    weekNavContainer.style.gap = '1rem'
-    weekNavContainer.style.marginTop = '0.5rem'
-    chartContainer.appendChild(weekNavContainer)
-
-    const prevWeekBtn = document.createElement('button')
-    prevWeekBtn.innerText = tc('← 上一个', '← Prev')
-    prevWeekBtn.style.padding = '0.25rem 0.75rem'
-    prevWeekBtn.style.cursor = 'pointer'
-    prevWeekBtn.style.border = '1px solid #555'
-    prevWeekBtn.style.backgroundColor = 'transparent'
-    prevWeekBtn.style.color = '#fff'
-    prevWeekBtn.style.borderRadius = '4px'
-    weekNavContainer.appendChild(prevWeekBtn)
-
-    const weekLabel = document.createElement('span')
-    weekLabel.style.fontSize = '1rem'
-    weekLabel.style.fontWeight = 'bold'
-    weekNavContainer.appendChild(weekLabel)
-
-    const nextWeekBtn = document.createElement('button')
-    nextWeekBtn.innerText = tc('下一个 →', 'Next →')
-    nextWeekBtn.style.padding = '0.25rem 0.75rem'
-    nextWeekBtn.style.cursor = 'pointer'
-    nextWeekBtn.style.border = '1px solid #555'
-    nextWeekBtn.style.backgroundColor = 'transparent'
-    nextWeekBtn.style.color = '#fff'
-    nextWeekBtn.style.borderRadius = '4px'
-    weekNavContainer.appendChild(nextWeekBtn)
-
-    // Create month navigation (initially hidden)
-    const monthNavContainer = document.createElement('div')
-    monthNavContainer.style.display = 'none'
-    monthNavContainer.style.justifyContent = 'center'
-    monthNavContainer.style.alignItems = 'center'
-    monthNavContainer.style.gap = '1rem'
-    monthNavContainer.style.marginTop = '0.5rem'
-    chartContainer.appendChild(monthNavContainer)
-
-    const prevMonthBtn = document.createElement('button')
-    prevMonthBtn.innerText = tc('← 上一个', '← Prev')
-    prevMonthBtn.style.padding = '0.25rem 0.75rem'
-    prevMonthBtn.style.cursor = 'pointer'
-    prevMonthBtn.style.border = '1px solid #555'
-    prevMonthBtn.style.backgroundColor = 'transparent'
-    prevMonthBtn.style.color = '#fff'
-    prevMonthBtn.style.borderRadius = '4px'
-    monthNavContainer.appendChild(prevMonthBtn)
-
-    const monthLabel = document.createElement('span')
-    monthLabel.style.fontSize = '1rem'
-    monthLabel.style.fontWeight = 'bold'
-    monthNavContainer.appendChild(monthLabel)
-
-    const nextMonthBtn = document.createElement('button')
-    nextMonthBtn.innerText = tc('下一个 →', 'Next →')
-    nextMonthBtn.style.padding = '0.25rem 0.75rem'
-    nextMonthBtn.style.cursor = 'pointer'
-    nextMonthBtn.style.border = '1px solid #555'
-    nextMonthBtn.style.backgroundColor = 'transparent'
-    nextMonthBtn.style.color = '#fff'
-    nextMonthBtn.style.borderRadius = '4px'
-    monthNavContainer.appendChild(nextMonthBtn)
-
-    // Create year navigation (initially hidden)
-    const yearNavContainer = document.createElement('div')
-    yearNavContainer.style.display = 'none'
-    yearNavContainer.style.justifyContent = 'center'
-    yearNavContainer.style.alignItems = 'center'
-    yearNavContainer.style.gap = '1rem'
-    yearNavContainer.style.marginTop = '0.5rem'
-    chartContainer.appendChild(yearNavContainer)
-
-    const prevYearBtn = document.createElement('button')
-    prevYearBtn.innerText = tc('← 上一个', '\u2190 Prev')
-    prevYearBtn.style.padding = '0.25rem 0.75rem'
-    prevYearBtn.style.cursor = 'pointer'
-    prevYearBtn.style.border = '1px solid #555'
-    prevYearBtn.style.backgroundColor = 'transparent'
-    prevYearBtn.style.color = '#fff'
-    prevYearBtn.style.borderRadius = '4px'
-    yearNavContainer.appendChild(prevYearBtn)
-
-    const yearLabel = document.createElement('span')
-    yearLabel.style.fontSize = '1rem'
-    yearLabel.style.fontWeight = 'bold'
-    yearNavContainer.appendChild(yearLabel)
-
-    const nextYearBtn = document.createElement('button')
-    nextYearBtn.innerText = tc('下一个 →', 'Next \u2192')
-    nextYearBtn.style.padding = '0.25rem 0.75rem'
-    nextYearBtn.style.cursor = 'pointer'
-    nextYearBtn.style.border = '1px solid #555'
-    nextYearBtn.style.backgroundColor = 'transparent'
-    nextYearBtn.style.color = '#fff'
-    nextYearBtn.style.borderRadius = '4px'
-    yearNavContainer.appendChild(nextYearBtn)
-
-    // Track selected week (0 = current week, -1 = prev week, etc.)
-    let selectedWeekOffset = 0
-    // Track selected month (0 = current month, -1 = prev month, etc.)
-    let selectedMonthOffset = 0
-    // Track selected year (0 = current year, -1 = prev year, etc.)
-    let selectedYearOffset = 0
-
-    // Function to render chart
-    function renderChart(view) {
-      // Update button styles
-      weekBtn.style.backgroundColor =
-        view === 'week' ? '#007bff' : 'transparent'
-      weekBtn.style.border =
-        view === 'week' ? '1px solid #007bff' : '1px solid #555'
-      monthBtn.style.backgroundColor =
-        view === 'month' ? '#007bff' : 'transparent'
-      monthBtn.style.border =
-        view === 'month' ? '1px solid #007bff' : '1px solid #555'
-      yearBtn.style.backgroundColor =
-        view === 'year' ? '#007bff' : 'transparent'
-      yearBtn.style.border =
-        view === 'year' ? '1px solid #007bff' : '1px solid #555'
-
-      // Show/hide week, month and year navigation
-      weekNavContainer.style.display = view === 'week' ? 'flex' : 'none'
-      monthNavContainer.style.display = view === 'month' ? 'flex' : 'none'
-      yearNavContainer.style.display = view === 'year' ? 'flex' : 'none'
-
-      // Use pre-processed day totals
-      const dayTotals = oHistoryCache.dayTotals
-
+    function getPeriodData(view) {
       const now = new Date()
-      let data = []
+      const todayStr = getLocalDateString(now)
+      const data = []
+      let label = ''
+      let totalText = ''
 
       if (view === 'week') {
-        // Get Monday of selected week (current week + offset)
-        const dayOfWeek = now.getDay()
-        const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek // Adjust to Monday
-        const monday = new Date(now)
-        monday.setDate(now.getDate() + diff + selectedWeekOffset * 7)
-        monday.setHours(0, 0, 0, 0)
-
-        // Update week label
-        const sunday = new Date(monday)
-        sunday.setDate(monday.getDate() + 6)
-        const mondayStr = monday.toLocaleDateString(fmtDateLocale(), {
-          month: 'short',
-          day: 'numeric',
-        })
-        const sundayStr = sunday.toLocaleDateString(fmtDateLocale(), {
-          month: 'short',
-          day: 'numeric',
-        })
-        weekLabel.innerText = `${mondayStr} - ${sundayStr}`
-
-        // Disable next button if viewing current week
-        nextWeekBtn.disabled = selectedWeekOffset >= 0
-        nextWeekBtn.style.opacity = selectedWeekOffset >= 0 ? '0.5' : '1'
-        nextWeekBtn.style.cursor =
-          selectedWeekOffset >= 0 ? 'not-allowed' : 'pointer'
-
-        for (let i = 0; i < 7; i++) {
-          const date = new Date(monday)
-          date.setDate(monday.getDate() + i)
-          const dayStr = getLocalDateString(date)
-          const weekday = date.toLocaleDateString(fmtDateLocale(), { weekday: 'short' })
-          const dayNum = date.getDate()
-          data.push({
-            date: dayStr,
-            count: dayTotals[dayStr] || 0,
-            label: `${weekday} ${dayNum}`,
-          })
-        }
-      } else if (view === 'month') {
-        // Current month (with offset) - from day 1 to last day
-        const targetDate = new Date(
-          now.getFullYear(),
-          now.getMonth() + selectedMonthOffset,
-          1,
-        )
-        const firstDay = new Date(
-          targetDate.getFullYear(),
-          targetDate.getMonth(),
-          1,
-        )
-        const lastDay = new Date(
-          targetDate.getFullYear(),
-          targetDate.getMonth() + 1,
-          0,
-        )
-        const daysInMonth = lastDay.getDate()
-
-        // Update month label and button states
-        monthLabel.innerText = targetDate.toLocaleDateString(fmtDateLocale(), {
-          month: 'long',
-          year: 'numeric',
-        })
-        nextMonthBtn.disabled = selectedMonthOffset >= 0
-        nextMonthBtn.style.opacity = selectedMonthOffset >= 0 ? '0.5' : '1'
-        nextMonthBtn.style.cursor =
-          selectedMonthOffset >= 0 ? 'not-allowed' : 'pointer'
-
-        for (let i = 1; i <= daysInMonth; i++) {
-          const date = new Date(
-            targetDate.getFullYear(),
-            targetDate.getMonth(),
-            i,
-          )
-          const dayStr = getLocalDateString(date)
-          data.push({
-            date: dayStr,
-            count: dayTotals[dayStr] || 0,
-            label: i.toString(),
-          })
-        }
-      } else if (view === 'year') {
-        // Get month totals for selected year
-        const targetYear = now.getFullYear() + selectedYearOffset
-        const monthTotals = {}
-        Object.keys(dayTotals).forEach((dayStr) => {
-          const date = new Date(dayStr)
-          if (date.getFullYear() === targetYear) {
-            const month = date.getMonth()
-            monthTotals[month] = (monthTotals[month] || 0) + dayTotals[dayStr]
-          }
-        })
-
-        // Update year label and button states
-        yearLabel.innerText = targetYear.toString()
-        nextYearBtn.disabled = selectedYearOffset >= 0
-        nextYearBtn.style.opacity = selectedYearOffset >= 0 ? '0.5' : '1'
-        nextYearBtn.style.cursor =
-          selectedYearOffset >= 0 ? 'not-allowed' : 'pointer'
-
-        const monthNames = [
-          tc('1月', 'Jan'),
-          tc('2月', 'Feb'),
-          tc('3月', 'Mar'),
-          tc('4月', 'Apr'),
-          tc('5月', 'May'),
-          tc('6月', 'Jun'),
-          tc('7月', 'Jul'),
-          tc('8月', 'Aug'),
-          tc('9月', 'Sep'),
-          tc('10月', 'Oct'),
-          tc('11月', 'Nov'),
-          tc('12月', 'Dec'),
-        ]
-        for (let i = 0; i < 12; i++) {
-          data.push({
-            date: `${targetYear}-${i}`,
-            count: monthTotals[i] || 0,
-            label: monthNames[i],
-          })
-        }
-      }
-
-      const nonZeroCounts = data.filter((d) => d.count > 0).map((d) => d.count)
-      const maxCount = nonZeroCounts.length > 0 ? Math.max(...nonZeroCounts) : 1
-
-      // Clear and render bars
-      barsContainer.innerHTML = ''
-      data.forEach((item) => {
-        const barWrapper = document.createElement('div')
-        barWrapper.style.flex = '1'
-        barWrapper.style.display = 'flex'
-        barWrapper.style.flexDirection = 'column'
-        barWrapper.style.alignItems = 'center'
-        barWrapper.style.height = '100%'
-        barWrapper.style.justifyContent = 'flex-end'
-        barsContainer.appendChild(barWrapper)
-
-        const barContainer = document.createElement('div')
-        barContainer.style.width = '100%'
-        barContainer.style.display = 'flex'
-        barContainer.style.flexDirection = 'column'
-        barContainer.style.alignItems = 'center'
-        barContainer.style.justifyContent = 'flex-end'
-        barContainer.style.flex = '1'
-        barWrapper.appendChild(barContainer)
-
-        const bar = document.createElement('div')
-        const height = item.count > 0 ? (item.count / maxCount) * 100 : 0
-        bar.style.width = '100%'
-        bar.style.height = `${height}%`
-        bar.style.backgroundColor = '#007bff'
-        bar.style.borderRadius = '4px 4px 0 0'
-        bar.style.minHeight = item.count > 0 ? '4px' : '0'
-        bar.style.position = 'relative'
-        bar.style.cursor = item.count > 0 ? 'pointer' : 'default'
-        bar.style.transition = 'opacity 0.2s'
-        barContainer.appendChild(bar)
-
-        if (item.count > 0) {
-          bar.addEventListener('mouseenter', () => {
-            bar.style.opacity = '0.7'
-          })
-          bar.addEventListener('mouseleave', () => {
-            bar.style.opacity = '1'
-          })
-          bar.addEventListener('click', () => {
-            if (view === 'year') {
-              // Switch to the month view for the clicked month
-              const [year, month] = item.date.split('-').map(Number)
-              selectedMonthOffset =
-                (year - now.getFullYear()) * 12 + (month - now.getMonth())
-              renderChart('month')
-            } else {
-              openDayInOnThisDay(item.date)
-            }
-          })
-        }
-
-        // Update cursor if no data
-        if (item.count === 0) {
-          bar.style.cursor = 'default'
-        }
-
-        const countLabel = document.createElement('div')
-        countLabel.innerText = item.count
-        countLabel.style.fontSize = '0.9rem'
-        countLabel.style.fontWeight = 'bold'
-        countLabel.style.marginBottom = '4px'
-        countLabel.style.color = '#fff'
-        countLabel.style.visibility = item.count === 0 ? 'hidden' : 'visible'
-        barContainer.insertBefore(countLabel, bar)
-
-        const dayLabel = document.createElement('div')
-        dayLabel.innerText = item.label
-        dayLabel.style.fontSize = '0.85rem'
-        dayLabel.style.marginTop = '8px'
-        dayLabel.style.textAlign = 'center'
-        barWrapper.appendChild(dayLabel)
-      })
-    }
-
-    // Add button click handlers
-    weekBtn.addEventListener('click', async () => {
-      selectedWeekOffset = 0
-      selectedMonthOffset = 0
-      selectedYearOffset = 0
-      await renderChart('week')
-    })
-    monthBtn.addEventListener('click', async () => {
-      selectedWeekOffset = 0
-      selectedMonthOffset = 0
-      selectedYearOffset = 0
-      await renderChart('month')
-    })
-    yearBtn.addEventListener('click', async () => {
-      selectedWeekOffset = 0
-      selectedMonthOffset = 0
-      selectedYearOffset = 0
-      await renderChart('year')
-    })
-
-    prevWeekBtn.addEventListener('click', async () => {
-      selectedWeekOffset--
-      await renderChart('week')
-    })
-
-    nextWeekBtn.addEventListener('click', async () => {
-      if (selectedWeekOffset < 0) {
-        selectedWeekOffset++
-        await renderChart('week')
-      }
-    })
-
-    prevMonthBtn.addEventListener('click', async () => {
-      selectedMonthOffset--
-      await renderChart('month')
-    })
-
-    nextMonthBtn.addEventListener('click', async () => {
-      if (selectedMonthOffset < 0) {
-        selectedMonthOffset++
-        await renderChart('month')
-      }
-    })
-
-    prevYearBtn.addEventListener('click', async () => {
-      selectedYearOffset--
-      await renderChart('year')
-    })
-
-    nextYearBtn.addEventListener('click', async () => {
-      if (selectedYearOffset < 0) {
-        selectedYearOffset++
-        await renderChart('year')
-      }
-    })
-
-    // Initial render
-    await renderChart('week')
-  }
-
-  // Watch Time Bar Chart
-  async function createWatchTimeBarChart(row, watchTimeData) {
-    // Create chart container
-    const chartContainer = document.createElement('div')
-    chartContainer.style.width = '100%'
-    chartContainer.style.maxWidth = '800px'
-    chartContainer.style.margin = '0 auto'
-    chartContainer.style.padding = '1rem'
-    row.appendChild(chartContainer)
-
-    // Create header with title and buttons
-    const headerContainer = document.createElement('div')
-    headerContainer.style.display = 'flex'
-    headerContainer.style.justifyContent = 'space-between'
-    headerContainer.style.alignItems = 'center'
-    headerContainer.style.marginBottom = '1rem'
-    chartContainer.appendChild(headerContainer)
-
-    const chartTitle = document.createElement('h4')
-    chartTitle.innerText = tc('观看时长', 'WATCH TIME')
-    chartTitle.style.textAlign = 'center'
-    chartTitle.style.fontSize = '1.2rem'
-    chartTitle.style.margin = '0'
-    headerContainer.appendChild(chartTitle)
-
-    // Create button container
-    const buttonContainer = document.createElement('div')
-    buttonContainer.style.display = 'flex'
-    buttonContainer.style.gap = '0.5rem'
-    headerContainer.appendChild(buttonContainer)
-
-    // Create view buttons
-    const weekBtn = document.createElement('button')
-    weekBtn.innerText = tc('本周', 'This Week')
-    weekBtn.style.padding = '0.25rem 0.75rem'
-    weekBtn.style.cursor = 'pointer'
-    weekBtn.style.border = '1px solid #28a745'
-    weekBtn.style.backgroundColor = '#28a745'
-    weekBtn.style.color = '#fff'
-    weekBtn.style.borderRadius = '4px'
-    buttonContainer.appendChild(weekBtn)
-
-    const monthBtn = document.createElement('button')
-    monthBtn.innerText = tc('本月', 'This Month')
-    monthBtn.style.padding = '0.25rem 0.75rem'
-    monthBtn.style.cursor = 'pointer'
-    monthBtn.style.border = '1px solid #555'
-    monthBtn.style.backgroundColor = 'transparent'
-    monthBtn.style.color = '#fff'
-    monthBtn.style.borderRadius = '4px'
-    buttonContainer.appendChild(monthBtn)
-
-    const yearBtn = document.createElement('button')
-    yearBtn.innerText = tc('今年', 'This Year')
-    yearBtn.style.padding = '0.25rem 0.75rem'
-    yearBtn.style.cursor = 'pointer'
-    yearBtn.style.border = '1px solid #555'
-    yearBtn.style.backgroundColor = 'transparent'
-    yearBtn.style.color = '#fff'
-    yearBtn.style.borderRadius = '4px'
-    buttonContainer.appendChild(yearBtn)
-
-    // Create bars container
-    const barsContainer = document.createElement('div')
-    barsContainer.style.display = 'flex'
-    barsContainer.style.alignItems = 'flex-end'
-    barsContainer.style.justifyContent = 'space-around'
-    barsContainer.style.height = '300px'
-    barsContainer.style.gap = '4px'
-    chartContainer.appendChild(barsContainer)
-
-    // Create week navigation (initially visible)
-    const weekNavContainer = document.createElement('div')
-    weekNavContainer.style.display = 'flex'
-    weekNavContainer.style.justifyContent = 'center'
-    weekNavContainer.style.alignItems = 'center'
-    weekNavContainer.style.gap = '1rem'
-    weekNavContainer.style.marginTop = '0.5rem'
-    chartContainer.appendChild(weekNavContainer)
-
-    const prevWeekBtn = document.createElement('button')
-    prevWeekBtn.innerText = tc('← 上一个', '\u2190 Prev')
-    prevWeekBtn.style.padding = '0.25rem 0.75rem'
-    prevWeekBtn.style.cursor = 'pointer'
-    prevWeekBtn.style.border = '1px solid #555'
-    prevWeekBtn.style.backgroundColor = 'transparent'
-    prevWeekBtn.style.color = '#fff'
-    prevWeekBtn.style.borderRadius = '4px'
-    weekNavContainer.appendChild(prevWeekBtn)
-
-    const weekLabel = document.createElement('span')
-    weekLabel.style.fontSize = '1rem'
-    weekLabel.style.fontWeight = 'bold'
-    weekNavContainer.appendChild(weekLabel)
-
-    const nextWeekBtn = document.createElement('button')
-    nextWeekBtn.innerText = tc('下一个 →', 'Next \u2192')
-    nextWeekBtn.style.padding = '0.25rem 0.75rem'
-    nextWeekBtn.style.cursor = 'pointer'
-    nextWeekBtn.style.border = '1px solid #555'
-    nextWeekBtn.style.backgroundColor = 'transparent'
-    nextWeekBtn.style.color = '#fff'
-    nextWeekBtn.style.borderRadius = '4px'
-    weekNavContainer.appendChild(nextWeekBtn)
-
-    // Create month navigation (initially hidden)
-    const monthNavContainer = document.createElement('div')
-    monthNavContainer.style.display = 'none'
-    monthNavContainer.style.justifyContent = 'center'
-    monthNavContainer.style.alignItems = 'center'
-    monthNavContainer.style.gap = '1rem'
-    monthNavContainer.style.marginTop = '0.5rem'
-    chartContainer.appendChild(monthNavContainer)
-
-    const prevMonthBtn = document.createElement('button')
-    prevMonthBtn.innerText = tc('← 上一个', '\u2190 Prev')
-    prevMonthBtn.style.padding = '0.25rem 0.75rem'
-    prevMonthBtn.style.cursor = 'pointer'
-    prevMonthBtn.style.border = '1px solid #555'
-    prevMonthBtn.style.backgroundColor = 'transparent'
-    prevMonthBtn.style.color = '#fff'
-    prevMonthBtn.style.borderRadius = '4px'
-    monthNavContainer.appendChild(prevMonthBtn)
-
-    const monthLabel = document.createElement('span')
-    monthLabel.style.fontSize = '1rem'
-    monthLabel.style.fontWeight = 'bold'
-    monthNavContainer.appendChild(monthLabel)
-
-    const nextMonthBtn = document.createElement('button')
-    nextMonthBtn.innerText = tc('下一个 →', 'Next \u2192')
-    nextMonthBtn.style.padding = '0.25rem 0.75rem'
-    nextMonthBtn.style.cursor = 'pointer'
-    nextMonthBtn.style.border = '1px solid #555'
-    nextMonthBtn.style.backgroundColor = 'transparent'
-    nextMonthBtn.style.color = '#fff'
-    nextMonthBtn.style.borderRadius = '4px'
-    monthNavContainer.appendChild(nextMonthBtn)
-
-    // Create year navigation (initially hidden)
-    const yearNavContainer = document.createElement('div')
-    yearNavContainer.style.display = 'none'
-    yearNavContainer.style.justifyContent = 'center'
-    yearNavContainer.style.alignItems = 'center'
-    yearNavContainer.style.gap = '1rem'
-    yearNavContainer.style.marginTop = '0.5rem'
-    chartContainer.appendChild(yearNavContainer)
-
-    const prevYearBtn = document.createElement('button')
-    prevYearBtn.innerText = tc('← 上一个', '\u2190 Prev')
-    prevYearBtn.style.padding = '0.25rem 0.75rem'
-    prevYearBtn.style.cursor = 'pointer'
-    prevYearBtn.style.border = '1px solid #555'
-    prevYearBtn.style.backgroundColor = 'transparent'
-    prevYearBtn.style.color = '#fff'
-    prevYearBtn.style.borderRadius = '4px'
-    yearNavContainer.appendChild(prevYearBtn)
-
-    const yearLabel = document.createElement('span')
-    yearLabel.style.fontSize = '1rem'
-    yearLabel.style.fontWeight = 'bold'
-    yearNavContainer.appendChild(yearLabel)
-
-    const nextYearBtn = document.createElement('button')
-    nextYearBtn.innerText = tc('下一个 →', 'Next \u2192')
-    nextYearBtn.style.padding = '0.25rem 0.75rem'
-    nextYearBtn.style.cursor = 'pointer'
-    nextYearBtn.style.border = '1px solid #555'
-    nextYearBtn.style.backgroundColor = 'transparent'
-    nextYearBtn.style.color = '#fff'
-    nextYearBtn.style.borderRadius = '4px'
-    yearNavContainer.appendChild(nextYearBtn)
-
-    // Track selected week/month/year offsets
-    let selectedWeekOffset = 0
-    let selectedMonthOffset = 0
-    let selectedYearOffset = 0
-
-    // Duration formatting is localized via formatShortDuration
-
-    // Function to render chart
-    async function renderChart(view) {
-      // Update button styles
-      weekBtn.style.backgroundColor =
-        view === 'week' ? '#28a745' : 'transparent'
-      weekBtn.style.border =
-        view === 'week' ? '1px solid #28a745' : '1px solid #555'
-      monthBtn.style.backgroundColor =
-        view === 'month' ? '#28a745' : 'transparent'
-      monthBtn.style.border =
-        view === 'month' ? '1px solid #28a745' : '1px solid #555'
-      yearBtn.style.backgroundColor =
-        view === 'year' ? '#28a745' : 'transparent'
-      yearBtn.style.border =
-        view === 'year' ? '1px solid #28a745' : '1px solid #555'
-
-      // Show/hide week, month and year navigation
-      weekNavContainer.style.display = view === 'week' ? 'flex' : 'none'
-      monthNavContainer.style.display = view === 'month' ? 'flex' : 'none'
-      yearNavContainer.style.display = view === 'year' ? 'flex' : 'none'
-
-      // Get watch time data from our tracking system
-      // Convert to day totals, handling migration from old format
-      const dayTotals = {}
-      Object.keys(watchTimeData).forEach((day) => {
-        const dayData = watchTimeData[day]
-        if (typeof dayData === 'object' && 'totalTime' in dayData) {
-          // Migrate old format
-          dayTotals[day] = dayData.totalTime || 0
-        } else {
-          dayTotals[day] = dayData || 0
-        }
-      })
-
-      const now = new Date()
-      let data = []
-
-      if (view === 'week') {
-        // Get Monday of selected week
+        // Monday of the selected week
         const dayOfWeek = now.getDay()
         const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
         const monday = new Date(now)
-        monday.setDate(now.getDate() + diff + selectedWeekOffset * 7)
+        monday.setDate(now.getDate() + diff + offset * 7)
         monday.setHours(0, 0, 0, 0)
-
-        // Update week label
         const sunday = new Date(monday)
         sunday.setDate(monday.getDate() + 6)
-        const mondayStr = monday.toLocaleDateString(fmtDateLocale(), {
-          month: 'short',
-          day: 'numeric',
-        })
-        const sundayStr = sunday.toLocaleDateString(fmtDateLocale(), {
-          month: 'short',
-          day: 'numeric',
-        })
-        weekLabel.innerText = `${mondayStr} - ${sundayStr}`
-
-        // Disable next button if viewing current week
-        nextWeekBtn.disabled = selectedWeekOffset >= 0
-        nextWeekBtn.style.opacity = selectedWeekOffset >= 0 ? '0.5' : '1'
-        nextWeekBtn.style.cursor =
-          selectedWeekOffset >= 0 ? 'not-allowed' : 'pointer'
+        const short = { month: 'short', day: 'numeric' }
+        label = `${monday.toLocaleDateString(fmtDateLocale(), short)} – ${sunday.toLocaleDateString(fmtDateLocale(), short)}`
+        totalText =
+          offset === 0 ? tc('（本周）', 'this week') : tc(`（${label}）`, `for ${label}`)
 
         for (let i = 0; i < 7; i++) {
           const date = new Date(monday)
           date.setDate(monday.getDate() + i)
           const dayStr = getLocalDateString(date)
-          const weekday = date.toLocaleDateString(fmtDateLocale(), { weekday: 'short' })
-          const dayNum = date.getDate()
           data.push({
-            date: dayStr,
-            duration: dayTotals[dayStr] || 0,
-            label: `${weekday} ${dayNum}`,
+            key: dayStr,
+            value: dayTotals[dayStr] || 0,
+            label: `${date.toLocaleDateString(fmtDateLocale(), { weekday: 'short' })} ${date.getDate()}`,
+            isCurrent: dayStr === todayStr,
           })
         }
       } else if (view === 'month') {
-        // Current month with offset
-        const targetDate = new Date(
-          now.getFullYear(),
-          now.getMonth() + selectedMonthOffset,
-          1,
-        )
+        const target = new Date(now.getFullYear(), now.getMonth() + offset, 1)
         const daysInMonth = new Date(
-          targetDate.getFullYear(),
-          targetDate.getMonth() + 1,
+          target.getFullYear(),
+          target.getMonth() + 1,
           0,
         ).getDate()
-
-        // Update month label
-        monthLabel.innerText = targetDate.toLocaleDateString(fmtDateLocale(), {
+        label = target.toLocaleDateString(fmtDateLocale(), {
           month: 'long',
           year: 'numeric',
         })
-        nextMonthBtn.disabled = selectedMonthOffset >= 0
-        nextMonthBtn.style.opacity = selectedMonthOffset >= 0 ? '0.5' : '1'
-        nextMonthBtn.style.cursor =
-          selectedMonthOffset >= 0 ? 'not-allowed' : 'pointer'
+        totalText =
+          offset === 0 ? tc('（本月）', 'this month') : tc(`（${label}）`, `in ${label}`)
 
         for (let i = 1; i <= daysInMonth; i++) {
-          const date = new Date(
-            targetDate.getFullYear(),
-            targetDate.getMonth(),
-            i,
+          const dayStr = getLocalDateString(
+            new Date(target.getFullYear(), target.getMonth(), i),
           )
-          const dayStr = getLocalDateString(date)
           data.push({
-            date: dayStr,
-            duration: dayTotals[dayStr] || 0,
-            label: i.toString(),
+            key: dayStr,
+            value: dayTotals[dayStr] || 0,
+            label: String(i),
+            isCurrent: dayStr === todayStr,
           })
         }
-      } else if (view === 'year') {
-        // Get month totals for selected year
-        const targetYear = now.getFullYear() + selectedYearOffset
-        const monthTotals = {}
+      } else {
+        const targetYear = now.getFullYear() + offset
+        const monthTotals = new Array(12).fill(0)
         Object.keys(dayTotals).forEach((dayStr) => {
-          const date = new Date(dayStr)
+          const date = parseLocalDate(dayStr)
           if (date.getFullYear() === targetYear) {
-            const month = date.getMonth()
-            monthTotals[month] = (monthTotals[month] || 0) + dayTotals[dayStr]
+            monthTotals[date.getMonth()] += dayTotals[dayStr]
           }
         })
+        label = String(targetYear)
+        totalText =
+          offset === 0 ? tc('（今年）', 'this year') : tc(`（${label}）`, `in ${label}`)
 
-        // Update year label
-        yearLabel.innerText = targetYear.toString()
-        nextYearBtn.disabled = selectedYearOffset >= 0
-        nextYearBtn.style.opacity = selectedYearOffset >= 0 ? '0.5' : '1'
-        nextYearBtn.style.cursor =
-          selectedYearOffset >= 0 ? 'not-allowed' : 'pointer'
-
-        const monthNames = [
-          tc('1月', 'Jan'),
-          tc('2月', 'Feb'),
-          tc('3月', 'Mar'),
-          tc('4月', 'Apr'),
-          tc('5月', 'May'),
-          tc('6月', 'Jun'),
-          tc('7月', 'Jul'),
-          tc('8月', 'Aug'),
-          tc('9月', 'Sep'),
-          tc('10月', 'Oct'),
-          tc('11月', 'Nov'),
-          tc('12月', 'Dec'),
-        ]
         for (let i = 0; i < 12; i++) {
           data.push({
-            date: `${targetYear}-${i}`,
-            duration: monthTotals[i] || 0,
-            label: monthNames[i],
+            key: `${targetYear}-${i}`,
+            month: i,
+            year: targetYear,
+            value: monthTotals[i],
+            label: new Date(targetYear, i, 1).toLocaleDateString(fmtDateLocale(), {
+              month: 'short',
+            }),
+            isCurrent: offset === 0 && i === now.getMonth(),
           })
         }
       }
 
-      const nonZeroDurations = data
-        .filter((d) => d.duration > 0)
-        .map((d) => d.duration)
-      const maxDuration =
-        nonZeroDurations.length > 0 ? Math.max(...nonZeroDurations) : 1
+      return { data, label, totalText }
+    }
 
-      // Clear and render bars
-      barsContainer.innerHTML = ''
+    function renderChart(view) {
+      currentView = view
+      Object.keys(viewButtons).forEach((key) => {
+        viewButtons[key].classList.toggle('is-active', key === view)
+      })
+
+      const { data, label, totalText } = getPeriodData(view)
+      periodLabel.innerText = label
+      nextBtn.disabled = offset >= 0
+
+      const total = data.reduce((sum, item) => sum + item.value, 0)
+      totalEl.innerHTML = ''
+      const strong = createEl('strong', '', formatTotal(total))
+      totalEl.append(strong, ` ${totalText}`)
+
+      const maxValue = Math.max(1, ...data.map((item) => item.value))
+
+      plot.innerHTML = ''
+      plot.classList.toggle('is-dense', data.length > 12)
+
+      const grid = createEl('div', 'os-chart-grid')
+      for (let i = 0; i < 4; i++) grid.appendChild(createEl('span'))
+      plot.appendChild(grid)
+
       data.forEach((item) => {
-        const barWrapper = document.createElement('div')
-        barWrapper.style.flex = '1'
-        barWrapper.style.display = 'flex'
-        barWrapper.style.flexDirection = 'column'
-        barWrapper.style.alignItems = 'center'
-        barWrapper.style.height = '100%'
-        barWrapper.style.justifyContent = 'flex-end'
-        barsContainer.appendChild(barWrapper)
+        const col = createEl('div', 'os-chart-col')
+        if (item.isCurrent) col.classList.add('is-current')
+        plot.appendChild(col)
 
-        const barContainer = document.createElement('div')
-        barContainer.style.width = '100%'
-        barContainer.style.display = 'flex'
-        barContainer.style.flexDirection = 'column'
-        barContainer.style.alignItems = 'center'
-        barContainer.style.justifyContent = 'flex-end'
-        barContainer.style.flex = '1'
-        barWrapper.appendChild(barContainer)
+        const barArea = createEl('div', 'os-chart-bar-area')
+        col.appendChild(barArea)
 
-        const bar = document.createElement('div')
-        const height =
-          item.duration > 0 ? (item.duration / maxDuration) * 100 : 0
-        bar.style.width = '100%'
-        bar.style.height = `${height}%`
-        bar.style.backgroundColor = '#28a745'
-        bar.style.borderRadius = '4px 4px 0 0'
-        bar.style.minHeight = item.duration > 0 ? '4px' : '0'
-        bar.style.position = 'relative'
-        bar.style.cursor = item.duration > 0 ? 'pointer' : 'default'
-        bar.style.transition = 'opacity 0.2s'
-        barContainer.appendChild(bar)
+        if (item.value > 0) {
+          barArea.appendChild(
+            createEl('div', 'os-chart-value', formatValue(item.value)),
+          )
+        }
+        const bar = createEl('div', 'os-chart-bar')
+        bar.style.height = `${(item.value / maxValue) * 100}%`
+        bar.style.minHeight = item.value > 0 ? '4px' : '0'
+        barArea.appendChild(bar)
 
-        if (item.duration > 0) {
-          bar.addEventListener('mouseenter', () => {
-            bar.style.opacity = '0.7'
-          })
-          bar.addEventListener('mouseleave', () => {
-            bar.style.opacity = '1'
-          })
-          bar.addEventListener('click', () => {
-            if (view === 'year') {
+        col.appendChild(createEl('div', 'os-chart-label', item.label))
+
+        if (item.value > 0) {
+          col.classList.add('is-clickable')
+          if (view === 'year') {
+            bar.title = tc(
+              `查看 ${item.label} ${item.year}`,
+              `Show ${item.label} ${item.year}`,
+            )
+            bar.addEventListener('click', () => {
               // Switch to the month view for the clicked month
-              const [year, month] = item.date.split('-').map(Number)
-              selectedMonthOffset =
-                (year - now.getFullYear()) * 12 + (month - now.getMonth())
+              const now = new Date()
+              offset =
+                (item.year - now.getFullYear()) * 12 +
+                (item.month - now.getMonth())
               renderChart('month')
-            } else {
-              openDayInOnThisDay(item.date)
-            }
-          })
+            })
+          } else {
+            bar.title = tc('在「当日回顾」中打开', 'Open in On This Day')
+            bar.addEventListener('click', () => openDayInOnThisDay(item.key))
+          }
         }
-
-        // Update cursor if no data
-        if (item.duration === 0) {
-          bar.style.cursor = 'default'
-        }
-
-        const durationLabel = document.createElement('div')
-        durationLabel.innerText = formatShortDuration(item.duration)
-        durationLabel.style.fontSize = '0.85rem'
-        durationLabel.style.fontWeight = 'bold'
-        durationLabel.style.marginBottom = '4px'
-        durationLabel.style.color = '#fff'
-        durationLabel.style.visibility =
-          item.duration === 0 ? 'hidden' : 'visible'
-        barContainer.insertBefore(durationLabel, bar)
-
-        const dayLabel = document.createElement('div')
-        dayLabel.innerText = item.label
-        dayLabel.style.fontSize = '0.85rem'
-        dayLabel.style.marginTop = '8px'
-        dayLabel.style.textAlign = 'center'
-        barWrapper.appendChild(dayLabel)
       })
     }
 
-    // Add button click handlers
-    weekBtn.addEventListener('click', () => {
-      selectedWeekOffset = 0
-      selectedMonthOffset = 0
-      selectedYearOffset = 0
-      renderChart('week')
-    })
-    monthBtn.addEventListener('click', () => {
-      selectedWeekOffset = 0
-      selectedMonthOffset = 0
-      selectedYearOffset = 0
-      renderChart('month')
-    })
-    yearBtn.addEventListener('click', () => {
-      selectedWeekOffset = 0
-      selectedMonthOffset = 0
-      selectedYearOffset = 0
-      renderChart('year')
-    })
-
-    prevWeekBtn.addEventListener('click', () => {
-      selectedWeekOffset--
-      renderChart('week')
-    })
-
-    nextWeekBtn.addEventListener('click', () => {
-      if (selectedWeekOffset < 0) {
-        selectedWeekOffset++
-        renderChart('week')
-      }
-    })
-
-    prevMonthBtn.addEventListener('click', () => {
-      selectedMonthOffset--
-      renderChart('month')
-    })
-
-    nextMonthBtn.addEventListener('click', () => {
-      if (selectedMonthOffset < 0) {
-        selectedMonthOffset++
-        renderChart('month')
-      }
-    })
-
-    prevYearBtn.addEventListener('click', async () => {
-      selectedYearOffset--
-      await renderChart('year')
-    })
-
-    nextYearBtn.addEventListener('click', async () => {
-      if (selectedYearOffset < 0) {
-        selectedYearOffset++
-        await renderChart('year')
-      }
-    })
-
-    // Initial render
-    await renderChart('week')
+    renderChart('week')
   }
 
-  // on this day section
+  // O's per day
+  async function createWeeklyBarChart(row, scenes, oHistoryCache) {
+    createBarChart(row, {
+      title: tc("O 统计", "O's"),
+      accent: 'var(--os-blue)',
+      dayTotals: oHistoryCache.dayTotals,
+      formatValue: (value) => String(value),
+      formatTotal: (total) =>
+        tc(`${total} 次 O`, `${total} O${total === 1 ? '' : "'s"}`),
+    })
+  }
+
+  // Watch time per day
+  async function createWatchTimeBarChart(row, watchTimeData) {
+    const dayTotals = {}
+    Object.keys(watchTimeData).forEach((day) => {
+      dayTotals[day] = getWatchSeconds(watchTimeData[day])
+    })
+
+    createBarChart(row, {
+      title: tc('观看时长', 'Watch Time'),
+      accent: 'var(--os-green)',
+      dayTotals,
+      formatValue: formatDuration,
+      formatTotal: (total) =>
+        tc(`观看 ${formatDuration(total)}`, `${formatDuration(total)} watched`),
+    })
+  }
+
   async function createOnThisDaySection(
     row,
     scenes,
@@ -2746,12 +2149,9 @@
       showTimelineWatches = false,
     } = options
     // Create main container
-    const mainContainer = document.createElement('div')
-    mainContainer.style.width = '100%'
-    mainContainer.style.maxWidth = '1200px'
-    mainContainer.style.margin = '0 auto'
-    mainContainer.style.padding = '2rem 1rem'
+    const mainContainer = createEl('div', 'os-card os-otd')
     mainContainer.id = 'on-this-day-section'
+    row.innerHTML = ''
     row.appendChild(mainContainer)
 
     // Track selected day offset (0 = today, -1 = yesterday, etc.)
@@ -2837,190 +2237,166 @@
 
       // Clear container
       mainContainer.innerHTML = ''
-
-      // Header with title and navigation
-      const headerContainer = document.createElement('div')
-      headerContainer.style.display = 'flex'
-      headerContainer.style.justifyContent = 'space-between'
-      headerContainer.style.alignItems = 'center'
-      headerContainer.style.marginBottom = '2rem'
-      headerContainer.style.flexWrap = 'wrap'
-      headerContainer.style.gap = '1rem'
-      mainContainer.appendChild(headerContainer)
-
-      const title = document.createElement('h4')
-      title.innerText = tc('当日回顾', 'ON THIS DAY')
-      title.style.fontSize = '1.5rem'
-      title.style.margin = '0'
-      title.style.flex = '1'
-      title.style.textAlign = 'center'
-      headerContainer.appendChild(title)
-
-      // Day navigation
-      const dayNavContainer = document.createElement('div')
-      dayNavContainer.style.display = 'flex'
-      dayNavContainer.style.justifyContent = 'center'
-      dayNavContainer.style.alignItems = 'center'
-      dayNavContainer.style.gap = '1rem'
-      headerContainer.appendChild(dayNavContainer)
-
-      const prevDayBtn = document.createElement('button')
-      prevDayBtn.innerText = tc('← 上一个', '← Prev')
-      prevDayBtn.style.padding = '0.25rem 0.75rem'
-      prevDayBtn.style.cursor = 'pointer'
-      prevDayBtn.style.border = '1px solid #555'
-      prevDayBtn.style.backgroundColor = 'transparent'
-      prevDayBtn.style.color = '#fff'
-      prevDayBtn.style.borderRadius = '4px'
-      dayNavContainer.appendChild(prevDayBtn)
-
-      const dayLabel = document.createElement('span')
-      dayLabel.style.fontSize = '1rem'
-      dayLabel.style.fontWeight = 'bold'
-      dayLabel.style.minWidth = '120px'
-      dayLabel.style.textAlign = 'center'
       const isToday = dayOffset === 0
-      if (isToday) {
-        dayLabel.innerText = tc('今天', 'Today')
-      } else {
-        dayLabel.innerText = targetDate.toLocaleDateString(fmtDateLocale(), {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        })
-      }
-      dayNavContainer.appendChild(dayLabel)
 
-      const nextDayBtn = document.createElement('button')
-      nextDayBtn.innerText = tc('下一个 →', 'Next →')
-      nextDayBtn.style.padding = '0.25rem 0.75rem'
-      nextDayBtn.style.cursor = 'pointer'
-      nextDayBtn.style.border = '1px solid #555'
-      nextDayBtn.style.backgroundColor = 'transparent'
-      nextDayBtn.style.color = '#fff'
-      nextDayBtn.style.borderRadius = '4px'
+      // Header: the date on the left, day navigation on the right
+      const header = createEl('div', 'os-otd-head')
+      mainContainer.appendChild(header)
+
+      const dateWrap = createEl('div')
+      dateWrap.appendChild(
+        createEl(
+          'div',
+          'os-otd-date',
+          isToday
+            ? tc('今天', 'Today')
+            : targetDate.toLocaleDateString(fmtDateLocale(), {
+                month: 'long',
+                day: 'numeric',
+                year: 'numeric',
+              }),
+        ),
+      )
+      dateWrap.appendChild(
+        createEl(
+          'div',
+          'os-otd-weekday',
+          isToday
+            ? targetDate.toLocaleDateString(fmtDateLocale(), {
+                weekday: 'long',
+                month: 'long',
+                day: 'numeric',
+              })
+            : targetDate.toLocaleDateString(fmtDateLocale(), { weekday: 'long' }),
+        ),
+      )
+      header.appendChild(dateWrap)
+
+      const pager = createEl('div', 'os-pager')
+      const prevDayBtn = createEl('button', 'os-btn os-btn-icon', '‹')
+      prevDayBtn.title = tc('前一天', 'Previous day')
+      const todayBtn = createEl('button', 'os-btn', tc('今天', 'Today'))
+      todayBtn.disabled = isToday
+      const nextDayBtn = createEl('button', 'os-btn os-btn-icon', '›')
+      nextDayBtn.title = tc('后一天', 'Next day')
       nextDayBtn.disabled = dayOffset >= 0
-      nextDayBtn.style.opacity = dayOffset >= 0 ? '0.5' : '1'
-      nextDayBtn.style.cursor = dayOffset >= 0 ? 'not-allowed' : 'pointer'
-      dayNavContainer.appendChild(nextDayBtn)
+      pager.append(prevDayBtn, todayBtn, nextDayBtn)
+      header.appendChild(pager)
 
       prevDayBtn.addEventListener('click', () => {
         renderDay(selectedDayOffset - 1)
       })
-
+      todayBtn.addEventListener('click', () => {
+        renderDay(0)
+      })
       nextDayBtn.addEventListener('click', () => {
         if (selectedDayOffset < 0) {
           renderDay(selectedDayOffset + 1)
         }
       })
 
-      // Content container (timeline + video list)
-      const contentContainer = document.createElement('div')
-      contentContainer.style.display = 'flex'
-      contentContainer.style.gap = '2rem'
-      contentContainer.style.marginBottom = '2rem'
-      contentContainer.style.flexWrap = 'wrap'
+      // Content: 24-hour timeline on the left, video list on the right
+      const contentContainer = createEl('div', 'os-otd-body')
       mainContainer.appendChild(contentContainer)
 
-      // Left side: 24-hour timeline
-      const timelineContainer = document.createElement('div')
-      timelineContainer.style.flex = '1'
-      timelineContainer.style.minWidth = '300px'
-      timelineContainer.style.maxWidth = '500px'
-      contentContainer.appendChild(timelineContainer)
-
-      const timelineTitle = document.createElement('h5')
-      timelineTitle.innerText = tc('时间线', 'Timeline')
-      timelineTitle.style.marginBottom = '1rem'
-      timelineTitle.style.fontSize = '1.1rem'
-      timelineContainer.appendChild(timelineTitle)
-
-      // Add timeline expand button
-      const timelineExpandButton = document.createElement('button')
-      timelineExpandButton.innerText = isTimelineExpanded
-        ? tc('收起 ▲', 'Collapse ▲')
-        : tc('展开 ▼', 'Expand ▼')
-      timelineExpandButton.style.padding = '0.5rem 1rem'
-      timelineExpandButton.style.marginLeft = '1rem'
-      timelineExpandButton.style.cursor = 'pointer'
-      timelineExpandButton.style.border = '1px solid #555'
-      timelineExpandButton.style.backgroundColor = 'transparent'
-      timelineExpandButton.style.color = '#fff'
-      timelineExpandButton.style.borderRadius = '4px'
-      timelineExpandButton.style.fontSize = '0.9rem'
-      timelineExpandButton.addEventListener('click', () => {
-        isTimelineExpanded = !isTimelineExpanded
-        renderDay(selectedDayOffset)
-      })
-      timelineTitle.appendChild(timelineExpandButton)
-
-      // Timeline visualization
-      const timelineViz = document.createElement('div')
-      timelineViz.style.position = 'relative'
-      timelineViz.style.height = isTimelineExpanded ? '600px' : '400px'
-      timelineViz.style.border = '1px solid #555'
-      timelineViz.style.borderRadius = '8px'
-      timelineViz.style.padding = '1rem 2rem'
-      timelineViz.style.backgroundColor = 'rgba(0,0,0,0.2)'
-      timelineContainer.appendChild(timelineViz)
-
-      // Draw center vertical line
-      const centerLine = document.createElement('div')
-      centerLine.style.position = 'absolute'
-      centerLine.style.left = '50%'
-      centerLine.style.top = '1rem'
-      centerLine.style.bottom = '1rem'
-      centerLine.style.width = '2px'
-      centerLine.style.backgroundColor = '#444'
-      centerLine.style.transform = 'translateX(-50%)'
-      timelineViz.appendChild(centerLine)
-
-      // Draw hour markers (every 3 hours)
-      for (let hour = 0; hour <= 24; hour += 3) {
-        const markerContainer = document.createElement('div')
-        markerContainer.style.position = 'absolute'
-        markerContainer.style.left = '0'
-        markerContainer.style.right = '0'
-        markerContainer.style.top = `calc(${(hour / 24) * 100}% - 10px)`
-        markerContainer.style.display = 'flex'
-        markerContainer.style.alignItems = 'center'
-        markerContainer.style.justifyContent = 'center'
-        markerContainer.style.gap = '0.5rem'
-        timelineViz.appendChild(markerContainer)
-
-        // Convert to 12-hour format (en) or 24-hour format (zh)
-        const hourLabel = document.createElement('span')
-        hourLabel.innerText = formatHourLabel(hour)
-        hourLabel.style.fontSize = '0.8rem'
-        hourLabel.style.color = '#999'
-        hourLabel.style.fontWeight =
-          hour === 0 || hour === 12 ? 'bold' : 'normal'
-        hourLabel.style.backgroundColor = 'rgba(0,0,0,0.5)'
-        hourLabel.style.padding = '2px 6px'
-        hourLabel.style.borderRadius = '3px'
-        markerContainer.appendChild(hourLabel)
+      // Expand / Collapse toggle used by both panels
+      function createExpandButton(expanded, onToggle) {
+        const button = createEl(
+          'button',
+          'os-btn',
+          expanded ? tc('收起 ▲', 'Collapse ▲') : tc('展开 ▼', 'Expand ▼'),
+        )
+        button.addEventListener('click', onToggle)
+        return button
       }
 
-      // Draw AM/PM background sections
-      const amSection = document.createElement('div')
-      amSection.style.position = 'absolute'
-      amSection.style.left = '0'
-      amSection.style.right = '0'
-      amSection.style.top = '0'
-      amSection.style.height = '50%'
-      amSection.style.backgroundColor = 'rgba(255, 200, 100, 0.03)'
-      amSection.style.pointerEvents = 'none'
-      timelineViz.insertBefore(amSection, centerLine)
+      // Left side: 24-hour timeline
+      const timelineContainer = createEl('div')
+      contentContainer.appendChild(timelineContainer)
 
-      const pmSection = document.createElement('div')
-      pmSection.style.position = 'absolute'
-      pmSection.style.left = '0'
-      pmSection.style.right = '0'
-      pmSection.style.top = '50%'
-      pmSection.style.height = '50%'
-      pmSection.style.backgroundColor = 'rgba(100, 150, 255, 0.03)'
-      pmSection.style.pointerEvents = 'none'
-      timelineViz.insertBefore(pmSection, centerLine)
+      const timelineHead = createEl('div', 'os-panel-head')
+      timelineHead.appendChild(createEl('h5', 'os-panel-title', tc('时间线', 'Timeline')))
+      timelineHead.appendChild(
+        createExpandButton(isTimelineExpanded, () => {
+          isTimelineExpanded = !isTimelineExpanded
+          renderDay(selectedDayOffset)
+        }),
+      )
+      timelineContainer.appendChild(timelineHead)
+
+      // Timeline visualization. Everything is placed inside an inner track
+      // with some padding so markers at midnight aren't cut off.
+      const timelineBox = createEl('div', 'os-timeline')
+      timelineBox.style.height = isTimelineExpanded ? '600px' : '400px'
+      timelineContainer.appendChild(timelineBox)
+      const timelineViz = createEl('div')
+      Object.assign(timelineViz.style, {
+        position: 'absolute',
+        left: '0',
+        right: '0',
+        top: '16px',
+        bottom: '16px',
+      })
+      timelineBox.appendChild(timelineViz)
+
+      // Daytime / evening shading (6am-6pm is lighter)
+      const dayShade = createEl('div')
+      Object.assign(dayShade.style, {
+        position: 'absolute',
+        left: '0',
+        right: '0',
+        top: '25%',
+        height: '50%',
+        background: 'rgba(255, 255, 255, 0.03)',
+        pointerEvents: 'none',
+      })
+      timelineViz.appendChild(dayShade)
+
+      // Center vertical line
+      const centerLine = createEl('div')
+      Object.assign(centerLine.style, {
+        position: 'absolute',
+        left: '50%',
+        top: '-16px',
+        bottom: '-16px',
+        width: '2px',
+        background: 'rgba(255, 255, 255, 0.1)',
+        transform: 'translateX(-50%)',
+      })
+      timelineViz.appendChild(centerLine)
+
+      // Hour markers (every 3 hours) with faint guide lines
+      for (let hour = 0; hour <= 24; hour += 3) {
+        const top = `${(hour / 24) * 100}%`
+
+        if (hour > 0 && hour < 24) {
+          const guide = createEl('div')
+          Object.assign(guide.style, {
+            position: 'absolute',
+            left: '0',
+            right: '0',
+            top,
+            borderTop: '1px dashed rgba(255, 255, 255, 0.05)',
+          })
+          timelineViz.appendChild(guide)
+        }
+
+        const hourLabel = createEl('span', '', formatHourLabel(hour))
+        Object.assign(hourLabel.style, {
+          position: 'absolute',
+          left: '50%',
+          top,
+          transform: 'translate(-50%, -50%)',
+          fontSize: '0.72rem',
+          fontWeight: hour === 0 || hour === 12 || hour === 24 ? '700' : '500',
+          color: 'var(--os-muted)',
+          background: 'rgba(20, 26, 32, 0.9)',
+          padding: '1px 6px',
+          borderRadius: '999px',
+          zIndex: '6',
+        })
+        timelineViz.appendChild(hourLabel)
+      }
 
       // Timeline markers: blue for O's, gray for watches without an O.
       // Both are sorted together so they alternate sides by time.
@@ -3040,89 +2416,85 @@
       ].sort((a, b) => a.time - b.time)
 
       timelineEvents.forEach((event, index) => {
-        const color = event.isO ? '#007bff' : '#6c757d'
-        const shadowRgb = event.isO ? '0, 123, 255' : '108, 117, 125'
+        const color = event.isO ? 'var(--os-blue)' : 'var(--os-gray)'
+        const glow = event.isO
+          ? 'rgba(76, 141, 255, 0.55)'
+          : 'rgba(138, 148, 166, 0.45)'
         const hour = event.time.getHours()
         const minute = event.time.getMinutes()
-        const timePercent = (hour * 60 + minute) / (24 * 60)
+        const timePercent = ((hour * 60 + minute) / (24 * 60)) * 100
+        const onRight = index % 2 === 0
 
         // Connector line from center to marker
-        const connector = document.createElement('div')
-        connector.style.position = 'absolute'
-        connector.style.left = '50%'
-        connector.style.top = `calc(${timePercent * 100}%)`
-        connector.style.width = '30px'
-        connector.style.height = '2px'
-        connector.style.backgroundColor = color
-        connector.style.transform =
-          index % 2 === 0
+        const connector = createEl('div')
+        Object.assign(connector.style, {
+          position: 'absolute',
+          left: '50%',
+          top: `${timePercent}%`,
+          width: '30px',
+          height: '2px',
+          background: color,
+          transform: onRight
             ? 'translateY(-50%)'
-            : 'translateY(-50%) translateX(-100%)'
-        connector.style.zIndex = event.isO ? '5' : '4'
+            : 'translateY(-50%) translateX(-100%)',
+          zIndex: event.isO ? '5' : '4',
+        })
         timelineViz.appendChild(connector)
 
-        const marker = document.createElement('div')
-        marker.style.position = 'absolute'
-        marker.style.left =
-          index % 2 === 0 ? 'calc(50% + 30px)' : 'calc(50% - 50px)'
-        marker.style.top = `calc(${timePercent * 100}% - 10px)`
-        marker.style.width = '20px'
-        marker.style.height = '20px'
-        marker.style.backgroundColor = color
-        marker.style.borderRadius = '50%'
-        marker.style.border = '3px solid #fff'
-        marker.style.cursor = 'pointer'
-        marker.style.zIndex = event.isO ? '10' : '9'
-        marker.style.boxShadow = `0 2px 8px rgba(${shadowRgb}, 0.5)`
-        marker.style.transition = 'transform 0.2s, box-shadow 0.2s'
+        const marker = createEl('div')
+        Object.assign(marker.style, {
+          position: 'absolute',
+          left: onRight ? 'calc(50% + 30px)' : 'calc(50% - 48px)',
+          top: `calc(${timePercent}% - 9px)`,
+          width: '18px',
+          height: '18px',
+          background: color,
+          borderRadius: '50%',
+          border: '2px solid rgba(255, 255, 255, 0.9)',
+          cursor: 'pointer',
+          zIndex: event.isO ? '10' : '9',
+          boxShadow: `0 0 0 3px ${glow.replace(/[\d.]+\)$/, '0.18)')}`,
+          transition: 'transform 0.15s, box-shadow 0.15s',
+        })
 
-        // Format time for tooltip
-        marker.title = `${formatClockTime(hour, minute)} - ${
-          event.scene.title ||
-          (event.scene.files && event.scene.files[0]?.basename) ||
-          tc('未命名', 'Untitled')
-        }${event.isO ? '' : tc('（已观看）', ' (watched)')}`
+        marker.title = `${formatClockTime(hour, minute)} - ${getSceneTitle(event.scene)}${event.isO ? '' : tc('（已观看）', ' (watched)')}`
 
-        // Create thumbnail preview element
-        const thumbnailPreview = document.createElement('div')
-        thumbnailPreview.style.position = 'absolute'
-        thumbnailPreview.style.top = `calc(${timePercent * 100}% - 50px)`
-        thumbnailPreview.style.width = '120px'
-        thumbnailPreview.style.height = '67.5px'
-        thumbnailPreview.style.display = 'none'
-        thumbnailPreview.style.zIndex = '100'
-        thumbnailPreview.style.pointerEvents = 'none'
-        thumbnailPreview.style.border = `2px solid ${color}`
-        thumbnailPreview.style.borderRadius = '4px'
-        thumbnailPreview.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.5)'
-        thumbnailPreview.style.overflow = 'hidden'
-
-        // Position on same side as marker
-        if (index % 2 === 0) {
-          // Right side
-          thumbnailPreview.style.left = 'calc(50% + 60px)'
-        } else {
-          // Left side
-          thumbnailPreview.style.left = 'calc(50% - 180px)'
-        }
-
-        const thumbnailImg = document.createElement('img')
+        // Thumbnail preview shown on hover, on the same side as the marker
+        const thumbnailPreview = createEl('div')
+        Object.assign(thumbnailPreview.style, {
+          position: 'absolute',
+          top: `calc(${timePercent}% - 34px)`,
+          left: onRight ? 'calc(50% + 58px)' : 'calc(50% - 178px)',
+          width: '120px',
+          height: '67.5px',
+          display: 'none',
+          zIndex: '100',
+          pointerEvents: 'none',
+          border: `2px solid ${color}`,
+          borderRadius: '8px',
+          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.6)',
+          overflow: 'hidden',
+          background: '#000',
+        })
+        const thumbnailImg = createEl('img')
         thumbnailImg.src = event.scene.paths.screenshot
-        thumbnailImg.style.width = '100%'
-        thumbnailImg.style.height = '100%'
-        thumbnailImg.style.objectFit = 'cover'
+        Object.assign(thumbnailImg.style, {
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          display: 'block',
+        })
         thumbnailPreview.appendChild(thumbnailImg)
-
         timelineViz.appendChild(thumbnailPreview)
 
         marker.addEventListener('mouseenter', () => {
           marker.style.transform = 'scale(1.3)'
-          marker.style.boxShadow = `0 4px 12px rgba(${shadowRgb}, 0.8)`
+          marker.style.boxShadow = `0 0 0 5px ${glow}`
           thumbnailPreview.style.display = 'block'
         })
         marker.addEventListener('mouseleave', () => {
           marker.style.transform = 'scale(1)'
-          marker.style.boxShadow = `0 2px 8px rgba(${shadowRgb}, 0.5)`
+          marker.style.boxShadow = `0 0 0 3px ${glow.replace(/[\d.]+\)$/, '0.18)')}`
           thumbnailPreview.style.display = 'none'
         })
         marker.addEventListener('click', () => {
@@ -3132,119 +2504,82 @@
         timelineViz.appendChild(marker)
       })
 
+      // Legend, only needed when both marker colors are on
+      const legend = createEl('div', 'os-legend')
+      if (!hideTimelineOs && showTimelineWatches) {
+        const item = createEl('span')
+        const dot = createEl('i')
+        dot.style.background = 'var(--os-blue)'
+        item.append(dot, 'O')
+        legend.appendChild(item)
+      }
+      if (!hideTimelineOs && showTimelineWatches) {
+        const item = createEl('span')
+        const dot = createEl('i')
+        dot.style.background = 'var(--os-gray)'
+        item.append(dot, tc('已观看', 'Watched'))
+        legend.appendChild(item)
+      }
+      if (legend.children.length > 0) timelineContainer.appendChild(legend)
+
       // Right side: Video list
-      const videoListContainer = document.createElement('div')
-      videoListContainer.style.flex = '1'
-      videoListContainer.style.minWidth = '300px'
+      const videoListContainer = createEl('div')
       contentContainer.appendChild(videoListContainer)
 
-      const videoListTitle = document.createElement('h5')
-      videoListTitle.innerText = tc('观看的视频', 'Videos Watched')
-      videoListTitle.style.marginBottom = '1rem'
-      videoListTitle.style.fontSize = '1.1rem'
-      videoListContainer.appendChild(videoListTitle)
+      const uniqueScenes = new Set(daySceneEvents.map((event) => event.scene.id))
 
-      // Add expand button
-      const expandButton = document.createElement('button')
-      expandButton.innerText = isExpanded ? tc('收起 ▲', 'Collapse ▲') : tc('展开 ▼', 'Expand ▼')
-      expandButton.style.padding = '0.5rem 1rem'
-      expandButton.style.marginLeft = '1rem'
-      expandButton.style.cursor = 'pointer'
-      expandButton.style.border = '1px solid #555'
-      expandButton.style.backgroundColor = 'transparent'
-      expandButton.style.color = '#fff'
-      expandButton.style.borderRadius = '4px'
-      expandButton.style.fontSize = '0.9rem'
-      expandButton.addEventListener('click', () => {
-        isExpanded = !isExpanded
-        renderDay(selectedDayOffset)
-      })
-      videoListTitle.appendChild(expandButton)
+      const videoListHead = createEl('div', 'os-panel-head')
+      const videoListTitle = createEl('h5', 'os-panel-title', tc('观看的视频', 'Videos Watched'))
+      videoListTitle.appendChild(
+        createEl('span', 'os-count', String(daySceneEvents.length)),
+      )
+      videoListHead.appendChild(videoListTitle)
+      videoListHead.appendChild(
+        createExpandButton(isExpanded, () => {
+          isExpanded = !isExpanded
+          renderDay(selectedDayOffset)
+        }),
+      )
+      videoListContainer.appendChild(videoListHead)
 
-      const videoList = document.createElement('div')
       // Expanded shows the whole list; collapsed scrolls inside a short box.
-      videoList.style.maxHeight = isExpanded ? 'none' : '400px'
-      videoList.style.overflowY = isExpanded ? 'visible' : 'auto'
-      videoList.style.border = '1px solid #555'
-      videoList.style.borderRadius = '8px'
-      videoList.style.backgroundColor = 'rgba(0,0,0,0.2)'
+      const videoList = createEl(
+        'div',
+        isExpanded ? 'os-videos' : 'os-videos is-collapsed',
+      )
       videoListContainer.appendChild(videoList)
+
+      // Load watch time data
+      const watchTimeData = await loadWatchTimeData()
+      const targetDayWatchData = watchTimeData[targetDay]
+      const watchTimeSeconds = getWatchSeconds(targetDayWatchData)
 
       // Add videos to list
       if (daySceneEvents.length === 0) {
-        const emptyMsg = document.createElement('div')
-        emptyMsg.style.padding = '2rem'
-        emptyMsg.style.textAlign = 'center'
-        emptyMsg.style.color = '#888'
-        emptyMsg.innerText = tc('当天没有观看视频', 'No videos watched on this day')
-        videoList.appendChild(emptyMsg)
+        videoList.appendChild(
+          createEl('div', 'os-empty', tc('当天没有观看视频', 'No videos watched on this day')),
+        )
       } else {
-        // Load watch time data
-        const watchTimeData = await loadWatchTimeData()
-        const targetDayWatchData = watchTimeData[targetDay]
-        const isToday = dayOffset === 0
-
-        // Duration formatting is localized via formatShortDuration
-
         daySceneEvents.forEach(({ scene, time, hasO }) => {
-          const videoItem = document.createElement('div')
-          videoItem.style.display = 'flex'
-          videoItem.style.gap = '1rem'
-          videoItem.style.padding = '0.75rem'
-          videoItem.style.borderBottom = '1px solid #333'
-          videoItem.style.alignItems = 'center'
-          videoItem.style.transition = 'background-color 0.2s'
-          videoItem.style.cursor = 'pointer'
-          videoItem.style.position = 'relative'
-          if (hasO) {
-            videoItem.style.border = '2px solid #007bff'
-            videoItem.style.borderRadius = '4px'
-            videoItem.style.marginBottom = '0.5rem'
-          }
-          videoList.appendChild(videoItem)
-
-          videoItem.addEventListener('mouseenter', () => {
-            videoItem.style.backgroundColor = 'rgba(255,255,255,0.05)'
-          })
-          videoItem.addEventListener('mouseleave', () => {
-            videoItem.style.backgroundColor = 'transparent'
-          })
-
+          const videoItem = createEl('div', hasO ? 'os-video has-o' : 'os-video')
           videoItem.addEventListener('click', () => {
             openSceneInNewTab(scene.id)
           })
+          videoList.appendChild(videoItem)
 
-          const thumbnail = document.createElement('img')
+          const thumbnail = createEl('img')
           thumbnail.src = scene.paths.screenshot
-          thumbnail.style.width = '80px'
-          thumbnail.style.height = '45px'
-          thumbnail.style.objectFit = 'cover'
-          thumbnail.style.borderRadius = '4px'
-          thumbnail.style.flexShrink = '0'
+          thumbnail.loading = 'lazy'
+          thumbnail.alt = ''
           videoItem.appendChild(thumbnail)
 
-          const infoContainer = document.createElement('div')
-          infoContainer.style.flex = '1'
-          infoContainer.style.minWidth = '0'
+          const infoContainer = createEl('div', 'os-video-info')
+          infoContainer.appendChild(
+            createEl('div', 'os-video-title', getSceneTitle(scene)),
+          )
           videoItem.appendChild(infoContainer)
 
-          const sceneTitle = document.createElement('div')
-          sceneTitle.innerText =
-            scene.title ||
-            (scene.files && scene.files[0]?.basename) ||
-            tc('未命名', 'Untitled')
-          sceneTitle.style.fontSize = '0.9rem'
-          sceneTitle.style.fontWeight = 'bold'
-          sceneTitle.style.marginBottom = '0.25rem'
-          sceneTitle.style.overflow = 'hidden'
-          sceneTitle.style.textOverflow = 'ellipsis'
-          sceneTitle.style.whiteSpace = 'nowrap'
-          infoContainer.appendChild(sceneTitle)
-
-          const sceneInfo = document.createElement('div')
-          sceneInfo.style.fontSize = '0.75rem'
-          sceneInfo.style.color = '#888'
-          // Format time (12-hour for en, 24-hour for zh)
+          // Format time in the interface locale (24h for Chinese)
           const timeStr = formatClockTime(time.getHours(), time.getMinutes())
 
           // Check if this scene has watch time on this day
@@ -3254,154 +2589,65 @@
               (v) => String(v.id) === String(scene.id),
             )
             if (videoData && videoData.watchTime > 0) {
-              const formattedTime = formatShortDuration(videoData.watchTime)
               watchTimeText = isToday
-                ? tc(`${timeStr} - 今日观看 ${formattedTime}`, `${timeStr} - ${formattedTime} watched today`)
-                : tc(`${timeStr} - 当日观看 ${formattedTime}`, `${timeStr} - ${formattedTime} watched on this day`)
+                ? tc(
+                    `${timeStr} · 今日观看 ${formatDuration(videoData.watchTime)}`,
+                    `${timeStr} · ${formatDuration(videoData.watchTime)} watched today`,
+                  )
+                : tc(
+                    `${timeStr} · 当日观看 ${formatDuration(videoData.watchTime)}`,
+                    `${timeStr} · ${formatDuration(videoData.watchTime)} watched on this day`,
+                  )
             }
           }
+          infoContainer.appendChild(
+            createEl('div', 'os-video-meta', watchTimeText),
+          )
 
-          sceneInfo.innerText = watchTimeText
-          infoContainer.appendChild(sceneInfo)
-
-          // Add O emoji if this event has an O
           if (hasO) {
-            const oEmoji = document.createElement('div')
-            oEmoji.innerText = '💦'
-            oEmoji.style.fontSize = '1.5rem'
-            oEmoji.style.flexShrink = '0'
-            videoItem.appendChild(oEmoji)
+            videoItem.appendChild(createEl('span', 'os-video-emoji', '💦'))
           }
         })
       }
 
-      // Summary section at bottom
-      const summaryContainer = document.createElement('div')
-      summaryContainer.style.display = 'flex'
-      summaryContainer.style.justifyContent = 'center'
-      summaryContainer.style.gap = '3rem'
-      summaryContainer.style.padding = '1.5rem'
-      summaryContainer.style.borderTop = '2px solid #555'
-      summaryContainer.style.marginTop = '1rem'
+      // Summary strip at the bottom
+      const summaryContainer = createEl('div', 'os-otd-stats')
       if (hideStats) summaryContainer.style.display = 'none'
       mainContainer.appendChild(summaryContainer)
 
-      // Total O's today
-      const oSummary = document.createElement('div')
-      oSummary.style.textAlign = 'center'
-      summaryContainer.appendChild(oSummary)
-
-      const oCount = document.createElement('div')
-      oCount.innerText = dayOs.length
-      oCount.style.fontSize = '2rem'
-      oCount.style.fontWeight = 'bold'
-      oCount.style.color = '#007bff'
-      oSummary.appendChild(oCount)
-
-      const oLabel = document.createElement('div')
-      oLabel.innerText = tc("O 总数", "Total O's")
-      oLabel.style.fontSize = '0.9rem'
-      oLabel.style.color = '#888'
-      oLabel.style.marginTop = '0.25rem'
-      oSummary.appendChild(oLabel)
-
-      // Total watch time for the day
-      const watchTimeData = await loadWatchTimeData()
-      const dayData = watchTimeData[targetDay]
-      // Simplified format: just numbers (with migration from old format)
-      let watchTimeSeconds = 0
-      if (dayData) {
-        if (typeof dayData === 'object' && 'totalTime' in dayData) {
-          // Migrate old format
-          watchTimeSeconds = dayData.totalTime || 0
-        } else {
-          watchTimeSeconds = dayData || 0
-        }
+      function addSummaryStat(value, label, accent) {
+        const stat = createEl('div', 'os-otd-stat')
+        stat.style.setProperty('--os-accent', accent)
+        stat.appendChild(createEl('div', 'os-otd-stat-value', value))
+        stat.appendChild(createEl('div', 'os-otd-stat-label', label))
+        summaryContainer.appendChild(stat)
       }
 
-      const watchTimeSummary = document.createElement('div')
-      watchTimeSummary.style.textAlign = 'center'
-      summaryContainer.appendChild(watchTimeSummary)
-
-      const watchTimeDisplay = document.createElement('div')
-      // Format duration for display
-      const watchTimeText = formatShortDuration(watchTimeSeconds)
-      watchTimeDisplay.innerText = watchTimeText
-      watchTimeDisplay.style.fontSize = '2rem'
-      watchTimeDisplay.style.fontWeight = 'bold'
-      watchTimeDisplay.style.color = '#28a745'
-      watchTimeSummary.appendChild(watchTimeDisplay)
-
-      const watchTimeLabel = document.createElement('div')
-      watchTimeLabel.innerText = tc('观看时长', 'Watch Time')
-      watchTimeLabel.style.fontSize = '0.9rem'
-      watchTimeLabel.style.color = '#888'
-      watchTimeLabel.style.marginTop = '0.25rem'
-      watchTimeSummary.appendChild(watchTimeLabel)
-
-      // Videos watched stat
-      const videosWatchedSummary = document.createElement('div')
-      videosWatchedSummary.style.textAlign = 'center'
-      summaryContainer.appendChild(videosWatchedSummary)
-
-      const videosWatchedCount = document.createElement('div')
-      // Count unique scenes only
-      const uniqueScenes = new Set(
-        daySceneEvents.map((event) => event.scene.id),
+      addSummaryStat(dayOs.length, tc("O 数", "O's"), 'var(--os-blue)')
+      addSummaryStat(
+        formatDuration(watchTimeSeconds),
+        tc('观看时长', 'Watch Time'),
+        'var(--os-green)',
       )
-      videosWatchedCount.innerText = uniqueScenes.size
-      videosWatchedCount.style.fontSize = '2rem'
-      videosWatchedCount.style.fontWeight = 'bold'
-      videosWatchedCount.style.color = '#ffc107'
-      videosWatchedSummary.appendChild(videosWatchedCount)
+      addSummaryStat(
+        uniqueScenes.size,
+        tc('观看的视频', 'Videos Watched'),
+        'var(--os-amber)',
+      )
 
-      const videosWatchedLabel = document.createElement('div')
-      videosWatchedLabel.innerText = tc('观看的视频', 'Videos Watched')
-      videosWatchedLabel.style.fontSize = '0.9rem'
-      videosWatchedLabel.style.color = '#888'
-      videosWatchedLabel.style.marginTop = '0.25rem'
-      videosWatchedSummary.appendChild(videosWatchedLabel)
-
-      // Average minutes per O for this day (Mean Jerk Time)
-      // Only show if there are O's this day
+      // Average minutes per O for this day; only when there are O's
       if (dayOs.length > 0) {
-        const avgMinPerOSummary = document.createElement('div')
-        avgMinPerOSummary.style.textAlign = 'center'
-        summaryContainer.appendChild(avgMinPerOSummary)
-
-        const avgMinPerODisplay = document.createElement('div')
-        // Calculate average minutes per O for this specific day
-        const totalOsThisDay = dayOs.length
-        const watchTimeMinutes = watchTimeSeconds / 60
-        let avgMinPerO = 0
-        if (totalOsThisDay > 0) {
-          avgMinPerO = watchTimeMinutes / totalOsThisDay
-        }
-
-        // Format as hours and minutes like other time displays
+        const avgMinPerO = watchTimeSeconds / 60 / dayOs.length
         let avgDisplayText = tc('0分', '0m')
         if (avgMinPerO > 0) {
           const avgHours = Math.floor(avgMinPerO / 60)
           const avgMins = Math.floor(avgMinPerO % 60)
-          if (avgHours > 0) {
-            avgDisplayText = tc(`${avgHours}时 ${avgMins}分`, `${avgHours}h ${avgMins}m`)
-          } else {
-            avgDisplayText = tc(`${avgMins}分`, `${avgMins}m`)
-          }
+          avgDisplayText =
+            avgHours > 0
+              ? tc(`${avgHours}时 ${avgMins}分`, `${avgHours}h ${avgMins}m`)
+              : tc(`${avgMins}分`, `${avgMins}m`)
         }
-
-        avgMinPerODisplay.innerText = avgDisplayText
-        avgMinPerODisplay.style.fontSize = '2rem'
-        avgMinPerODisplay.style.fontWeight = 'bold'
-        avgMinPerODisplay.style.color = '#dc3545'
-        avgMinPerOSummary.appendChild(avgMinPerODisplay)
-
-        const avgMinPerOLabel = document.createElement('div')
-        avgMinPerOLabel.innerText = tc('平均分钟/O', 'Avg min/O')
-        avgMinPerOLabel.style.fontSize = '0.9rem'
-        avgMinPerOLabel.style.color = '#888'
-        avgMinPerOLabel.style.marginTop = '0.25rem'
-        avgMinPerOSummary.appendChild(avgMinPerOLabel)
+        addSummaryStat(avgDisplayText, tc('平均分钟/O', 'Avg min/O'), 'var(--os-pink)')
       }
     }
 
@@ -3414,55 +2660,49 @@
 
   PathElementListener('/stats', 'div.container-fluid div.mt-5', setupStats)
   async function setupStats(el) {
-    if (document.querySelector('.custom-stats-row')) return
-    const changelog = el.querySelector('div.changelog')
+    if (document.getElementById('ostats-root')) return
 
-    // Create visual separator before O Stats
-    const separator = document.createElement('hr')
-    separator.style.margin = '4rem auto'
-    separator.style.width = '80%'
-    separator.style.border = 'none'
-    separator.style.borderTop = '2px solid rgba(255, 255, 255, 0.2)'
-    el.insertBefore(separator, changelog)
+    // Stash's own rows are hidden by oStatsI18n.css; everything on the page is
+    // drawn here inside one root
+    const root = createEl('div', 'os')
+    root.id = 'ostats-root'
+    el.appendChild(root)
 
-    const rowOne = document.createElement('div')
-    rowOne.classList = 'custom-stats-row col col-sm-8 m-sm-auto row stats'
-    rowOne.style.justifyContent = 'center'
-    rowOne.style.marginTop = '1rem'
-    el.insertBefore(rowOne, changelog)
-    const rowTwo = document.createElement('div')
-    rowTwo.classList = 'custom-stats-row col col-sm-8 m-sm-auto row stats'
-    rowTwo.style.justifyContent = 'center'
-    rowTwo.style.gap = '1rem'
-    rowTwo.style.paddingTop = '2rem'
-    el.insertBefore(rowTwo, changelog)
-    const rowThree = document.createElement('div')
-    rowThree.classList = 'custom-stats-row col col-sm-8 m-sm-auto row stats'
-    rowThree.style.justifyContent = 'center'
-    rowThree.style.paddingTop = '4rem'
-    el.insertBefore(rowThree, changelog)
-    const rowFour = document.createElement('div')
-    rowFour.classList = 'custom-stats-row col col-sm-8 m-sm-auto row stats'
-    rowFour.style.justifyContent = 'center'
-    rowFour.style.paddingTop = '4rem'
-    el.insertBefore(rowFour, changelog)
-    const rowFive = document.createElement('div')
-    rowFive.classList = 'custom-stats-row col col-sm-8 m-sm-auto row stats'
-    rowFive.style.justifyContent = 'center'
-    rowFive.style.paddingTop = '2rem'
-    el.insertBefore(rowFive, changelog)
-    const rowSix = document.createElement('div')
-    rowSix.classList = 'custom-stats-row col col-sm-8 m-sm-auto row stats'
-    rowSix.style.justifyContent = 'center'
-    rowSix.style.paddingTop = '4rem'
-    rowSix.style.paddingBottom = '12rem'
-    el.insertBefore(rowSix, changelog)
+    // Page header
+    const hero = createEl('header', 'os-hero')
+    const heroTitle = createEl('div', 'os-hero-title')
+    heroTitle.appendChild(createEl('div', 'os-hero-mark', '💦'))
+    const heroText = createEl('div')
+    heroText.appendChild(createEl('h2', '', tc('O 统计', 'O Stats')))
+    heroText.appendChild(
+      createEl(
+        'div',
+        'os-hero-sub',
+        new Date().toLocaleDateString(fmtDateLocale(), {
+          weekday: 'long',
+          month: 'long',
+          day: 'numeric',
+          year: 'numeric',
+        }),
+      ),
+    )
+    heroTitle.appendChild(heroText)
+    hero.appendChild(heroTitle)
+    const settingsLink = createEl('a', 'os-btn', tc('⚙ 设置', '⚙ Settings'))
+    settingsLink.href = '/settings?tab=plugins'
+    settingsLink.title = tc(
+      'O Stats 设置在「插件」标签页下',
+      'O Stats settings are under Plugins',
+    )
+    hero.appendChild(settingsLink)
+    root.appendChild(hero)
 
     // Fast path: load lightweight stats data first.
-    const [settings, scenes, watchTimeData] = await Promise.all([
+    const [settings, scenes, watchTimeData, libraryStats] = await Promise.all([
       getPluginSettings(),
       getScenesWithOHistory(),
       loadWatchTimeData(),
+      getLibraryStats(),
     ])
 
     // OPTIMIZATION: Pre-process O history for faster lookups
@@ -3475,29 +2715,24 @@
       : [
           [
             settings.hideTopStatsOsToday,
-            () => createOrgasmsToday(rowOne, scenes, oHistoryCache),
+            (row) => createOrgasmsToday(row, scenes, oHistoryCache),
           ],
           [
             settings.hideTopStatsRecordDay,
-            () => createBestOrgasmDay(rowOne, scenes, oHistoryCache),
+            (row) => createBestOrgasmDay(row, scenes, oHistoryCache),
           ],
           [
             settings.hideTopStatsStreak,
-            () => createOrgasmStreak(rowOne, scenes, oHistoryCache),
+            (row) => createOrgasmStreak(row, scenes, oHistoryCache),
           ],
           [
             settings.hideTopStatsRecordSession,
-            () => createWatchTimeToday(rowOne, watchTimeData),
+            (row) => createWatchTimeToday(row, watchTimeData),
           ],
           [
             settings.hideTopStatsAverageMinPerO,
-            () =>
-              createAverageOPerMinute(
-                rowOne,
-                scenes,
-                watchTimeData,
-                oHistoryCache,
-              ),
+            (row) =>
+              createAverageOPerMinute(row, scenes, watchTimeData, oHistoryCache),
           ],
         ].filter(([hidden]) => !hidden)
 
@@ -3506,72 +2741,95 @@
       : [
           [
             settings.hideSceneHighlightsMostOs,
-            () => createMostOScene(rowTwo, scenes),
+            (row) => createMostOScene(row, scenes),
           ],
           [
             settings.hideSceneHighlightsLongestPlay,
-            () => createLongestWatchedScene(rowTwo, scenes),
+            (row) => createLongestWatchedScene(row, scenes),
           ],
           [
             settings.hideSceneHighlightsMostRecentO,
-            () => createMostRecentOScene(rowTwo, scenes),
+            (row) => createMostRecentOScene(row, scenes),
           ],
           [
             settings.hideSceneHighlightsOldestO,
-            () => createOldestOScene(rowTwo, scenes),
+            (row) => createOldestOScene(row, scenes),
           ],
         ].filter(([hidden]) => !hidden)
 
-    // Hide rows that have nothing to show. The On This Day row always stays
-    // since its padding spaces out the bottom of the page.
-    const hiddenRows = [
-      [rowOne, topStats.length === 0],
-      [rowTwo, sceneHighlights.length === 0],
-      [rowThree, settings.hideOGraph],
-      [rowFour, settings.hideWatchTimeGraph],
-      [rowFive, settings.hideExportImportButtons],
-    ]
-    hiddenRows.forEach(([row, hidden]) => {
-      if (hidden) row.style.display = 'none'
-    })
-
-    // The first visible row gets the same top spacing as the top stats row,
-    // so hiding rows above it doesn't leave a big gap under the separator.
-    const firstVisibleRow = [rowOne, rowTwo, rowThree, rowFour, rowFive, rowSix]
-      .find((row) => row.style.display !== 'none')
-    firstVisibleRow.style.paddingTop = '0'
-    firstVisibleRow.style.marginTop = rowOne.style.marginTop
-
-    // OPTIMIZATION: Run all stat calculations in parallel
-    await Promise.all(topStats.map(([, create]) => create()))
-    await Promise.all(sceneHighlights.map(([, create]) => create()))
-
-    if (!settings.hideOGraph) {
-      await createWeeklyBarChart(rowThree, scenes, oHistoryCache)
-    }
-    if (!settings.hideWatchTimeGraph) {
-      await createWatchTimeBarChart(rowFour, watchTimeData)
-    }
-    if (!settings.hideExportImportButtons) {
-      createWatchTimeExportButton(rowFive, scenes)
+    // Sections are added in page order. A hidden section is never created,
+    // so the spacing between the ones that are left stays even.
+    if (topStats.length > 0) {
+      const section = createSection(
+        root,
+        tc('今日与纪录', 'Today & Records'),
+      )
+      const grid = createEl('div', 'os-grid')
+      section.appendChild(grid)
+      await Promise.all(topStats.map(([, create]) => create(grid)))
     }
 
-    if (settings.hideOnThisDay) return
+    if (!settings.hideAllTimeStats && libraryStats) {
+      const section = createSection(root, tc('全部时间', 'All Time'))
+      const grid = createEl('div', 'os-grid')
+      section.appendChild(grid)
+      createAllTimeStats(grid, libraryStats)
+    }
 
-    const onThisDayLoading = document.createElement('div')
-    onThisDayLoading.style.textAlign = 'center'
-    onThisDayLoading.style.width = '100%'
-    onThisDayLoading.style.color = '#888'
-    onThisDayLoading.style.padding = '2rem 1rem'
-    onThisDayLoading.innerText = tc('正在加载当日数据...', 'Loading On This Day...')
-    rowSix.appendChild(onThisDayLoading)
+    if (sceneHighlights.length > 0) {
+      const section = createSection(root, tc('场景亮点', 'Scene Highlights'))
+      const grid = createEl('div', 'os-highlights')
+      section.appendChild(grid)
+      for (const [, create] of sceneHighlights) await create(grid)
+      // A highlight with no scene (no O's yet) adds nothing
+      if (grid.children.length === 0) section.remove()
+    }
+
+    const showCharts =
+      !settings.hideOGraph ||
+      !settings.hideWatchTimeGraph ||
+      !settings.hideExportImportButtons
+    if (showCharts) {
+      const section = createSection(root, tc('活动', 'Activity'))
+      if (!settings.hideOGraph) {
+        await createWeeklyBarChart(section, scenes, oHistoryCache)
+      }
+      if (!settings.hideWatchTimeGraph) {
+        await createWatchTimeBarChart(section, watchTimeData)
+      }
+      if (!settings.hideExportImportButtons) {
+        createWatchTimeExportButton(section, scenes)
+      }
+    }
+
+    let onThisDaySection = null
+    if (!settings.hideOnThisDay) {
+      onThisDaySection = createSection(root, tc('当日回顾', 'On This Day'))
+      const loading = createEl(
+        'div',
+        'os-card os-otd-loading',
+        tc('正在加载当日回顾…', 'Loading On This Day…'),
+      )
+      onThisDaySection.appendChild(loading)
+    }
+
+    if (settings.showLibraryStats && libraryStats) {
+      const section = createSection(root, tc('媒体库', 'Library'))
+      const grid = createEl('div', 'os-grid os-grid-compact')
+      section.appendChild(grid)
+      createLibraryStats(grid, libraryStats)
+    }
+
+    if (!onThisDaySection) return
 
     // Heavy path: fetch full play history in background and hydrate the section.
+    const onThisDayBody = createEl('div')
     getScenesWithPlayHistory()
       .then(async (fullScenes) => {
-        rowSix.innerHTML = ''
         const fullHistoryCache = buildOHistoryDayMap(fullScenes)
-        await createOnThisDaySection(rowSix, fullScenes, fullHistoryCache, {
+        onThisDaySection.querySelector('.os-otd-loading')?.remove()
+        onThisDaySection.appendChild(onThisDayBody)
+        await createOnThisDaySection(onThisDayBody, fullScenes, fullHistoryCache, {
           hideStats: settings.hideOnThisDayStats,
           expandedByDefault: settings.expandOnThisDayList,
           timelineExpandedByDefault: settings.expandOnThisDayTimeline,
@@ -3580,8 +2838,13 @@
         })
       })
       .catch((err) => {
-        console.error('[oStatsI18n] Failed loading On This Day data:', err)
-        onThisDayLoading.innerText = tc('加载当日数据失败。', 'Failed to load On This Day data.')
+        console.error('[OStats] Failed loading On This Day data:', err)
+        const loading = onThisDaySection.querySelector('.os-otd-loading')
+        if (loading)
+          loading.innerText = tc(
+            '加载当日回顾数据失败。',
+            'Failed to load On This Day data.',
+          )
       })
   }
 })()

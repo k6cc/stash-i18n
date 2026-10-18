@@ -1,10 +1,12 @@
 name: O Stats I18n
-description: Adds O stats to the stats page with bilingual (中文/EN) UI following the Stash interface language
-version: 1.1.0
+description: "Stash 统计页的 O 统计增强：今日与纪录、全部时间、场景亮点、活动图表、当日回顾（含 24 小时时间线）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
+version: 2.0.0-1
 url: https://discourse.stashapp.cc/t/o-stats/4766/7
 ui:
   javascript:
     - oStatsI18n.js
+  css:
+    - oStatsI18n.css
   assets:
     /: .
 settings:
@@ -32,6 +34,10 @@ settings:
     displayName: '[顶部统计行] 隐藏平均分钟/O'
     type: BOOLEAN
     description: 隐藏「平均分钟/O」。开启「隐藏顶部统计行」时该项无效。默认关闭。
+  06a_hideAllTimeStats:
+    displayName: 隐藏全部时间统计
+    type: BOOLEAN
+    description: 隐藏「全部时间」分区（O 总数、播放总数、已播放场景和总播放时长）。默认关闭。
   07_hideSceneHighlights:
     displayName: 隐藏场景亮点
     type: BOOLEAN
@@ -88,6 +94,10 @@ settings:
     displayName: '[当日回顾] 隐藏统计'
     type: BOOLEAN
     description: 隐藏「当日回顾」区块底部的统计（O 总数、观看时长、观看视频数和平均分钟/O）。默认关闭。
+  21_showLibraryStats:
+    displayName: 显示媒体库统计
+    type: BOOLEAN
+    description: 在页面底部显示「媒体库」分区（场景、图片、图库、演员、工作室、合集和标签）。默认关闭。
 
 exec:
   - python
