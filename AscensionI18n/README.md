@@ -1,4 +1,4 @@
-> v1.4.4：基于 Servbot91 的 Ascension 插件（中文名「对决」）的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；已同步上游 1.4.1（1.4.2 起为汉化自身的措辞与排版微调）。
+> v1.4.1-4：基于 Servbot91 的 Ascension 插件（中文名「对决」）的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；版本号采用「上游版本-汉化修订号」，对应上游 1.4.1 的第 4 次汉化修订。
 
 # AscensionI18n
 
@@ -44,4 +44,4 @@
 - 与上游原版 Ascension **不建议同时启用**：两者共用同一批 Stash custom fields（`hotornot_stats` / `performer_record` / `scene_record`）存评级与战绩，同时写入会互相冲突
 - 插件 ID、全局钩子（`window.__AscensionI18n*`）、localStorage 键（`ascensionI18n_*`）、IndexedDB 库名（`ascensionI18n-badge-cache`）均以 `AscensionI18n` 命名，与上游原版各自独立
 - custom fields 键名与上游保持一致（属共享数据契约），故从原版切换到汉化版可沿用既有评级与战绩
-- 上游版本号随汉化版同步：上游 1.4.1 → 本仓库 1.4.4（补丁号用于汉化自身的措辞与排版微调）
+- 版本号 = 上游版本-汉化修订号：上游 1.4.1 → 本仓库 1.4.1-4（修订号用于汉化自身的措辞与排版微调）
