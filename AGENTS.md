@@ -97,14 +97,16 @@ Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻�
 | `i18n-playbook.md` | 汉化手册：目录结构、脚手架、冻结表、校验清单、构建源仓库上游流程 |
 | `<插件>.patch` | 各「构建源仓库」上游的汉化 patch，如 `xenith-i18n.patch` |
 
+> **Windows 上必须用 `pwsh -NoProfile -File <脚本>` 运行本仓库的 `.ps1`**：`.ps1` 是无 BOM 的 UTF-8，Windows PowerShell 5.1 会按 ANSI 解码，脚本里的中文注释直接引发 `ParserError`（`Unexpected token`）；`pwsh`（PowerShell 7）默认按 UTF-8 读取，正常。
+
 同步流程：
 
-1. `powershell -File scripts/upstream-diff.ps1 -Fetch` 拉取上游（按记账表里的仓库地址自动解析/新增 remote）
-2. `powershell -File scripts/upstream-diff.ps1 -Plugin <插件ID>` 看该插件自基线以来的上游提交与完整 diff
+1. `pwsh -NoProfile -File scripts/upstream-diff.ps1 -Fetch` 拉取上游（按记账表里的仓库地址自动解析/新增 remote）
+2. `pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin <插件ID>` 看该插件自基线以来的上游提交与完整 diff
 3. 套用上游改动：以「上游基线版本 = base、本地汉化版 = ours、上游新版 = theirs」做三方合并（`git merge-file`）最省事，冲突处保留本地 `tc()` 包裹与中文文案；上游原生新增的用户可见文案需补 `tc(zh, en)`，合并后用 `python scripts/check_i18n.py <插件ID>` 复核有无漏译
 4. 上游新增/变更的 yml 段（如 `settings:`）照抄，`displayName` / `description` 走中文；上游删除的功能（如某开关）跟随删除，不自行保留
 5. 插件目录内附上游 LICENSE，插件 `README.md` 注明派生关系
-6. `powershell -File scripts/upstream-diff.ps1 -Plugin <插件ID> -Record` 把基线推进到上游 HEAD
+6. `pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin <插件ID> -Record` 把基线推进到上游 HEAD
 7. 按上节「发版」流程升版本（汉化同步属 `feat`/`fix`）：上游版本段换成同步到的上游版本，汉化修订号重置为 1（如上游 1.4.2 → `1.4.2-1`）
 
 对「构建源仓库」上游（第 6 条那样），同步是重新 `git apply` patch → 处理冲突 → `npm run build` → 重新导出 patch，而不是三方合并产物 bundle。
