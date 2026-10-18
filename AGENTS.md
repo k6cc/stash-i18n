@@ -23,7 +23,7 @@
 
 JS 标识符、GraphQL 字段与枚举值、filter type、CSS 与 `<style>` 内容、SVG path、`e.key`、插件 ID 与插件名、品牌词（Stash）、console 日志、单字母 `O`、编码名与容器名、分辨率 / 帧率字面量、Stash 中已存在的标签名与数据值、写入 Suite Data 的 `note` 归因串（但 `tell()` / `notify()` 提示语要译）。
 
-插件名不译的例外：中文侧可另起中文名，英文侧保留原名——Ascension →「对决」、Xenith →「争锋」。
+插件名不译的例外：中文侧可另起中文名，英文侧保留原名——Ascension →「对决」、Xenith →「争锋」、Lockdown →「锁局」。
 Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻译键，不单独翻译。
 
 ## 发版

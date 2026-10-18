@@ -20,7 +20,7 @@
   window.__LockdownI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.7.0';
+  var PLUGIN_VERSION = '2.7.0-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -2688,7 +2688,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
   const loadingHtml = (text) => `<div class="ld-loading">${escapeHtml(text)}<div class="ld-lbar"><i></i></div></div>`;
   // A saved history or totals that do not parse are left alone (rule 5);
   // 2.2's review found that went unsaid (§6, open issue 6).
-  const notReadHtml = (d) => (d && d.bad ? tc(`<div class="ld-notice">你保存的历史无法读取，Lockdown 会保持原样、不往里添加任何内容。
+  const notReadHtml = (d) => (d && d.bad ? tc(`<div class="ld-notice">你保存的历史无法读取，锁局会保持原样、不往里添加任何内容。
     对局仍会锁定并结束；在历史恢复可读之前，它们不会被记录下来。</div>`, `<div class="ld-notice">Your saved history could not be read, so Lockdown leaves it as it is and adds nothing to it. ` +
     `Runs still lock and end; they are not recorded until the history is readable again.</div>`) : "");
 
@@ -3189,7 +3189,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
         : `<span>${tc("观看", "Watch")}</span>${timeHtml("edgeMin")}<span>${tc("但不看完", "without finishing")}</span>`;
       const goal = goalOf(S);
       $("goalhint").textContent = S.goal === "finish"
-        ? tc("像平时一样在 Stash 里按 O 键；Lockdown 会在几秒内察觉，任何页面、任何设备都行。", "Press the O button in Stash as usual; Lockdown notices within seconds, from any page or device.")
+        ? tc("像平时一样在 Stash 里按 O 键；锁局会在几秒内察觉，任何页面、任何设备都行。", "Press the O button in Stash as usual; Lockdown notices within seconds, from any page or device.")
         : S.goal === "timer"
         ? (S.timerBy === "locked" ? tc("只要处于锁定状态，计时就一直在走。", "The clock runs whenever you're locked.") : tc("只有场景真正在播放的时间才算数。", "Only time a scene is actually playing counts.")) + tc(" O 不会让它提前结束。", " An O doesn't end it early.")
         : `${tc("只有场景播放的时间才算数。每次 O 都是一次失误，扣 100 分；", "Only time a scene plays counts. Every O is a slip that costs 100 points;")} ${slipText(goal)}.`;
@@ -3492,7 +3492,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     const tabs = [["new", lock ? tc("你的这一盘", "Your run") : tc("新锁局", "New run"), LOCK_LINE, "#D14D41"], ["board", tc("排行榜", "Leaderboard"), CROWN_LINE, "#D0A215"],
                   ["history", tc("历史", "History"), HISTORY_LINE, "#8B7EC8"]];
     const sub = lock ? tc("已锁定到 " + lock.name, "Locked to " + lock.name) : tc("把 Stash 锁定到某位演员、工作室或标签，直到你出局", "Lock Stash to a performer, studio or tag until you get out");
-    pageEl.innerHTML = `<div class="ld-pagehead"><div class="ld-ptitle"><h2>${LOCK_SVG} Lockdown</h2>` +
+    pageEl.innerHTML = `<div class="ld-pagehead"><div class="ld-ptitle"><h2>${LOCK_SVG} ${tc("锁局", "Lockdown")}</h2>` +
       `<span class="ld-psub">${escapeHtml(sub)}</span></div><div class="ld-tabs">` +
       tabs.map(([k, l, ico, c]) => `<button data-tab="${k}" class="${k === pageTab ? "ld-on" : ""}" style="--tc:${c}">${ico}<span>${l}</span></button>`).join("") +
       `</div></div><div class="ld-pagebody" data-a="pbody"></div>`;
@@ -4687,7 +4687,11 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
 
   function ensureNav() {
     const nav = document.querySelector(".top-nav .navbar-collapse .navbar-nav");
-    if (!nav || nav.querySelector(".ld-nav")) return;
+    if (!nav) return;
+    // The entry is written once, but the locale can arrive after it exists:
+    // refresh the label instead of leaving an English one behind.
+    const label = nav.querySelector(".ld-nav a > span");
+    if (label) { label.textContent = tc("锁局", "Lockdown"); return; }
     injectStyles();
     const item = document.createElement("div");
     item.className = "nav-link ld-nav col-4 col-sm-3 col-md-2 col-lg-auto";
@@ -4695,7 +4699,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     a.href = "#";
     a.className = "minimal p-4 p-xl-2 d-flex d-xl-inline-block flex-column " +
                   "justify-content-between align-items-center btn btn-primary";
-    a.innerHTML = ICON + "<span>Lockdown</span>";
+    a.innerHTML = ICON + "<span>" + tc("锁局", "Lockdown") + "</span>";
     a.title = tc("把 Stash 锁定到某位演员、工作室或标签，直到你出局", "Lock Stash to a performer, studio or tag until you get out");
     a.addEventListener("click", (ev) => { ev.preventDefault(); a.blur(); if (hasPage) showPage(); else if (!lock) openStart(); });
     item.appendChild(a);

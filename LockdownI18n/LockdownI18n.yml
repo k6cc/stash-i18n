@@ -1,6 +1,6 @@
 name: Lockdown I18n
 description: Locks Stash to a performer, studio or tag until you get out; bilingual (中文/EN) UI following the Stash interface language
-version: 2.7.0
+version: 2.7.0-1
 url: https://gitlab.com/allisless0/stash-plugins
 ui:
   javascript:
