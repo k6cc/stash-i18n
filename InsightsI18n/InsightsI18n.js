@@ -22,7 +22,7 @@
   window.__InsightsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.10.2';
+  var PLUGIN_VERSION = '2.11.0-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -276,13 +276,18 @@
     return a !== null && a >= 16 && a < 100 ? a : null;
   }
   function ageGroup(a) {
-    if (a === null || a === undefined) return null;
+    // 2.11: an age under 18 can only be a wrong birthdate; it used to land
+    // in "18–21" (ageAt keeps 16 and 17 for the timeline's sake), now it is
+    // left out like an unknown one (forum, sashi)
+    if (a === null || a === undefined || a < 18) return null;
     if (a < 22) return "18–21";
     if (a < 26) return "22–25";
     if (a < 31) return "26–30";
     if (a < 36) return "31–35";
     if (a < 41) return "36–40";
-    return "41 and up";
+    if (a < 46) return "41–45";
+    if (a < 51) return "46–50";
+    return "51 and up";
   }
   // Years into a career when the scene came out.
   function careerGroup(careerStart, onDay) {
@@ -363,11 +368,18 @@
   // its performers share it. Shares are of the library's scenes, O's,
   // plays and watch time; lift = share of O's / share of scenes (and the
   // same for plays). Rows under the sample size are marked `small`.
+  // 2.11 opts.gender (a Stash gender, "" for not set): only scenes with a
+  // performer of that gender count, and only those performers give the
+  // performer traits, so the shares compare like with like (forum: age in
+  // the scene for women and men apart; user: trans performers on their own).
   function traitRows(scenes, perfById, dim, opts = {}) {
     const minScenes = opts.minScenes ?? 5;
+    const g = opts.gender ?? null;
+    const fits = (pid) => { const p = perfById.get(pid); return !!p && (p.gender || "") === g; };
     const tot = { scenes: 0, o: 0, plays: 0, watch: 0 };
     const rows = new Map();
     for (const s of scenes) {
+      if (g !== null && !(s.perf || []).some(fits)) continue;
       tot.scenes += 1; tot.o += s.o || 0; tot.plays += s.plays || 0; tot.watch += s.playDur || 0;
       const vals = new Set();
       if (dim.scene) {
@@ -376,7 +388,7 @@
       } else {
         for (const pid of s.perf || []) {
           const p = perfById.get(pid);
-          if (!p) continue;
+          if (!p || (g !== null && (p.gender || "") !== g)) continue;
           if (dim.multi) for (const v of dim.multi(p, s)) vals.add(v);
           else { const v = dim.get(p, s); if (v) vals.add(v); }
         }
@@ -946,7 +958,9 @@
     const topStudio = [...studioN.values()].sort((a, b) => b.n - a.n)[0];
     return {
       longest: best((s) => s.dur || 0, (s) => s.dur > 0),
-      shortest: best((s) => -(s.dur || 0), (s) => s.dur > 0),
+      // 2.11: 10 s and up; DVD rips have menu VOBs a fraction of a second
+      // long, which showed as "0s" (forum, sashi)
+      shortest: best((s) => -(s.dur || 0), (s) => s.dur >= 10),
       biggest: best((s) => s.fsize || 0, (s) => s.fsize > 0),
       oldest: best((s) => -(parseDay(s.date) || 0), (s) => parseDay(s.date) !== null),
       newest: best((s) => s.created || 0, (s) => !!s.created),
@@ -1076,7 +1090,7 @@
     height: ["under 155 cm", "155–164 cm", "165–174 cm", "175 cm and up"],
     weight: ["under 50 kg", "50–59 kg", "60–69 kg", "70 kg and up"],
     cup: ["A", "B", "C", "D", "DD+"],
-    age: ["18–21", "22–25", "26–30", "31–35", "36–40", "41 and up"],
+    age: ["18–21", "22–25", "26–30", "31–35", "36–40", "41–45", "46–50", "51 and up"],
     career: ["first 2 years", "years 3–5", "years 6–10", "over 10 years in"],
     length: ["under 10 min", "10–30 min", "30–60 min", "over an hour"],
     resolution: ["SD", "720p", "1080p", "4K and up"],
@@ -2711,6 +2725,7 @@
 .ins-pull .n { font-size: 14px; font-weight: 600; color: var(--hi); display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .ins-pull .d { color: var(--tx2); font-size: 12px; grid-column: 1 / -1; }
 .ins-dims { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; align-items: center; }
+.ins-gchips { margin: 0 0 10px; }
 .ins-dims .g { color: var(--tx2b); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; margin-right: 4px; min-width: 76px; }
 
 .ins-cal { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 1fr); gap: 3px; }
@@ -3132,7 +3147,7 @@
     // the Movies tab: its last read (cached like the library), and choices
     mv: { data: null, busy: false, err: "", sig: "", rank: prefs().mrank || "plays", more: false, gapsAll: false },
     you: { metric: "o", kind: "month", offset: 0, day: null, top: "byO", mode: "byO", dim: prefs().dim || "country",
-           wmetric: "o", sort: "auto", small: false, pmore: false },
+           wmetric: "o", sort: "auto", small: !!prefs().small, wgender: prefs().wgender || "ALL", pmore: false },
     lib: { timeline: "released", year: null },
     files: { space: "studio", spaceAll: false },
     acts: freshActs(),
@@ -3177,9 +3192,24 @@
 
   const ALL_DIMS = PERFORMER_TRAITS.concat(SCENE_TRAITS);
   function traits(dimId) {
-    const m = app.model;
-    if (!m.traits.has(dimId)) m.traits.set(dimId, traitRows(m.scenes, m.perfById, ALL_DIMS.find((d) => d.id === dimId)));
-    return m.traits.get(dimId);
+    const m = app.model, g = worksGender(m);
+    const key = `${dimId}|${g === null ? "*" : g}`;
+    if (!m.traits.has(key)) m.traits.set(key, traitRows(m.scenes, m.perfById, ALL_DIMS.find((d) => d.id === dimId), { gender: g }));
+    return m.traits.get(key);
+  }
+  // The genders in the library, most performers first, for the chips; the
+  // chosen one, or null for everyone (a remembered gender that is no longer
+  // in the library falls back to everyone).
+  function libGenders(m) {
+    return m.get("genders", () => {
+      const n = new Map();
+      for (const p of m.perfById.values()) { const k = p.gender || ""; n.set(k, (n.get(k) || 0) + 1); }
+      return GENDERS.filter(([k]) => n.get(k)).map(([k, label, c]) => ({ k, label, c, n: n.get(k) }));
+    });
+  }
+  function worksGender(m) {
+    const g = app.you.wgender;
+    return g === "ALL" || g === undefined || g === null || !libGenders(m).some((x) => x.k === g) ? null : g;
   }
 
   const S = (criteria, sort = "date", dir = "desc") => listUrl("/scenes", criteria, sort, dir);
@@ -3220,7 +3250,7 @@
   const TRAIT_VALUE_ZH = {
     height: { "under 155 cm": "155 cm 以下", "175 cm and up": "175 cm 及以上" },
     weight: { "under 50 kg": "50 kg 以下", "70 kg and up": "70 kg 及以上" },
-    age: { "41 and up": "41 岁及以上" },
+    age: { "51 and up": "51 岁及以上" },
     career: { "first 2 years": "前 2 年", "years 3–5": "第 3–5 年", "years 6–10": "第 6–10 年", "over 10 years in": "入行超过 10 年" },
     length: { "under 10 min": "10 分钟以下", "10–30 min": "10–30 分钟", "30–60 min": "30–60 分钟", "over an hour": "超过 1 小时" },
     resolution: { "4K and up": "4K 及以上" },
@@ -3835,6 +3865,15 @@
   // dimensions with a natural order (height, age, length...), which keep it;
   // either way the three strongest are highlighted.
 
+  // Everyone, then each gender the library has (2.11). For What works for
+  // you and the Collection tab; null or "ALL" is everyone.
+  function genderChips(m, grp, key, cur, c, lead) {
+    const gs = libGenders(m);
+    if (gs.length < 2) return "";
+    const on = cur === null || cur === undefined ? "ALL" : cur;
+    const chip = (v, label, tip) => `<button class="ins-chip${on === v ? " on" : ""}" style="--c:var(--${c})" data-set="${grp}.${key}=${esc(v)}"${tip ? ` data-tip="${esc(tip)}"` : ""}>${esc(label)}</button>`;
+    return `<div class="ins-dims ins-gchips">${lead ? `<span class="g">${esc(lead)}</span>` : ""}${chip("ALL", tc("全部", "Everyone"))}${gs.map((x) => chip(x.k, isZh() ? GENDERS_ZH[x.k] : x.label, plural(x.n, "performer"))).join("")}</div>`;
+  }
   function worksCard(m, y) {
     const noO = m.noO, wm = choice("wmetric", y.wmetric, noO);
     const pulls = strongestPulls(noO ? "plays" : "o");
@@ -3862,6 +3901,7 @@
       right: `${choices("wmetric", noO).map(([v, label]) => `<button class="ins-chip${wm === v ? " on" : ""}" style="--c:var(--gr)" data-set="you.wmetric=${v}">${label}</button>`).join("")} &nbsp;
         ${ordinal ? `${chipFor("you", "sort", "auto", tc("按顺序", "In order"), "gr")}${chipFor("you", "sort", "pull", tc("最强", "Strongest"), "gr")}` : chipFor("you", "sort", "auto", tc("最强", "Strongest"), "gr")}${chipFor("you", "sort", "size", tc("最大", "Biggest"), "gr")}`,
       sub: tc(`每个分组相对它在库中所占份额对你的表现。线右侧表示${noO ? "你播放得比它的份额更多" : "更容易让你达到高潮"}。最强的三个会高亮。`, `How each group does for you against its share of the library. Right of the line ${noO ? "you play more than its share" : "gets you there more often"}. The three strongest are highlighted.`) },
+      `${genderChips(m, "you", "wgender", worksGender(m), "gr", tc("演员性别", "Scenes with"))}` +
       `${pulls.length ? `<div class="ins-pulls">${pulls.map(({ d, r, lift, share }) => `<div class="ins-well ins-pull" data-set="you.dim=${d.id}"
         data-tip="${esc(tc(`${r.scenes} 个场景（占库中 ${pct(r.libShare)}）\n${noO ? plural(r.plays, "play") : os(r.o)}（占你的 ${pct(share)}）`, `${r.scenes} scenes (${pct(r.libShare)} of the library)\n${noO ? plural(r.plays, "play") : os(r.o)} (${pct(share)} of yours)`))}">
         <div class="k">${esc(dimLabel(d))}</div><div class="n">${traitIcon(d.id, r.value)}<span>${esc(traitLabel(d.id, r.value))}</span></div><span class="ins-lift up">${lift.toFixed(1)}×</span>
@@ -4536,7 +4576,7 @@
     let noCountry = 0;
     for (const id of inLib) {
       const p = m.perfById.get(id);
-      if (!p || (allow && (p.gender || "") !== allow)) continue;
+      if (!p || (allow !== null && (p.gender || "") !== allow)) continue;  // "" is Not set (2.11)
       const code = countryCode(p.country);
       if (!code) { noCountry += 1; continue; }
       countries.set(code, (countries.get(code) || 0) + 1);
@@ -4586,7 +4626,7 @@
         ${card({ title: tc("都有谁", "Who is in it"), icon: "globe", c: "ma", sub: tc(`${plural(inLib.size, "performer")}在这里有场景${withImages ? "、图片或图库" : ""}`, `${plural(inLib.size, "performer")} with a scene${withImages ? ", image or gallery" : ""} here`) },
           `<div class="ins-split">${GENDERS.filter(([k]) => genderN.get(k)).map(([k, label, c]) => `<i style="flex:${genderN.get(k)};background:var(--${c})" data-tip="${esc(isZh() ? GENDERS_ZH[k] : label)}: ${fmtN(genderN.get(k))} (${pct(genderN.get(k) / gTotal)})"></i>`).join("")}</div>
           <div class="ins-legend2" style="margin:0 0 12px">${GENDERS.filter(([k]) => genderN.get(k)).map(([k, label, c]) => `<span><i style="background:var(--${c})"></i>${esc(isZh() ? GENDERS_ZH[k] : label)} <b style="color:var(--hi);font-weight:600">${fmtN(genderN.get(k))}</b> ${pct(genderN.get(k) / gTotal)}</span>`).join("")}</div>
-          <div class="ins-dims">${[["FEMALE", tc("女性", "Women")], ["MALE", tc("男性", "Men")], ["ALL", tc("全部", "Everyone")]].map(([k, l]) => chipFor("col", "gender", k, l, "ma")).join("")}</div>
+          ${genderChips(m, "col", "gender", cs.gender, "ma") || `<div class="ins-dims">${[["FEMALE", tc("女性", "Women")], ["MALE", tc("男性", "Men")], ["ALL", tc("全部", "Everyone")]].map(([k, l]) => chipFor("col", "gender", k, l, "ma")).join("")}</div>`}
           <div class="ins-scroll" style="max-height:330px">${cRows.length ? rows(cRows.map(([code, n]) => ({ labelHtml: `${flag(code)}<span>${esc(regionName(code))}</span>`, value: n,
             text: `${fmtN(n)}`, color: "var(--ma)", go: P([{ type: "country", modifier: "EQUALS", value: code }]) })), { lw: "minmax(130px,200px)", vw: "60px" }) : `<div class="ins-empty">${tc("没有设置国家。", "No countries set.")}</div>`}</div>
           <div class="ins-note">${tc(`${plural(cRows.length, "country", "countries")} · ${plural(noCountry, "performer")}没有填写`, `${plural(cRows.length, "country", "countries")} · ${plural(noCountry, "performer")} without one`)}</div>`)}
@@ -4822,6 +4862,9 @@
       app[grp][key] = val;
       if (grp === "you" && key === "kind") app.you.offset = 0;
       if (grp === "you" && key === "dim") { setPref("dim", val); app.you.sort = "auto"; }
+      // 2.11: kept between visits (forum: "can we perm enable this?")
+      if (grp === "you" && key === "small") setPref("small", val);
+      if (grp === "you" && key === "wgender") setPref("wgender", val);
       // a different rule makes a different selection: hand ticks start over
       if (grp === "acts" && (key === "mode" || key === "sharp")) { app.acts.ticks = new Map(); app.acts.armed = false; }
       if (grp === "col" && key === "gender") setPref("gender", val);
@@ -4982,11 +5025,11 @@
         app.lockdown = parseLockdown(plugins.Lockdown);
         app.slideshow = parseSlideshow(plugins[SLIDESHOW_ID]);
       }
-      app.syncNote = r.changed === null ? "" : r.changed ? `${plural(r.changed, "scene")} changed` : "no changes";
+      app.syncNote = r.changed === null ? "" : r.changed ? tc(`${plural(r.changed, "scene")}有改动`, `${plural(r.changed, "scene")} changed`) : tc("无改动", "no changes");
       setData(r.data);
     } catch (e) {
       log(`Refresh failed: ${e.message}`, "error");
-      app.syncNote = "could not check; showing the last read";
+      app.syncNote = tc("无法检查，显示上次读取的结果", "could not check; showing the last read");
     } finally {
       app.syncing = "";
       render();
