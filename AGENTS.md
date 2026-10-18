@@ -28,10 +28,21 @@ Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻�
 
 ## 发版
 
+### 版本号规则
+
+**版本号 = `上游版本-汉化修订号`**（如 `1.4.1-1`）：汉化版永不抬高上游版本号，一眼看出「对应上游哪个版本 + 第几次汉化修订」。
+
+- **上游版本**：本汉化版当前对应的上游发布版本（以 [UPSTREAM.md](./UPSTREAM.md) 基线为准）
+- **汉化修订号**：从 `1` 起，只动汉化自身（措辞、排版、漏译修复、CSS 微调）时 +1；同步到上游新版本时**重置为 1**
+- 例：上游 1.4.1 → 首发 `1.4.1-1` → 汉化微调 `1.4.1-2` → 上游发 1.4.2 → `1.4.2-1`
+- 后缀只用 `-`，**不要用 `+`**（`+` 在 release 产物名与下载 URL 里易被转义）；修订号不补零（`-1` 而非 `-01`）
+- Stash 判定「有更新」看的是 `index.yml` 的 `date`（`PackageManager.tsx` 的 `hasUpgrade`），`version` 只用于展示，故带后缀不影响安装与更新提示
+- 历史版本不追溯改名：本规则生效前已发布的纯 `X.Y.Z` 保持不动，下次发版时切入本规则（如 AscensionI18n 1.4.4 对应上游 1.4.1，下次发版即 `1.4.1-4`）
+
 **权威版本号 = 各插件 `<name>.yml` 的 `version:`**，其余位置必须与之一致：
 
 - 根 `README.md` 插手表（含版本列）
-- 各插件 `README.md` 头部 `> vX.Y.Z：` note（只保留最新一条）
+- 各插件 `README.md` 头部 `> v<版本号>：` note（只保留最新一条）
 - 代码内版本位置：
 
 | 插件 | 代码内版本位置 |
@@ -47,7 +58,7 @@ Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻�
 1. 更新上表所有位置
 2. 校验：`git grep -nE "[0-9]\.[0-9]+\.[0-9]+"` 逐项核对（压缩 bundle 的插件改用 Grep 工具在磁盘上搜字面量——未跟踪的新文件不在 `git grep` 范围内）
 3. commit 风格：`fix(插件名): 描述, vX.Y.Z` / `feat(插件名): ...` / `docs(插件名): ...` / `chore: ...`
-4. tag 命名：`<插件ID>-vX.Y.Z`；多插件联动发版时每个插件各打一个 tag
+4. tag 命名：`<插件ID>-v<版本号>`（如 `AscensionI18n-v1.4.1-1`，白名单 `*-v*.*.*` 已兼容该后缀）；多插件联动发版时每个插件各打一个 tag
 5. `git push; git push --tags`（分号分隔，勿用 `&&`）
 6. 验证：`gh run list --limit 1` 找 Release workflow → `gh run watch <id> --exit-status`；`gh release view <tag> --json assets` 确认 zip 产物；最后回 `E:\Temp\stash-plugins` 执行 `git fetch; git show origin/main:plugins/main/index.yml` 确认该条目 `version`/`sha256`/`path` 已更新
 - Windows：命令链用 `;`，勿用 `&&`；含中文的 commit message 建议写进临时文件后 `git commit -F <文件>`（commit 完删掉临时文件）；受限沙箱下 `git push` 可能因 schannel TLS 握手失败被拦，需在沙箱外执行
@@ -94,7 +105,7 @@ Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻�
 4. 上游新增/变更的 yml 段（如 `settings:`）照抄，`displayName` / `description` 走中文；上游删除的功能（如某开关）跟随删除，不自行保留
 5. 插件目录内附上游 LICENSE，插件 `README.md` 注明派生关系
 6. `powershell -File scripts/upstream-diff.ps1 -Plugin <插件ID> -Record` 把基线推进到上游 HEAD
-7. 按上节「发版」流程升版本（汉化同步属 `feat`/`fix`，版本号随上游语义：上游 1.1 → 本仓库 1.1.0）
+7. 按上节「发版」流程升版本（汉化同步属 `feat`/`fix`）：上游版本段换成同步到的上游版本，汉化修订号重置为 1（如上游 1.4.2 → `1.4.2-1`）
 
 对「构建源仓库」上游（第 6 条那样），同步是重新 `git apply` patch → 处理冲突 → `npm run build` → 重新导出 patch，而不是三方合并产物 bundle。
 

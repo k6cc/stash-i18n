@@ -14,7 +14,7 @@
 文件顶部加：
 
 ```js
-var PLUGIN_VERSION = 'X.Y.Z';
+var PLUGIN_VERSION = 'X.Y.Z-1';   // 上游版本-汉化修订号
 var _intlLocale = '';
 function tc(zh, en) { return _intlLocale.indexOf('zh') === 0 ? zh : en; }
 function isZh() { return _intlLocale.indexOf('zh') === 0; }
@@ -65,7 +65,7 @@ JS 标识符、GraphQL 字段与枚举值、filter type、CSS 与 `<style>` 内�
 1. `node --check <插件ID>.js`
 2. `python scripts/check_i18n.py <插件ID>` → 逐条复核补漏，残留英文须能归入「英文源表 / 插件名 / GraphQL 类型 / 数据值 / 日志 / 归因串」之一；
    候选多时用 `--group` 按 bundle 模块聚类来切分区块，用 `--keep <行区间>`（如 `44-85,900-1230`）核对是否还有区间外的新增漏译
-3. 版本四处一致：JS `PLUGIN_VERSION`、yml `version`、根 README 插手表、插件 README 头部
+3. 版本四处一致（号形如 `上游版本-汉化修订号`，见 AGENTS.md）：JS `PLUGIN_VERSION`、yml `version`、根 README 插手表、插件 README 头部
 4. yml 的 `description` 与各 `settings` 的 `displayName`/`description` 全中文
 
 ### 扫描器捞不到、必须人工扫的
@@ -81,7 +81,7 @@ JSX 文本节点可用两条正则扫全部 `.jsx` 兜底：`>[A-Za-z][A-Za-z0-9
 ## 9. 发布
 
 按 [AGENTS.md](../AGENTS.md) 的两节流程：先在 `stash-plugins` 推送占位条目（否则 release workflow 的 awk 找不到 `- id:` 会静默跳过），
-再 commit → push → tag `<插件ID>-vX.Y.Z` → push tag → `gh run watch` → 核对 release 产物与 `stash-plugins` 的 `index.yml`/`README`；
+再 commit → push → tag `<插件ID>-v<版本号>` → push tag → `gh run watch` → 核对 release 产物与 `stash-plugins` 的 `index.yml`/`README`；
 最后把该插件从 `UPSTREAM.md` 的候选表移入记账表。
 
 Windows：PowerShell 用 `;` 分隔命令（不用 `&&`）；含中文的 commit message 用 `git commit -F <文件>`；`git push`/`gh` 需在非沙箱下执行。
