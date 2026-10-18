@@ -1,0 +1,26 @@
+name: Collapsable Plugin Settings I18n
+description: "让「设置 → 插件」与「设置 → 任务 → 插件任务」里的插件分组可折叠、可搜索、可排序。中文/英文跟随 Stash 界面语言。"
+version: 0.10.1-1
+url: https://github.com/Jacksyy420/Stash-Plugins
+settings:
+  defaultState:
+    displayName: 默认状态
+    description: '插件分组的初始状态：填 "collapsed"（折叠）、"expanded"（展开）或 "remember"（记住上次状态）。留空等同 "remember"。'
+    type: STRING
+  enableSlider:
+    displayName: 用滑块代替启用/禁用按钮
+    description: "在「设置 → 插件」里用滑块代替每个插件的启用与禁用按钮。滑块仍是 Stash 原按钮，只是用 CSS 改成开关外观，点击行为不变。"
+    type: BOOLEAN
+  sliderColorEnabled:
+    displayName: 滑块颜色（插件已启用）
+    description: '任意 CSS 颜色，例如 "#FFD700" 或 "gold"。留空时为金色。'
+    type: STRING
+  sliderColorDisabled:
+    displayName: 滑块颜色（插件已禁用）
+    description: '任意 CSS 颜色，例如 "#DC3545" 或 "red"。留空时为红色。'
+    type: STRING
+ui:
+  javascript:
+    - CollapsablePluginSettingsI18n.js
+  css:
+    - CollapsablePluginSettingsI18n.css

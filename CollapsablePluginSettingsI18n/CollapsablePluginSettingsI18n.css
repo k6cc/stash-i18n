@@ -1,0 +1,112 @@
+[data-csp-header] {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-left: 1.5rem;
+}
+
+[data-csp-header]::before {
+  content: "▾";
+  position: absolute;
+  left: 0.25rem;
+  top: 50%;
+  transform: translateY(-50%);
+  transition: transform 0.15s ease;
+  opacity: 0.7;
+}
+
+[data-csp-collapsed="true"] > [data-csp-header]::before {
+  transform: translateY(-50%) rotate(-90deg);
+}
+
+[data-csp-collapsed="true"] > :not([data-csp-header]) {
+  display: none !important;
+}
+
+/* Toolbar right-aligned next to the "Plugins" heading (position set by JS) */
+.csp-toolbar {
+  display: none;
+  position: absolute;
+  z-index: 1030;
+  gap: 0.5rem;
+}
+
+.csp-toolbar {
+  align-items: center;
+}
+
+.csp-search {
+  width: 14rem;
+}
+
+.csp-count {
+  min-width: 3.5rem;
+  text-align: right;
+  font-size: 0.85rem;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+[data-csp-hidden="true"] {
+  display: none !important;
+}
+
+/* Sorting via CSS order: the container of the groups becomes a column */
+[data-csp-sorted="true"] {
+  display: flex !important;
+  flex-direction: column;
+}
+
+.csp-sort {
+  width: auto;
+}
+
+/* Slider instead of the Enable/Disable button (Settings -> Plugins).
+   The button itself is restyled; JS only sets the attributes. Colors: --csp-on / --csp-off */
+[data-csp-switch] {
+  position: relative;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  height: 1.5rem;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  overflow: hidden;
+  vertical-align: middle;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  color: transparent !important;
+  box-shadow: none !important;
+  background-color: var(--csp-off, #dc3545) !important;
+  transition: background-color 0.2s ease, filter 0.15s ease;
+}
+
+[data-csp-switch][data-csp-state="on"] {
+  background-color: var(--csp-on, #ffd700) !important;
+}
+
+[data-csp-switch]::after {
+  content: "";
+  position: absolute;
+  top: 0.2rem;
+  left: 0.2rem;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  transition: transform 0.2s ease;
+}
+
+[data-csp-switch][data-csp-state="on"]::after {
+  transform: translateX(1.25rem);
+}
+
+[data-csp-switch]:hover {
+  filter: brightness(1.1);
+}
+
+[data-csp-switch]:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}

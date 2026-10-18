@@ -19,6 +19,10 @@ git fetch upstream
 | InsightsI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Insights` | MIT | `97171c1` | 2026-10-18 |
 | AscensionI18n | [Servbot91/Sakotos-Stash-Repo](https://github.com/Servbot91/Sakotos-Stash-Repo) | `plugins/Ascension/plugins/Ascension/Release` | GPL-3.0 | `07ef96d` | 2026-10-17 |
 | XenithI18n | [gq1869/stashapp-xenith](https://github.com/gq1869/stashapp-xenith) | `.` | GPL-3.0 | `d7d06dc` | 2026-10-18 |
+| CollapsablePluginSettingsI18n | [Jacksyy420/Stash-Plugins](https://github.com/Jacksyy420/Stash-Plugins) | `Plugins/collapsible-plugin-settings` | 上游未提供 LICENSE | `727d385` | 2026-10-18 |
+
+> 注：CollapsablePluginSettingsI18n 的上游仓库未提供任何 LICENSE 文件（仓库内只有 README、构建脚本与 `Plugins/*`），
+> 故本目录不附许可证；上游日后补上时按该许可证随附。
 
 > 注：XenithI18n 的上游是**构建源仓库**（上游 CI 打包发布），基线取整仓库 HEAD（路径填 `.`），
 > 产物对应上游 Release 的 `xenith.zip`。路径栏必须只写路径本身，说明文字不要混进表格单元格，

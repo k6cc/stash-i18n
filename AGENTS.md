@@ -51,6 +51,7 @@ Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻�
 | LockdownI18n | `LockdownI18n.js` 顶部 `PLUGIN_VERSION` |
 | InsightsI18n | `InsightsI18n.js` 顶部 `PLUGIN_VERSION` |
 | AscensionI18n | `AscensionI18n.js` 顶部 `PLUGIN_VERSION` |
+| CollapsablePluginSettingsI18n | `CollapsablePluginSettingsI18n.js` 顶部 `PLUGIN_VERSION` |
 | XenithI18n | 版本在 `src/i18n.js` 的 `PLUGIN_VERSION`（**`package.json` 的 `version` 不参与打包，改它无效**）；压缩后常量被改名，bundle 首行形如 `` var e=`3.2.1` `` 的模板字面量——搜 `X.Y.Z` 字面量核对 |
 
 ### 流程
