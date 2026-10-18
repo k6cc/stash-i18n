@@ -15,7 +15,7 @@
   window.__CollapsablePluginSettingsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '0.10.1-2';
+  var PLUGIN_VERSION = '0.10.1-3';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -314,7 +314,12 @@
         g.setAttribute("data-csp-hidden", "true");
       }
     });
-    if (isActive && countEl) countEl.textContent = q ? shown + " / " + sc.groups.length : "";
+    if (isActive && countEl) {
+      // Writing the same text again would itself create DOM mutations and keep
+      // the mutation observer busy, so it is only written when it changed.
+      const text = q ? shown + " / " + sc.groups.length : "";
+      if (countEl.textContent !== text) countEl.textContent = text;
+    }
   }
 
   function isDisabled(group) {
@@ -611,15 +616,32 @@
     if (!rafId) rafId = requestAnimationFrame(tick);
   }
 
+  // Dialogues are appended to <body> (outside the React root) as full-screen
+  // overlays. Some of them live in a lower stacking context than the toolbar
+  // (e.g. Ascension's .hon-modal uses z-index 1000, the toolbar uses 1030), so
+  // the toolbar would float above the dialogue. It therefore steps aside while
+  // such an overlay is open.
+  function overlayOpen() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    return Array.from(document.body.children).some((el) => {
+      if (el === toolbar) return false;
+      const cs = getComputedStyle(el);
+      if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden") return false;
+      const r = el.getBoundingClientRect();
+      return r.width >= w * 0.9 && r.height >= h * 0.9;
+    });
+  }
+
   function updateToolbar(sc) {
     currentScope = sc;
-    if (sc) {
-      ensureToolbar().style.display = "flex";
-      positionToolbar(sc);
-      kick();
-    } else if (toolbar) {
-      toolbar.style.display = "none";
+    if (!sc || overlayOpen()) {
+      if (toolbar) toolbar.style.display = "none";
+      return;
     }
+    ensureToolbar().style.display = "flex";
+    positionToolbar(sc);
+    kick();
   }
 
   // ---- Flow --------------------------------------------------------------
@@ -663,11 +685,18 @@
     refreshLabels();
   }
 
-  // React rendert dynamisch -> DOM beobachten (entprellt)
+  // React renders dynamically -> watch the DOM.
+  // The page mutates continuously (other plugins re-render all the time), so a
+  // plain debounce would be reset over and over and could never fire - which
+  // left the toolbar and the collapsing dead for the whole session. The next
+  // run is therefore only scheduled once and is guaranteed to happen.
   let timer = null;
   const observer = new MutationObserver(() => {
-    clearTimeout(timer);
-    timer = setTimeout(run, 100);
+    if (timer !== null) return;
+    timer = setTimeout(() => {
+      timer = null;
+      run();
+    }, 100);
   });
   observer.observe(document.body, {
     childList: true,
