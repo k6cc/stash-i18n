@@ -18,7 +18,11 @@ git fetch upstream
 | LockdownI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Lockdown` | MIT | `4befb2a` | 2026-10-17 |
 | InsightsI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Insights` | MIT | `4befb2a` | 2026-10-17 |
 | AscensionI18n | [Servbot91/Sakotos-Stash-Repo](https://github.com/Servbot91/Sakotos-Stash-Repo) | `plugins/Ascension/plugins/Ascension/Release` | GPL-3.0 | `07ef96d` | 2026-10-17 |
-| XenithI18n | [gq1869/stashapp-xenith](https://github.com/gq1869/stashapp-xenith) | `.`（构建源仓库，产物取 Release `xenith.zip`） | GPL-3.0 | `d7d06dc` | 2026-10-18 |
+| XenithI18n | [gq1869/stashapp-xenith](https://github.com/gq1869/stashapp-xenith) | `.` | GPL-3.0 | `d7d06dc` | 2026-10-18 |
+
+> 注：XenithI18n 的上游是**构建源仓库**（上游 CI 打包发布），基线取整仓库 HEAD（路径填 `.`），
+> 产物对应上游 Release 的 `xenith.zip`。路径栏必须只写路径本身，说明文字不要混进表格单元格，
+> 否则会被工具当成路径解析。
 
 ## 候选（未汉化）
 

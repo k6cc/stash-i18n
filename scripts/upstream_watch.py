@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Detect upstream updates for the plugins recorded in UPSTREAM.md.
 
-Reads the UPSTREAM.md bookkeeping table, then asks the GitHub or GitLab API for
-the newest commit touching each plugin's upstream path. Any plugin whose
-upstream HEAD differs from the recorded baseline is reported.
+Reads the UPSTREAM.md bookkeeping table, then for each plugin compares the
+recorded baseline against the upstream **branch HEAD**, and lists the commits
+that touch the plugin's upstream path within `baseline..HEAD`.
+
+注意：判断「有没有更新」必须看上游**分支 HEAD**，不能拿「最近一条改过该路径的
+提交」当 HEAD —— 上游的自动化提交（例如 Ascension 的 zip 重建、manifest.yml
+更新）不一定会碰我们跟踪的路径，拿路径上的最新提交来判断就会误报。
 
 Output is a Markdown report on stdout, suitable to be pasted into a GitHub
 issue body. Nothing is written to stdout when everything is up to date, so
@@ -113,6 +117,40 @@ def upstream_commits(host, slug, path):
     return web_root, branch, commits
 
 
+def repo_head(host, slug, branch):
+    """Return the upstream branch tip sha ("" when unknown)."""
+    if host == "github":
+        owner, repo = slug.split("/", 1)
+        raw = github_get("/repos/%s/%s/commits?sha=%s&per_page=1"
+                         % (owner, repo, urllib.parse.quote(branch)))
+        return raw[0]["sha"] if raw else ""
+    enc = urllib.parse.quote(slug, safe="")
+    raw = gitlab_get("/projects/%s/repository/commits?ref_name=%s&per_page=1"
+                     % (enc, urllib.parse.quote(branch)))
+    return raw[0]["id"] if raw else ""
+
+
+def range_shas(host, slug, base, branch):
+    """Return the set of shas in base..branch.
+
+    Returns None when the range cannot be computed (e.g. the recorded baseline is
+    no longer an ancestor of the branch, so the compare API refuses).
+    """
+    try:
+        if host == "github":
+            owner, repo = slug.split("/", 1)
+            data = github_get("/repos/%s/%s/compare/%s...%s"
+                              % (owner, repo, urllib.parse.quote(base),
+                                 urllib.parse.quote(branch)))
+            return {c["sha"] for c in data.get("commits", [])}
+        enc = urllib.parse.quote(slug, safe="")
+        data = gitlab_get("/projects/%s/repository/compare?from=%s&to=%s"
+                          % (enc, urllib.parse.quote(base), urllib.parse.quote(branch)))
+        return {c["id"] for c in data.get("commits", [])}
+    except urllib.error.HTTPError:
+        return None
+
+
 def compare_url(host, web_root, base, head):
     if host == "github":
         return "%s/compare/%s...%s" % (web_root, base, head)
@@ -181,16 +219,37 @@ def main():
                   % (rec["id"], rec["path"], slug), file=sys.stderr)
             continue
 
-        head_sha = commits[0]["sha"]
         base = rec["base"]
+        # 1) 上游分支 HEAD 就是基线 -> 已同步（哪怕路径上有更早的提交）
+        try:
+            head_sha = repo_head(host, slug, branch)
+        except urllib.error.HTTPError as e:
+            print("WARN: %s %s API error %s reading branch head of %s"
+                  % (rec["id"], host, e.code, slug), file=sys.stderr)
+            continue
+        if not head_sha:
+            print("WARN: %s cannot resolve branch head of %s" % (rec["id"], slug),
+                  file=sys.stderr)
+            continue
         if head_sha.startswith(base) or (base and base.startswith(head_sha[:len(base)])):
-            continue  # up to date
+            continue
 
-        new = []
-        for c in commits:
-            if c["sha"].startswith(base):
-                break
-            new.append(c)
+        # 2) 待同步 = 路径提交列表 ∩ (base..HEAD)
+        in_range = range_shas(host, slug, base, branch)
+        if in_range is None:
+            print("WARN: %s cannot compute %s..%s, "
+                  "falling back to path-only list" % (rec["id"], base, branch),
+                  file=sys.stderr)
+            new = []
+            for c in commits:
+                if c["sha"].startswith(base):
+                    break
+                new.append(c)
+        else:
+            new = [c for c in commits if c["sha"] in in_range]
+        if not new:
+            continue  # 基线之后该路径无上游改动
+
         lines = ["- `%s` %s (%s)" % (c["sha"][:7], c["message"], c["date"]) for c in new]
         compare = compare_url(host, web_root, base, head_sha[:7])
         pending.append(
@@ -200,7 +259,7 @@ def main():
             "- 记账基线：`%s` (%s)\n"
             "- 上游 HEAD：`%s`（%s 分支）\n"
             "- 对比：%s\n\n"
-            "自基线以来的上游提交（最多最近 20 条）：\n\n%s\n" % (
+            "自基线以来该路径的上游提交（最多最近 20 条）：\n\n%s\n" % (
                 rec["id"], web_root, rec["path"], base, rec["date"],
                 head_sha[:7], branch, compare, "\n".join(lines)))
 
