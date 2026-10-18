@@ -15,7 +15,7 @@
   window.__CollapsablePluginSettingsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '0.10.1-1';
+  var PLUGIN_VERSION = '0.10.1-2';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;

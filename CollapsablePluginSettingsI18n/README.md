@@ -1,8 +1,8 @@
-> v0.10.1-1：基于 Jacksyy420 的 Collapsable Plugin Settings 的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；已同步上游 0.10.1。
+> v0.10.1-2：基于 Jacksyy420 的 Collapsable Plugin Settings 的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；已同步上游 0.10.1。
 
 # CollapsablePluginSettingsI18n
 
-把「设置 → 插件」与「设置 → 任务 → 插件任务」里长长的插件列表变得好收拾：插件分组可折叠、可搜索、可排序，并可用滑块代替启用/禁用按钮（Collapsable Plugin Settings 的汉化版）。汉化版只改界面文案，功能逻辑沿用上游，另附带一处兼容性修复。
+把「设置 → 插件」与「设置 → 任务 → 插件任务」里长长的插件列表变得好收拾：插件分组可折叠、可搜索、可排序，并可用滑块代替启用/禁用按钮（Collapsable Plugin Settings 的汉化版）。汉化版只改界面文案，功能逻辑沿用上游，另附带一处针对第三方插件违规 fetch 包装层的防御性加固。
 
 ## 依赖
 
@@ -25,7 +25,7 @@
 ## 与上游的差异
 
 1. UI 文案中英双语，跟随 Stash 界面语言
-2. **兼容性修复**：读取插件设置时改用字符串 URL，不再把 `URL` 对象传给 `fetch`。部分插件（如 Shinobi-Api）会包装 `window.fetch` 并对首个参数做 `url.includes(...)`，传 `URL` 对象会抛 `TypeError`，使设置读取静默失败——开关打开后毫无反应
+2. **防御性加固（规避第三方插件的违规包装层）**：读取插件设置时改用字符串 URL（`.href`），不再把 `URL` 对象传给 `fetch`。上游原写法**符合 WHATWG Fetch 规范**（首参合法类型为 `string | URL | Request`），本身没有问题；真正违规的是部分插件的 `window.fetch` 包装层——例如 Shinobi-Api 假定首参是字符串并直接 `url.includes(...)`，遇到 `URL` 对象就抛 `TypeError`，被上游的 `catch` 静默吞掉，导致设置读取失败、开关打开后毫无反应。改成字符串对包与不包的 `fetch` 都成立，行为完全等价
 3. 补齐中文界面下的文本匹配：「插件任务」小节与「插件」标题（上游只认英文/德文；中文界面下前者整块不生效，后者退化为兜底位置）
 
 ## 文件说明
