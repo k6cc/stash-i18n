@@ -6,9 +6,11 @@
 - 基线只记录 SHA 与日期，**不修改上游任何内容**；上游仓库以只读 remote 形式关联：
 
 ```
-git remote add upstream https://github.com/sanjiswe/plugins.git
-git fetch upstream
+git remote add upstream-sanjiswe-plugins https://github.com/sanjiswe/plugins.git
+git fetch upstream-sanjiswe-plugins
 ```
+
+> remote 命名统一为 `upstream-<owner>-<repo>`（`upstream-diff.ps1` 按记账表 URL 自动解析/新增；手工添加时请沿用该命名，否则脚本会按 URL 复用旧名、命名不统一）。
 
 ## 记账表
 
@@ -40,12 +42,12 @@ git fetch upstream
 
 ## 同步流程
 
-1. 拉取上游：`powershell -File scripts/upstream-diff.ps1 -Fetch`
-2. 查看某插件的上游增量：`powershell -File scripts/upstream-diff.ps1 -Plugin oStatsI18n`
+1. 拉取上游：`pwsh -NoProfile -File scripts/upstream-diff.ps1 -Fetch`
+2. 查看某插件的上游增量：`pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin oStatsI18n`
    - 输出该插件基线的上游提交列表 + diff 全文（含 `git diff` 可读补丁）
 3. 按增量把上游改动**手工套用**到汉化版，保留本地 i18n 改动（`tc()` 包裹、中文 displayName 等）
 4. 原生新增文件（如 LICENSE）一并放进插件目录，并在插件 `README.md` 注明派生关系
-5. 更新本表基线：`powershell -File scripts/upstream-diff.ps1 -Plugin oStatsI18n -Record`
+5. 更新本表基线：`pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin oStatsI18n -Record`
    - 默认取上游 HEAD；也可 `-Base <sha>` 指定
 6. 按 `AGENTS.md` 发版流程升版本、commit、打 tag
 
