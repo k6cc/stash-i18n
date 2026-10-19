@@ -17,7 +17,7 @@ git fetch upstream-sanjiswe-plugins
 | 插件 | 上游仓库 | 上游路径 | 上游 License | 已同步 commit | 同步日期 |
 |---|---|---|---|---|---|
 | oStatsI18n | [sanjiswe/plugins](https://github.com/sanjiswe/plugins) | `plugins/ostats` | AGPL-3.0 | `70e228b` | 2026-10-19 |
-| LockdownI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Lockdown` | MIT | `4befb2a` | 2026-10-17 |
+| LockdownI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Lockdown` | MIT | `0bd01b2` | 2026-10-19 |
 | InsightsI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Insights` | MIT | `0bd01b2` | 2026-10-19 |
 | AscensionI18n | [Servbot91/Sakotos-Stash-Repo](https://github.com/Servbot91/Sakotos-Stash-Repo) | `plugins/Ascension/plugins/Ascension/Release` | GPL-3.0 | `07ef96d` | 2026-10-17 |
 | XenithI18n | [gq1869/stashapp-xenith](https://github.com/gq1869/stashapp-xenith) | `.` | GPL-3.0 | `d7d06dc` | 2026-10-18 |
