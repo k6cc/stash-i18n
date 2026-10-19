@@ -1,6 +1,6 @@
 name: O Stats I18n
-description: "Stash 统计页的 O 统计增强：今日与纪录、全部时间、场景亮点、活动图表、当日回顾（含 24 小时时间线）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
-version: 2.0.0-1
+description: "Stash 统计页的 O 统计增强：今日、全部时间与纪录、场景亮点、活动图表（含 O 日历与观看日历热力图）、当日回顾（含 24 小时时间线）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
+version: 2.0.0-2
 url: https://discourse.stashapp.cc/t/o-stats/4766/7
 ui:
   javascript:
@@ -11,33 +11,41 @@ ui:
     /: .
 settings:
   01_hideTopStats:
-    displayName: 隐藏顶部统计行
+    displayName: 隐藏今日统计行
     type: BOOLEAN
-    description: 隐藏整个顶部统计行（今日 O 数、纪录日、连续天数、最长记录和平均分钟/O）。默认关闭。
+    description: 隐藏整个「今日」统计行（今日 O 数、连续天数、今日观看时长和今日观看视频数）。默认关闭。
   02_hideTopStatsOsToday:
-    displayName: '[顶部统计行] 隐藏今日 O 数'
+    displayName: '[今日] 隐藏今日 O 数'
     type: BOOLEAN
-    description: 隐藏「今日 O 数」。开启「隐藏顶部统计行」时该项无效。默认关闭。
-  03_hideTopStatsRecordDay:
-    displayName: '[顶部统计行] 隐藏纪录日'
-    type: BOOLEAN
-    description: 隐藏「纪录日」（单日 O 次数最多）。开启「隐藏顶部统计行」时该项无效。默认关闭。
+    description: 隐藏「今日 O 数」。开启「隐藏今日统计行」时该项无效。默认关闭。
   04_hideTopStatsStreak:
-    displayName: '[顶部统计行] 隐藏连续天数'
+    displayName: '[今日] 隐藏连续天数'
     type: BOOLEAN
-    description: 隐藏「连续天数」。开启「隐藏顶部统计行」时该项无效。默认关闭。
-  05_hideTopStatsRecordSession:
-    displayName: '[顶部统计行] 隐藏最长记录'
+    description: 隐藏「连续天数」。开启「隐藏今日统计行」时该项无效。默认关闭。
+  04a_hideTodayWatchTime:
+    displayName: '[今日] 隐藏今日观看时长'
     type: BOOLEAN
-    description: 隐藏「最长记录」（单日观看时长最多）。开启「隐藏顶部统计行」时该项无效。默认关闭。
-  06_hideTopStatsAverageMinPerO:
-    displayName: '[顶部统计行] 隐藏平均分钟/O'
+    description: 隐藏「今日观看时长」。开启「隐藏今日统计行」时该项无效。默认关闭。
+  04b_hideTodayVideosWatched:
+    displayName: '[今日] 隐藏今日观看视频数'
     type: BOOLEAN
-    description: 隐藏「平均分钟/O」。开启「隐藏顶部统计行」时该项无效。默认关闭。
+    description: 隐藏「今日观看视频数」。开启「隐藏今日统计行」时该项无效。默认关闭。
   06a_hideAllTimeStats:
-    displayName: 隐藏全部时间统计
+    displayName: 隐藏全部时间与纪录行
     type: BOOLEAN
-    description: 隐藏「全部时间」分区（O 总数、播放总数、已播放场景和总播放时长）。默认关闭。
+    description: 隐藏整个「全部时间与纪录」行（O 总数、播放总数、总播放时长、单日最多 O、单日最长时长和平均分钟/O）。默认关闭。
+  06b_hideTopStatsRecordDay:
+    displayName: '[全部时间与纪录] 隐藏单日最多 O'
+    type: BOOLEAN
+    description: 隐藏「单日最多 O」。开启「隐藏全部时间与纪录行」时该项无效。默认关闭。
+  06c_hideTopStatsRecordSession:
+    displayName: '[全部时间与纪录] 隐藏单日最长时长'
+    type: BOOLEAN
+    description: 隐藏「单日最长时长」（单日观看时长最多）。开启「隐藏全部时间与纪录行」时该项无效。默认关闭。
+  06d_hideTopStatsAverageMinPerO:
+    displayName: '[全部时间与纪录] 隐藏平均分钟/O'
+    type: BOOLEAN
+    description: 隐藏「平均分钟/O」。开启「隐藏全部时间与纪录行」时该项无效。默认关闭。
   07_hideSceneHighlights:
     displayName: 隐藏场景亮点
     type: BOOLEAN
@@ -66,10 +74,14 @@ settings:
     displayName: 隐藏观看时长图表
     type: BOOLEAN
     description: 隐藏观看时长柱状图。默认关闭。
-  14_hideExportImportButtons:
-    displayName: 隐藏导出/导入按钮
+  13a_hideOCalendar:
+    displayName: 隐藏 O 日历
     type: BOOLEAN
-    description: 隐藏「导出 JSON」与「导入 JSON」按钮。默认关闭。
+    description: 隐藏观看时长图表下方的 O 日历热力图。默认关闭。
+  13b_hideWatchCalendar:
+    displayName: 隐藏观看日历
+    type: BOOLEAN
+    description: 隐藏 O 日历下方的观看日历热力图。默认关闭。
   15_hideOnThisDay:
     displayName: 隐藏当日回顾
     type: BOOLEAN
@@ -98,6 +110,10 @@ settings:
     displayName: 显示媒体库统计
     type: BOOLEAN
     description: 在页面底部显示「媒体库」分区（场景、图片、图库、演员、工作室、合集和标签）。默认关闭。
+  22_hideExportImportButtons:
+    displayName: 隐藏导出/导入按钮
+    type: BOOLEAN
+    description: 隐藏页面底部的「导出 JSON」与「导入 JSON」按钮。默认关闭。
 
 exec:
   - python
@@ -105,10 +121,10 @@ exec:
 interface: raw
 tasks:
   - name: saveWatchData
-    description: Save watch history to JSON file
+    description: Used by the O Stats page to save watch time while you watch. You don't need to run this yourself.
     defaultArgs:
       mode: save
   - name: loadWatchData
-    description: Load watch history from JSON file
+    description: Used by the O Stats page to load watch time. You don't need to run this yourself.
     defaultArgs:
       mode: load
