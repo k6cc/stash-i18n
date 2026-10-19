@@ -271,12 +271,12 @@ def main():
     print("检测到以下汉化插件的上游有新提交，请按 `UPSTREAM.md` 的同步流程拉取合并：")
     print()
     print("```")
-    print("powershell -File scripts/upstream-diff.ps1 -Plugin <插件名>")
+    print("pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin <插件名>")
     print("```")
     print()
     print("\n".join(pending))
     print("---")
-    print("同步完成后执行 `powershell -File scripts/upstream-diff.ps1 -Plugin <插件名> -Record` 推进基线。")
+    print("同步完成后执行 `pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin <插件名> -Record` 推进基线。")
 
 
 if __name__ == "__main__":

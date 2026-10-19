@@ -7,16 +7,16 @@
 
   用法：
     # 1) 拉取上游最新（按记账表里的上游仓库自动解析/添加 remote）
-    powershell -File scripts/upstream-diff.ps1 -Fetch
+    pwsh -NoProfile -File scripts/upstream-diff.ps1 -Fetch
 
     # 2) 列出全部插件的上游状态（基线 / 上游 HEAD / 落后提交数）
-    powershell -File scripts/upstream-diff.ps1
+    pwsh -NoProfile -File scripts/upstream-diff.ps1
 
     # 3) 只看某个插件的上游增量（提交列表 + diffstat + 完整 diff）
-    powershell -File scripts/upstream-diff.ps1 -Plugin oStatsI18n
+    pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin oStatsI18n
 
     # 4) 同步完成后把该插件基线推进到上游 HEAD（或 -Base 指定 sha）
-    powershell -File scripts/upstream-diff.ps1 -Plugin oStatsI18n -Record
+    pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin oStatsI18n -Record
 
   说明：-Plugin 名称即 UPSTREAM.md 记账表的插件列（= 插件目录名）。
 #>
