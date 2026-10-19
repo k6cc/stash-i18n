@@ -1,6 +1,6 @@
 name: O Stats I18n
 description: "Stash 统计页的 O 统计增强：今日、全部时间与纪录、场景亮点、活动图表（含 O 日历与观看日历热力图）、当日回顾（含 24 小时时间线）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
-version: 2.0.0-3
+version: 2.1.0-1
 url: https://discourse.stashapp.cc/t/o-stats/4766/7
 ui:
   javascript:
@@ -115,16 +115,9 @@ settings:
     type: BOOLEAN
     description: 隐藏页面底部的「导出 JSON」与「导入 JSON」按钮。默认关闭。
 
+# 由统计页与场景播放器（runPluginOperation）调用，读取与保存观看时长；
+# 见 save_watch_data.py
 exec:
   - python
   - '{pluginDir}/save_watch_data.py'
 interface: raw
-tasks:
-  - name: saveWatchData
-    description: 由 O 统计页在您观看时保存观看时长，无需手动运行。
-    defaultArgs:
-      mode: save
-  - name: loadWatchData
-    description: 由 O 统计页读取观看时长，无需手动运行。
-    defaultArgs:
-      mode: load
