@@ -22,7 +22,7 @@
   window.__InsightsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.11.0-1';
+  var PLUGIN_VERSION = '2.12.0-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -623,8 +623,8 @@
   const isPoor = (name) => codecTier(name) === "poor";
   // the tiers' colours, as on Flexoki's cards: the ideal case quiet grey,
   // H264 yellow, poor red; no tier the faint grey
-  const TIER_COLOR = { good: "#9F9D96", ok: "#ECCB60", poor: "#F89A8A" };
-  const tierColor = (name) => TIER_COLOR[codecTier(name)] || "#575653";
+  const TIER_COLOR = { good: "var(--sx-grey)", ok: "var(--sx-ye-l)", poor: "var(--sx-re-l)" };
+  const tierColor = (name) => TIER_COLOR[codecTier(name)] || "var(--sx-tx3)";
   // Audio is fine unless it is one of the poor ones (Flexoki.js AUDIO_FINE).
   const AUDIO_FINE = new Set(["AAC", "MP3", "AC-3", "E-AC-3", "Opus", "FLAC", "DTS", "Vorbis", "ALAC", "TrueHD"]);
   const audioColor = (name) => (AUDIO_FINE.has(name) ? TIER_COLOR.good : TIER_COLOR.poor);
@@ -650,8 +650,8 @@
   // The suite's resolution colours, red to magenta (Flexoki's fx-res chips:
   // 480p #F89A8A ... 8K #F4A4C2). Below 480p is the next red down, so the
   // two lowest still tell apart in the ring and the legend.
-  const RES_COLOR = { "8K": "#F4A4C2", "5K+": "#C4B9E0", "4K": "#92BFDB", "1440p": "#87D3C3", "1080p": "#BEC97E", "720p": "#ECCB60",
-                      "480p": "#F89A8A", "below 480p": "#E8705F" };
+  const RES_COLOR = { "8K": "var(--sx-ma-l)", "5K+": "var(--sx-pu-l)", "4K": "var(--sx-bl-l)", "1440p": "var(--sx-cy-l)", "1080p": "var(--sx-gr-l)", "720p": "var(--sx-ye-l)",
+                      "480p": "var(--sx-re-l)", "below 480p": "var(--sx-re-tx)" };
   function resBucket(w, h) {
     const short = w && h ? Math.min(w, h) : h || w || 0;
     if (!short) return null;
@@ -1551,8 +1551,8 @@
     TagAtlas: ['<path d="M2.5 2.5h5l6 6-5 5-6-6z"/><circle cx="5.3" cy="5.3" r="1"/>', "gr"],
   };
   const HUB_DEFAULT = ['<path d="M3 4.5h10M3 8h10M3 11.5h7"/>', "ye"];
-  const PALETTE = { re: "#D14D41", or: "#DA702C", ye: "#D0A215", gr: "#879A39", cy: "#3AA99F", bl: "#4385BE", pu: "#8B7EC8", ma: "#CE5D97" };
-  // -> { svg: the inside of a 16-grid <svg>, or a whole <svg>; color: #rrggbb }
+  const PALETTE = { re: "var(--sx-re)", or: "var(--sx-or)", ye: "var(--sx-ye)", gr: "var(--sx-gr)", cy: "var(--sx-cy)", bl: "var(--sx-bl)", pu: "var(--sx-pu)", ma: "var(--sx-ma)" };
+  // -> { svg: the inside of a 16-grid <svg>, or a whole <svg>; color: a theme token var() or a connector's #rrggbb }
   function hubLook(id, conn) {
     const [svg0, c0] = HUB_LOOK[id] || HUB_DEFAULT;
     const own = conn && typeof conn.icon === "string" && /^\s*<(svg|path|rect|circle|g|polyline|line|ellipse|polygon)\b/i.test(conn.icon) && !/<script|\son\w+\s*=/i.test(conn.icon) ? conn.icon.trim() : "";
@@ -2555,21 +2555,288 @@
   // Flexoki (Steph Ango's ink-and-paper palette), dark. Each tab has its
   // own accent; cards are raised (lit top edge, shadow below), data wells
   // are sunk (dark top edge, inner shadow), so the page reads in layers.
-  const ACC = { re: "#D14D41", or: "#DA702C", ye: "#D0A215", gr: "#879A39", cy: "#3AA99F", bl: "#4385BE", pu: "#8B7EC8", ma: "#CE5D97" };
+  // ═══ Theme tokens (suiteTheme) ═════════════════════════════════════════════
+  // The suite's colours, taken from whatever theme Stash shows (docs/THEME.md
+  // "Theme tokens", MAINTENANCE §4.25). With the Flexoki theme plugin on, the
+  // tokens are Flexoki's exact values, so nothing changes for its users.
+  // Without it they are worked out from the page: its background, a card,
+  // the text, muted text and the primary button, so panels sit in Stash's
+  // own dark look, a light theme or custom CSS. Colours that mean something
+  // (green done, red delete, yellow warning, blue O's and links, the codec
+  // and resolution tints) keep their Flexoki hue and are made lighter or
+  // darker until they read there: 3:1 for shapes, 4.5:1 for text.
+  // Copied identically into every plugin (scripts/check_shared.py); its
+  // state is all in the closure.
+  //   T = suiteTheme({ id, scope, extra })  scope: the plugin's root selectors
+  //   T.start()   writes `scope { --sx-*: ... }` once and again when the theme changes
+  //   T.t         the tokens now, as "#RRGGBB" (k and the shadows are not colours)
+  //   T.mode      "flexoki", "dark" or "light"
+  //   T.on(fn)    fn(T) after a change, for a canvas or a colour set from JS
+  //   extra(T)    more CSS the plugin works out from the tokens, rewritten with them
+  //   T.parse / hex / lum / contrast / mix / fit / derive / tokensCss: the pure parts
+  function suiteTheme(o) {
+    o = o || {};
+    // Flexoki dark as the plugins have always used it (docs/THEME.md); the
+    // plugins' muted text is #878580, not the theme plugin's #9F9D96 (grey)
+    const FLEX = {
+      bg: "#100F0F", bg2: "#1C1B1A", ui: "#282726", ui2: "#343331", ui3: "#403E3C", raise: "#2D2C2A", edge: "#48463F",
+      line: "#0D0C0C", line2: "#0B0A0A", deep: "#000000", slab: "#232120",
+      tx3: "#575653", tx2b: "#6F6E69", tx2: "#878580", tx1b: "#B7B5AC", tx: "#CECDC3", hi: "#E6E4D9", grey: "#9F9D96",
+      paper: "#FFFCF0", on: "#100F0F", acc: "#DA702C", "acc-tx": "#100F0F",
+    };
+    // each hue: [base 400, pressed 600, text 300, tint 200, deep 700]
+    const HUES = {
+      re: ["#D14D41", "#AF3029", "#E8705F", "#F89A8A", "#942822"], or: ["#DA702C", "#BC5215", "#EC8B49", "#F9AE77", "#9D4310"],
+      ye: ["#D0A215", "#AD8301", "#DFB431", "#ECCB60", "#8E6B01"], gr: ["#879A39", "#66800B", "#A9BA5A", "#BEC97E", "#536907"],
+      cy: ["#3AA99F", "#24837B", "#5ABDAC", "#87D3C3", "#1C6C66"], bl: ["#4385BE", "#205EA6", "#66A0C8", "#92BFDB", "#1A4F8C"],
+      pu: ["#8B7EC8", "#5E409D", "#A699D0", "#C4B9E0", "#4F3685"], ma: ["#CE5D97", "#A02F6F", "#E47DA8", "#F4A4C2", "#87285E"],
+    };
+    Object.keys(HUES).forEach((h) => { const v = HUES[h]; FLEX[h] = v[0]; FLEX[h + "-d"] = v[1]; FLEX[h + "-tx"] = v[2]; FLEX[h + "-l"] = v[3]; });
+    // Stash's own dark look, for when nothing can be read
+    const STASH = { bg: "#202B33", surface: "#30404D", text: "#F5F8FA", muted: "#BFCCD6", primary: "#137CBD" };
+    const SHADOW = (k) => {
+      const a = (x) => "rgba(0,0,0," + +(x * k).toFixed(3) + ")";
+      return { sh: "0 1px 0 " + a(0.7) + ", 0 12px 24px -10px " + a(0.65), float: "0 1px 0 " + a(0.7) + ", 0 20px 50px -12px " + a(0.75),
+               well: "inset 0 2px 5px " + a(0.5) };
+    };
+
+    // "#abc", "#aabbcc(dd)", rgb()/rgba() in either syntax, color(srgb ...),
+    // "transparent": [r, g, b, a] with r g b 0..255, or null
+    function parse(s) {
+      if (Array.isArray(s)) return s;
+      s = String(s || "").trim().toLowerCase();
+      if (s === "transparent") return [0, 0, 0, 0];
+      let m = /^#([0-9a-f]{3,8})$/.exec(s);
+      if (m) {
+        let h = m[1];
+        if (h.length === 3 || h.length === 4) h = h.split("").map((c) => c + c).join("");
+        if (h.length !== 6 && h.length !== 8) return null;
+        const n = (i) => parseInt(h.slice(i, i + 2), 16);
+        return [n(0), n(2), n(4), h.length === 8 ? n(6) / 255 : 1];
+      }
+      m = /^rgba?\(([^)]*)\)$/.exec(s);
+      if (m) {
+        const p = m[1].split(/[\s,/]+/).filter(Boolean);
+        if (p.length < 3) return null;
+        const ch = (v) => (/%$/.test(v) ? parseFloat(v) * 2.55 : parseFloat(v));
+        const al = p[3] === undefined ? 1 : /%$/.test(p[3]) ? parseFloat(p[3]) / 100 : parseFloat(p[3]);
+        const out = [ch(p[0]), ch(p[1]), ch(p[2]), al];
+        return out.some((x) => isNaN(x)) ? null : out;
+      }
+      m = /^color\(srgb\s+([^)]*)\)$/.exec(s);
+      if (m) {
+        const p = m[1].split(/[\s/]+/).filter(Boolean).map(parseFloat);
+        return p.length >= 3 && !p.some(isNaN) ? [p[0] * 255, p[1] * 255, p[2] * 255, p[3] === undefined ? 1 : p[3]] : null;
+      }
+      return null;
+    }
+    const clamp = (x) => Math.max(0, Math.min(255, Math.round(x)));
+    const hex = (c) => { c = parse(c); return c ? "#" + c.slice(0, 3).map((x) => clamp(x).toString(16).padStart(2, "0")).join("").toUpperCase() : null; };
+    // c with alpha laid over an opaque base
+    const over = (c, base) => { c = parse(c); base = parse(base); const a = c[3]; return [0, 1, 2].map((i) => c[i] * a + base[i] * (1 - a)).concat(1); };
+    // a weight w of b mixed into a (w 0 is a), as color-mix in srgb
+    const mix = (a, b, w) => { a = parse(a); b = parse(b); return hex([0, 1, 2].map((i) => a[i] + (b[i] - a[i]) * w)); };
+    function lum(c) {
+      c = parse(c);
+      const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+      return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+    }
+    const contrast = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+    // c moved toward white (on a dark page) or black (on a light one) in 4%
+    // steps until it reaches `ratio` against every colour in `against`
+    function fit(c, against, ratio, dark) {
+      const to = dark ? "#FFFFFF" : "#000000", worst = (x) => Math.min.apply(null, against.map((b) => contrast(x, b)));
+      let out = hex(c);
+      for (let i = 1; i <= 25 && worst(out) < ratio; i++) out = mix(c, to, i * 0.04);
+      return out;
+    }
+
+    // tokens from samples of the page ({ bg, surface, text, muted, border,
+    // primary }, any CSS colour; missing ones fall back to Stash's dark look)
+    function derive(s) {
+      s = s || {};
+      const pick = (v, d) => { const c = parse(v); return c && c[3] > 0 ? c : parse(d); };
+      const bg = hex(over(pick(s.bg, STASH.bg), "#000000"));
+      let tx = hex(over(pick(s.text, STASH.text), bg));
+      const dark = lum(bg) < lum(tx) || (lum(bg) < 0.18 && contrast(bg, tx) < 3);
+      if (contrast(tx, bg) < 4.5) tx = dark ? "#F5F8FA" : "#1C2127";
+      let ui = hex(over(pick(s.surface, parse(s.bg) ? bg : STASH.surface), bg));
+      // a card no different from the page (or wildly different) still needs a raised step
+      if (contrast(ui, bg) < 1.04 || contrast(ui, bg) > 3 || (dark ? lum(ui) < lum(bg) : false)) ui = mix(bg, tx, dark ? 0.07 : 0.035);
+      if (!dark && contrast(ui, bg) < 1.04) ui = bg;
+      const t = { bg, ui, tx };
+      t.bg2 = dark ? mix(bg, ui, 0.5) : mix(ui, tx, 0.04);
+      t.ui2 = mix(ui, tx, dark ? 0.075 : 0.06);
+      t.ui3 = mix(ui, tx, dark ? 0.145 : 0.13);
+      const bd = parse(s.border);
+      if (bd && bd[3] > 0) { const b = hex(over(bd, ui)), r = contrast(b, ui); if (r > 1.1 && r < 3) t.ui3 = b; }
+      t.raise = dark ? mix(ui, tx, 0.03) : mix(ui, "#FFFFFF", 0.5);
+      t.edge = dark ? mix(ui, tx, 0.19) : mix(ui, "#FFFFFF", 0.7);
+      t.line = dark ? mix(bg, "#000000", 0.19) : mix(ui, tx, 0.2);
+      t.line2 = dark ? mix(bg, "#000000", 0.31) : mix(ui, tx, 0.22);
+      t.deep = dark ? "#000000" : mix(ui, tx, 0.25);
+      t.slab = dark ? mix(bg, tx, 0.07) : mix(bg, tx, 0.1);
+      t.hi = mix(tx, dark ? "#FFFFFF" : "#000000", 0.45);
+      t.tx1b = mix(tx, ui, 0.14);
+      const mu = parse(s.muted);
+      let tx2 = mix(tx, ui, 0.43);
+      if (mu && mu[3] > 0) { const m = hex(over(mu, ui)); if (contrast(m, ui) < contrast(tx, ui) * 0.92) tx2 = m; }
+      t.tx2 = fit(tx2, [ui, bg], 4.5, dark);
+      t.tx2b = mix(tx, ui, 0.57);
+      t.tx3 = mix(tx, ui, 0.66);
+      t.grey = fit(mix(tx, ui, 0.3), [ui, bg], 4.5, dark);
+      t.paper = FLEX.paper;
+      // text on a filled meaning colour: dark ink on Flexoki's 400s, white on the darker light-theme ones
+      t.on = dark ? mix(bg, "#000000", 0.4) : "#FFFFFF";
+      Object.keys(HUES).forEach((h) => {
+        const v = HUES[h];
+        t[h] = fit(dark ? v[0] : v[1], [ui, bg], 3, dark);
+        t[h + "-d"] = dark ? v[1] : mix(t[h], "#000000", 0.2);
+        t[h + "-tx"] = fit(dark ? v[2] : v[1], [ui, bg], 4.5, dark);
+        t[h + "-l"] = fit(dark ? v[3] : v[4], [ui, bg], 4.5, dark);
+      });
+      const pr = parse(s.primary);
+      t.acc = pr && pr[3] > 0 ? fit(hex(over(pr, ui)), [ui], 3, dark) : t.or;
+      t["acc-tx"] = contrast(t.acc, "#FFFFFF") >= contrast(t.acc, t.on) ? "#FFFFFF" : t.on;
+      return t;
+    }
+
+    // the CSS for a token set: scope { --sx-name: value; ... }
+    function tokensCss(t, mode, scope) {
+      const k = mode === "light" ? 0.3 : 1, sh = SHADOW(k);
+      const lines = Object.keys(t).map((n) => "--sx-" + n + ": " + t[n] + ";");
+      lines.push("--sx-k: " + k + ";", "--sx-sh: " + sh.sh + ";", "--sx-float: " + sh.float + ";", "--sx-well: " + sh.well + ";",
+                 "--sx-scheme: " + (mode === "light" ? "light" : "dark") + ";");
+      return (scope || ":root") + " {\n  " + lines.join("\n  ") + "\n}";
+    }
+
+    const T = { t: Object.assign({}, FLEX), mode: "flexoki", FLEX, HUES, STASH, parse, hex, over, mix, lum, contrast, fit, derive, tokensCss };
+    const subs = [];
+    let el = null, timer = 0, started = false, css = "";
+    T.on = (fn) => { subs.push(fn); return T; };
+
+    // Flexoki's stylesheet defines --fx-bg on <html>; its accent setting is --fx-acc
+    function flexokiOn() {
+      try { return !!getComputedStyle(document.documentElement).getPropertyValue("--fx-bg").trim(); } catch (_) { return false; }
+    }
+    // what the page looks like: probes with Stash's (Bootstrap's) classes, so
+    // a theme that styles them is read even where no card is on screen
+    function sample() {
+      const out = {};
+      const cs = (e) => getComputedStyle(e);
+      const b = document.body, h = document.documentElement;
+      const hb = parse(cs(h).backgroundColor), bb = b ? parse(cs(b).backgroundColor) : null;
+      let page = hb && hb[3] > 0 ? over(hb, STASH.bg) : null;
+      if (bb && bb[3] > 0) page = over(bb, page || STASH.bg);
+      if (page) out.bg = page;
+      if (b) out.text = cs(b).color;
+      if (!b) return out;
+      const box = document.createElement("div");
+      box.setAttribute("aria-hidden", "true");
+      box.style.cssText = "position:absolute;left:-9999px;top:0;width:10px;height:10px;visibility:hidden;pointer-events:none";
+      box.innerHTML = '<div class="card"><span class="text-muted">x</span><button type="button" class="btn btn-primary">x</button></div>';
+      b.appendChild(box);
+      try {
+        const card = box.firstChild, c = cs(card);
+        out.surface = c.backgroundColor;
+        if (parseFloat(c.borderTopWidth) > 0) out.border = c.borderTopColor;
+        out.muted = cs(card.firstChild).color;
+        out.primary = cs(card.lastChild).backgroundColor;
+        if (c.color) out.text = c.color;
+      } finally { box.remove(); }
+      return out;
+    }
+    function compute() {
+      if (flexokiOn()) {
+        const t = Object.assign({}, FLEX);
+        // the accent follows the theme plugin's setting (plugins keep their own colours)
+        try {
+          const a = parse(getComputedStyle(document.documentElement).getPropertyValue("--fx-acc").trim());
+          if (a) t.acc = hex(a);
+        } catch (_) {}
+        return { t, mode: "flexoki" };
+      }
+      const t = derive(sample());
+      return { t, mode: lum(t.bg) < lum(t.tx) ? "dark" : "light" };
+    }
+    function apply() {
+      timer = 0;
+      let r;
+      try { r = compute(); } catch (e) { return; }
+      const next = tokensCss(r.t, r.mode, o.scope) + (o.extra ? "\n" + o.extra({ t: r.t, mode: r.mode, mix, fit, contrast }) : "");
+      T.t = r.t; T.mode = r.mode;
+      if (next === css && el && el.isConnected) return;
+      css = next;
+      if (!el || !el.isConnected) {
+        el = document.getElementById((o.id || "suite") + "-sx") || document.createElement("style");
+        el.id = (o.id || "suite") + "-sx";
+        document.head.appendChild(el);
+      }
+      el.textContent = css;
+      subs.forEach((fn) => { try { fn(T); } catch (_) {} });
+    }
+    const soon = () => { if (!timer) timer = setTimeout(apply, 120); };
+    T.refresh = apply;
+    T.start = () => {
+      if (started) return T;
+      started = true;
+      apply();
+      try {
+        // a theme arrives as a stylesheet (Stash adds plugin CSS as <link>s,
+        // so also wait for each one to load), a class or style on <html> or
+        // <body>, or the system's light/dark switch
+        const watchLink = (n) => { if (n && n.tagName === "LINK") n.addEventListener("load", soon, { once: true }); };
+        const mo = new MutationObserver((list) => {
+          for (const m of list) {
+            if (m.target === el || (el && el.contains(m.target))) continue;
+            if (m.addedNodes) m.addedNodes.forEach(watchLink);
+            soon();
+          }
+        });
+        mo.observe(document.head, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "media", "href", "rel"] });
+        mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-bs-theme", "data-fx-accent"] });
+        if (document.body) mo.observe(document.body, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-bs-theme"] });
+        document.querySelectorAll('link[rel~="stylesheet"]').forEach((n) => { if (!n.sheet) watchLink(n); });
+        const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+        if (mq && mq.addEventListener) mq.addEventListener("change", soon);
+      } catch (_) {}
+      return T;
+    };
+    return T;
+  }
+  // Insights draws into #insights and its one tooltip. Its own in-between
+  // shades (the error box, row dividers, tinted verdicts, the calendar
+  // ramps) are exact Flexoki values with Flexoki on; without it they are
+  // mixed from the tokens the same way (a tint of the hue on the surface).
+  const THEME = suiteTheme({ id: "insights", scope: "#insights, #ins-tip", extra: (X) => {
+    const t = X.t, m = X.mix, fx = X.mode === "flexoki", light = X.mode === "light";
+    const v = {
+      "err-bd": fx ? "#6B2620" : m(t.ui, t.re, 0.45), "err-bg": fx ? "#2A1513" : m(t.ui, t.re, 0.12), "err-tx": fx ? "#F0C9C3" : t["re-l"],
+      "div1": fx ? "#262524" : m(t.ui, light ? t.tx : t.bg, light ? 0.1 : 0.12), "div2": fx ? "#222120" : m(t.ui, light ? t.tx : t.bg, light ? 0.14 : 0.33),
+      "up-bg": fx ? "#2B3016" : m(t.ui, t.gr, 0.18), "down-bg": fx ? "#3A1C19" : m(t.ui, t.re, 0.18), "warn-bg": fx ? "#3A3014" : m(t.ui, t.ye, 0.18),
+    };
+    Object.keys(RAMP_STEPS).forEach((k) => {
+      const h = RAMP_HUE[k], steps = fx ? RAMP_STEPS[k] : [m(t.ui, t[h + "-d"], 0.3), m(t.ui, t[h + "-d"], 0.65), t[h + "-d"], t[h], t[h + "-l"]];
+      steps.forEach((c, i) => { v[k + (i + 1)] = c; });
+    });
+    return "#insights, #ins-tip { " + Object.keys(v).map((k) => "--ins-" + k + ": " + v[k] + ";").join(" ") + " }";
+  } });
+
   function injectStyles() {
     if (document.getElementById("insights-styles")) return;
+    THEME.start();
     const s = document.createElement("style");
     s.id = "insights-styles";
     s.textContent = `
-#insights { --bg: #100F0F; --bg2: #1C1B1A; --ui: #282726; --ui2: #343331; --ui3: #403E3C; --tx3: #575653; --tx2b: #6F6E69;
-  --tx2: #878580; --tx1b: #B7B5AC; --tx: #CECDC3; --hi: #E6E4D9;
-  --re: #D14D41; --or: #DA702C; --ye: #D0A215; --gr: #879A39; --cy: #3AA99F; --bl: #4385BE; --pu: #8B7EC8; --ma: #CE5D97;
-  --up: #A9BA5A; --down: #E8705F; --acc: var(--ma);
+#insights { --bg: var(--sx-bg); --bg2: var(--sx-bg2); --ui: var(--sx-ui); --ui2: var(--sx-ui2); --ui3: var(--sx-ui3); --tx3: var(--sx-tx3); --tx2b: var(--sx-tx2b);
+  --tx2: var(--sx-tx2); --tx1b: var(--sx-tx1b); --tx: var(--sx-tx); --hi: var(--sx-hi);
+  --re: var(--sx-re); --or: var(--sx-or); --ye: var(--sx-ye); --gr: var(--sx-gr); --cy: var(--sx-cy); --bl: var(--sx-bl); --pu: var(--sx-pu); --ma: var(--sx-ma);
+  --up: var(--sx-gr-tx); --down: var(--sx-re-tx); --acc: var(--ma);
   /* O's are blue across the suite (Flexoki's O badge, Lockdown); magenta up to 2.5 */
-  --o: #4385BE; --otx: #66A0C8;
+  --o: var(--sx-bl); --otx: var(--sx-bl-tx);
   max-width: 1400px; margin: 28px auto 40px; padding: 18px 18px 8px; color: var(--tx); font-size: 14px; text-align: left;
-  background: var(--bg); border-radius: 16px; border: 1px solid #000; border-top-color: #232120;
-  box-shadow: 0 20px 50px -20px rgba(0,0,0,.7); }
+  background: var(--bg); border-radius: 16px; border: 1px solid var(--sx-deep); border-top-color: var(--sx-slab);
+  box-shadow: 0 20px 50px -20px rgba(0,0,0,calc(.7*var(--sx-k))); }
 #insights[data-tab="library"] { --acc: var(--or); } #insights[data-tab="files"] { --acc: var(--cy); }
 #insights[data-tab="health"] { --acc: var(--ye); } #insights[data-tab="collection"] { --acc: var(--gr); }
 #insights[data-tab="actions"] { --acc: var(--re); } #insights[data-tab="movies"] { --acc: var(--pu); }
@@ -2582,19 +2849,19 @@
 .ins-title { font-size: 22px; font-weight: 700; color: var(--hi); display: flex; align-items: center; gap: 8px; letter-spacing: -.01em; }
 .ins-title .ins-ic { width: 20px; height: 20px; color: var(--acc); }
 .ins-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; padding: 4px; border-radius: 11px; background: var(--bg2);
-  border: 1px solid #000; border-bottom-color: var(--ui2); box-shadow: inset 0 2px 4px rgba(0,0,0,.5); }
+  border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); box-shadow: inset 0 2px 4px rgba(0,0,0,calc(.5*var(--sx-k))); }
 .ins-tab { display: inline-flex; align-items: center; gap: 7px; background: none; border: 1px solid transparent; color: var(--tx1b);
   border-radius: 8px; padding: 6px 13px; cursor: pointer; transition: background .12s, color .12s; }
 .ins-tab .ins-ic { color: var(--tc); opacity: .75; }
 .ins-tab:hover { color: var(--hi); background: rgba(255,255,255,.03); }
 .ins-tab.on { color: var(--hi); background: var(--ui2); background: color-mix(in srgb, var(--tc) 24%, var(--ui));
-  border-color: color-mix(in srgb, var(--tc) 55%, transparent); border-bottom-color: rgba(0,0,0,.6);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 2px 6px rgba(0,0,0,.4); }
+  border-color: color-mix(in srgb, var(--tc) 55%, transparent); border-bottom-color: rgba(0,0,0,calc(.6*var(--sx-k)));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 2px 6px rgba(0,0,0,calc(.4*var(--sx-k))); }
 .ins-tab.on .ins-ic { opacity: 1; }
 .ins-meta { color: var(--tx2); font-size: 12px; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ins-btn { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(180deg, var(--ui2), var(--ui)); color: var(--tx);
-  border: 1px solid #0b0a0a; border-top-color: var(--ui3); border-radius: 8px; padding: 5px 11px; cursor: pointer;
-  box-shadow: 0 1px 2px rgba(0,0,0,.5); }
+  border: 1px solid var(--sx-line2); border-top-color: var(--ui3); border-radius: 8px; padding: 5px 11px; cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0,0,0,calc(.5*var(--sx-k))); }
 .ins-btn:hover { color: var(--hi); border-top-color: var(--tx3); }
 .ins-btn:disabled { opacity: .6; cursor: default; }
 .ins-btn.big { padding: 8px 16px; font-size: 14px; }
@@ -2602,18 +2869,18 @@
 .ins-ic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .ins-progress { padding: 50px 0; text-align: center; color: var(--tx2); }
 .ins-progress .bar { width: 260px; max-width: 80%; height: 6px; margin: 14px auto 0; background: var(--bg2); border-radius: 3px; overflow: hidden;
-  box-shadow: inset 0 1px 2px rgba(0,0,0,.6); }
+  box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); }
 .ins-upd.busy { color: var(--cy); }
 .ins-upd.busy::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--cy);
   vertical-align: 1px; animation: insPulse 1s ease-in-out infinite alternate; }
 @keyframes insPulse { from { opacity: .25; } to { opacity: 1; } }
 .ins-progress .bar i { display: block; width: 40%; height: 100%; background: var(--acc); border-radius: 3px; animation: insSlide 1.1s ease-in-out infinite; }
 @keyframes insSlide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
-.ins-error { padding: 14px 16px; border: 1px solid #6b2620; background: #2a1513; border-radius: 10px; color: #f0c9c3; }
+.ins-error { padding: 14px 16px; border: 1px solid var(--ins-err-bd); background: var(--ins-err-bg); border-radius: 10px; color: var(--ins-err-tx); }
 
-.ins-card { position: relative; background: linear-gradient(180deg, #2D2C2A 0, var(--ui) 64px); border: 1px solid #0d0c0c; border-top-color: #48463F;
+.ins-card { position: relative; background: linear-gradient(180deg, var(--sx-raise) 0, var(--ui) 64px); border: 1px solid var(--sx-line); border-top-color: var(--sx-edge);
   border-radius: 12px; padding: 14px 16px 15px; min-width: 0; margin-bottom: 14px;
-  box-shadow: 0 1px 0 rgba(0,0,0,.7), 0 12px 24px -10px rgba(0,0,0,.65); }
+  box-shadow: 0 1px 0 rgba(0,0,0,calc(.7*var(--sx-k))), 0 12px 24px -10px rgba(0,0,0,calc(.65*var(--sx-k))); }
 .ins-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 14px; margin-bottom: 14px; }
 .ins-grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; margin-bottom: 14px; }
 .ins-grid > .ins-card, .ins-grid3 > .ins-card, .ins-grid > div > .ins-card:last-child { margin-bottom: 0; }
@@ -2645,14 +2912,14 @@
 .ins-tile .s .warn { color: var(--ye); }
 .ins-tile.click { cursor: pointer; } .ins-tile.click:hover { border-top-color: var(--tx3); }
 
-.ins-well { background: var(--bg2); border: 1px solid #000; border-bottom-color: var(--ui2); border-radius: 10px; padding: 10px 12px;
-  box-shadow: inset 0 2px 5px rgba(0,0,0,.5); }
-.ins-chip { background: var(--bg2); border: 1px solid #000; border-bottom-color: var(--ui2); color: var(--tx1b); border-radius: 8px;
+.ins-well { background: var(--bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); border-radius: 10px; padding: 10px 12px;
+  box-shadow: inset 0 2px 5px rgba(0,0,0,calc(.5*var(--sx-k))); }
+.ins-chip { background: var(--bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); color: var(--tx1b); border-radius: 8px;
   padding: 3px 10px; font-size: 12px; cursor: pointer; }
 .ins-chip:hover { color: var(--hi); }
 .ins-chip.on { color: var(--hi); background: color-mix(in srgb, var(--c, var(--acc)) 22%, var(--ui2)); border-color: color-mix(in srgb, var(--c, var(--acc)) 50%, transparent);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
-.ins-nav { background: var(--bg2); border: 1px solid #000; border-bottom-color: var(--ui2); color: var(--tx1b); border-radius: 8px; width: 28px; height: 26px; cursor: pointer; line-height: 1; }
+.ins-nav { background: var(--bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); color: var(--tx1b); border-radius: 8px; width: 28px; height: 26px; cursor: pointer; line-height: 1; }
 .ins-nav:disabled { opacity: .35; cursor: default; }
 
 /* bar charts: every bar carries its value and its label */
@@ -2660,9 +2927,9 @@
 .ins-bars { display: flex; align-items: flex-end; gap: 3px; border-bottom: 1px solid var(--ui3); }
 .ins-bar { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative; }
 .ins-bar i { display: block; width: 100%; max-width: 46px; border-radius: 3px 3px 0 0; background: var(--c, var(--acc)); min-height: 2px;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -6px 10px -6px rgba(0,0,0,.35); transition: filter .12s; }
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -6px 10px -6px rgba(0,0,0,calc(.35*var(--sx-k))); transition: filter .12s; }
 .ins-bar.zero i { background: var(--ui3); box-shadow: none; }
-.ins-bar.hi i { background: #F0A8C8; background: color-mix(in srgb, var(--c, var(--acc)) 55%, #FFFCF0); }
+.ins-bar.hi i { background: var(--sx-ma-l); background: color-mix(in srgb, var(--c, var(--acc)) 55%, var(--sx-paper)); }
 .ins-bar.click { cursor: pointer; } .ins-bar.click:hover i { filter: brightness(1.22); }
 .ins-bar em { font-style: normal; font-size: 10.5px; color: var(--tx1b); margin-bottom: 3px; white-space: nowrap; font-variant-numeric: tabular-nums; line-height: 1; }
 .ins-bar.zero em { color: var(--tx3); }
@@ -2681,7 +2948,7 @@
 .ins-row .l span { overflow: hidden; text-overflow: ellipsis; }
 .ins-row .v { text-align: right; color: var(--tx); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ins-row .v small { color: var(--tx2); font-size: 11px; margin-left: 4px; }
-.ins-trk { height: 9px; border-radius: 5px; background: var(--bg2); box-shadow: inset 0 1px 2px rgba(0,0,0,.6); overflow: hidden; }
+.ins-trk { height: 9px; border-radius: 5px; background: var(--bg2); box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); overflow: hidden; }
 .ins-trk i { display: block; height: 100%; border-radius: 5px; background: var(--c, var(--acc)); box-shadow: inset 0 1px 0 rgba(255,255,255,.2); }
 .ins-dual { display: flex; flex-direction: column; gap: 3px; }
 .ins-dual .ins-trk:first-child { height: 6px; } .ins-dual .ins-trk:first-child i { background: var(--tx3); box-shadow: none; }
@@ -2694,7 +2961,7 @@
 .ins-con th, .ins-con td { padding: 4px 6px; text-align: right; font-weight: 400; white-space: nowrap; }
 .ins-con th { color: var(--tx2b); font-size: 11px; letter-spacing: .06em; }
 .ins-con td:first-child, .ins-con th:first-child { text-align: left; }
-.ins-con tr + tr td { border-top: 1px solid #262524; }
+.ins-con tr + tr td { border-top: 1px solid var(--ins-div1); }
 .ins-con tr.click { cursor: pointer; } .ins-con tr.click:hover td { background: rgba(255,255,255,.03); }
 .ins-strip { display: flex; flex-wrap: wrap; gap: 8px 26px; margin-bottom: 14px; padding: 12px 16px; }
 .ins-strip span { color: var(--tx2b); margin-right: 6px; letter-spacing: .06em; font-size: 11px; }
@@ -2702,21 +2969,21 @@
 .ins-strip .warn b { color: var(--ye); }
 .ins-li { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 8px; margin: 0 -8px;
   border-radius: 7px; min-height: 40px; }
-.ins-li + .ins-li { border-top: 1px solid #222120; }
+.ins-li + .ins-li { border-top: 1px solid var(--ins-div2); }
 .ins-li.click { cursor: pointer; } .ins-li.click:hover { background: rgba(255,255,255,.04); }
 .ins-li .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--tx); }
 .ins-li .sub { color: var(--tx2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ins-li .v { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ins-li.av { grid-template-columns: 36px minmax(0, 1fr) auto; }
-.ins-th { width: 48px; height: 28px; border-radius: 5px; object-fit: cover; background: var(--ui2); display: block; box-shadow: 0 1px 3px rgba(0,0,0,.5); }
+.ins-th { width: 48px; height: 28px; border-radius: 5px; object-fit: cover; background: var(--ui2); display: block; box-shadow: 0 1px 3px rgba(0,0,0,calc(.5*var(--sx-k))); }
 .ins-av { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; background: var(--ui3); display: flex; align-items: center; object-position: top;
   justify-content: center; font-size: 11px; font-weight: 700; color: var(--tx); overflow: hidden; box-shadow: 0 0 0 2px var(--ui), 0 0 0 3px var(--c, var(--ui3)); }
 .ins-av.sm { width: 24px; height: 24px; font-size: 9px; }
 .ins-sq { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--c, var(--tx1b));
-  background: color-mix(in srgb, var(--c, var(--tx2)) 15%, var(--bg2)); box-shadow: inset 0 1px 2px rgba(0,0,0,.4); }
+  background: color-mix(in srgb, var(--c, var(--tx2)) 15%, var(--bg2)); box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.4*var(--sx-k))); }
 
 .ins-lift { display: inline-block; min-width: 48px; text-align: center; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.ins-lift.up { background: #2B3016; color: var(--up); } .ins-lift.down { background: #3A1C19; color: var(--down); }
+.ins-lift.up { background: var(--ins-up-bg); color: var(--up); } .ins-lift.down { background: var(--ins-down-bg); color: var(--down); }
 .ins-lift.even { background: var(--ui2); color: var(--tx1b); }
 .ins-pulls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .ins-pull { padding: 10px 12px; cursor: pointer; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; }
@@ -2732,7 +2999,7 @@
 .ins-cal i { display: block; aspect-ratio: 1; border-radius: 3px; background: var(--h0); cursor: pointer; }
 .ins-cal i.f { background: transparent; cursor: default; }
 .ins-cal i.today { outline: 1.5px solid var(--hi); outline-offset: -1.5px; }
-.ins-cal i:hover:not(.f) { outline: 1.5px solid #92BFDB; outline-offset: -1.5px; }
+.ins-cal i:hover:not(.f) { outline: 1.5px solid var(--sx-bl-l); outline-offset: -1.5px; }
 .ins-calm { display: grid; gap: 3px; font-size: 10.5px; color: var(--tx2); margin-bottom: 4px; }
 .ins-calm span { white-space: nowrap; overflow: visible; }
 .ins-calm b { color: var(--tx); font-weight: 600; margin-left: 3px; }
@@ -2743,7 +3010,7 @@
 .ins-hm .t { text-align: right; color: var(--tx); font-variant-numeric: tabular-nums; }
 .ins-hm .c { text-align: center; color: var(--tx1b); font-variant-numeric: tabular-nums; }
 .ins-day { position: relative; height: 36px; margin: 10px 0 4px; }
-.ins-day .axis { position: absolute; left: 0; right: 0; top: 16px; height: 4px; border-radius: 2px; background: var(--bg2); box-shadow: inset 0 1px 1px rgba(0,0,0,.6); }
+.ins-day .axis { position: absolute; left: 0; right: 0; top: 16px; height: 4px; border-radius: 2px; background: var(--bg2); box-shadow: inset 0 1px 1px rgba(0,0,0,calc(.6*var(--sx-k))); }
 .ins-day .dot { position: absolute; top: 10px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; border: 2px solid var(--ui); cursor: pointer; }
 .ins-day .dot.o { background: var(--o); } .ins-day .dot.p { background: var(--cy); width: 12px; height: 12px; top: 12px; margin-left: -6px; }
 .ins-hours { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--tx2); }
@@ -2755,7 +3022,7 @@
 .ins-week i.z { background: var(--ui3); box-shadow: none; }
 .ins-week b { color: var(--hi); font-weight: 600; }
 .ins-week .today { color: var(--hi); }
-.ins-ring { position: relative; flex: none; border-radius: 50%; background: var(--bg2); box-shadow: inset 0 3px 8px rgba(0,0,0,.6), 0 1px 0 rgba(255,255,255,.05); }
+.ins-ring { position: relative; flex: none; border-radius: 50%; background: var(--bg2); box-shadow: inset 0 3px 8px rgba(0,0,0,calc(.6*var(--sx-k))), 0 1px 0 rgba(255,255,255,.05); }
 .ins-ring svg { position: absolute; inset: 0; }
 .ins-ring .mid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .ins-ring .mid b { font-size: 26px; color: var(--hi); line-height: 1.05; }
@@ -2767,29 +3034,29 @@
 .ins-nb .v { font-size: 17px; font-weight: 700; color: var(--hi); }
 .ins-nb .s { font-size: 12px; color: var(--tx1b); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ins-tm { display: flex; flex-wrap: wrap; gap: 4px; height: 168px; align-content: stretch; }
-.ins-tm div { border-radius: 7px; padding: 7px 9px; font-size: 12px; color: #100F0F; overflow: hidden; cursor: pointer; min-width: 60px;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.25), inset 0 -2px 0 rgba(0,0,0,.2); }
+.ins-tm div { border-radius: 7px; padding: 7px 9px; font-size: 12px; color: var(--sx-on); overflow: hidden; cursor: pointer; min-width: 60px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25), inset 0 -2px 0 rgba(0,0,0,calc(.2*var(--sx-k))); }
 .ins-tm div:hover { filter: brightness(1.12); }
 .ins-tm b { display: block; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ins-chk { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 9px 8px; margin: 0 -8px; border-radius: 7px; }
-.ins-chk + .ins-chk { border-top: 1px solid #222120; }
+.ins-chk + .ins-chk { border-top: 1px solid var(--ins-div2); }
 .ins-chk.click { cursor: pointer; } .ins-chk.click:hover { background: rgba(255,255,255,.04); }
 .ins-chk .n { color: var(--tx); } .ins-chk .sub { color: var(--tx2); font-size: 12px; margin-top: 1px; }
 .ins-chk .v { font-variant-numeric: tabular-nums; color: var(--hi); font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .ins-chk .more { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 5px; }
 .ins-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 6px; font-size: 12px; background: var(--bg2);
-  border: 1px solid #000; border-bottom-color: var(--ui2); color: var(--tx1b); cursor: pointer; }
+  border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); color: var(--tx1b); cursor: pointer; }
 .ins-pill:hover { color: var(--hi); }
 .ins-go { color: var(--bl); font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .ins-go .ins-ic { width: 13px; height: 13px; }
-.ins-go:hover { color: #66A0C8; }
+.ins-go:hover { color: var(--sx-bl-tx); }
 .ins-cc { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 18px; padding: 0 4px; border-radius: 3px;
   background: var(--ui3); color: var(--tx); font-size: 10px; font-weight: 700; letter-spacing: .05em; flex: none; }
 /* Stash positions .fi absolutely inside its own cards; ours sit in the text */
 .ins-flag { position: static !important; display: inline-block !important; width: 22px !important; height: 16px !important; margin: 0 !important;
   line-height: 16px; border-radius: 3px; flex: none; background-size: cover !important; filter: none !important;
-  box-shadow: 0 0 0 1px rgba(0,0,0,.4), 0 1px 2px rgba(0,0,0,.4); }
-.ins-split { display: flex; height: 14px; border-radius: 7px; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,.6); margin: 4px 0 8px; }
+  box-shadow: 0 0 0 1px rgba(0,0,0,calc(.4*var(--sx-k))), 0 1px 2px rgba(0,0,0,calc(.4*var(--sx-k))); }
+.ins-split { display: flex; height: 14px; border-radius: 7px; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); margin: 4px 0 8px; }
 .ins-split i { display: block; height: 100%; box-shadow: inset 0 1px 0 rgba(255,255,255,.2); }
 .ins-banner { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 14px; --c: var(--cy); }
 .ins-banner .ins-btn { margin-left: auto; }
@@ -2818,7 +3085,7 @@
 .ins-lr.ins-axis { min-height: 22px; font-size: 11px; color: var(--tx2b); }
 .ins-lr.ins-axis .l { color: var(--tx2); font-weight: 600; }
 .ins-lr .ax { display: flex; justify-content: space-between; }
-.ins-div { position: relative; height: 10px; border-radius: 5px; background: var(--bg2); box-shadow: inset 0 1px 2px rgba(0,0,0,.6); }
+.ins-div { position: relative; height: 10px; border-radius: 5px; background: var(--bg2); box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); }
 .ins-div::before { content: ""; position: absolute; left: 50%; top: -4px; bottom: -4px; width: 1px; background: var(--tx3); }
 .ins-div i { position: absolute; top: 1px; bottom: 1px; border-radius: 4px; box-shadow: inset 0 1px 0 rgba(255,255,255,.2); }
 /* 2.2 Where the space goes: a ranked list */
@@ -2833,13 +3100,13 @@
 .ins-data { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 14px; }
 .ins-data svg { width: 14px; height: 14px; flex: none; }
 .ins-opts { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin: 4px 0 12px; font-size: 12px; color: var(--tx1b); }
-.ins-seg { display: inline-flex; gap: 3px; padding: 3px; border-radius: 9px; background: var(--bg2); border: 1px solid #000; border-bottom-color: var(--ui2);
-  box-shadow: inset 0 2px 4px rgba(0,0,0,.5); }
+.ins-seg { display: inline-flex; gap: 3px; padding: 3px; border-radius: 9px; background: var(--bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,calc(.5*var(--sx-k))); }
 .ins-seg button { background: none; border: 0; color: var(--tx1b); padding: 4px 11px; border-radius: 6px; cursor: pointer; font-size: 12px; }
-.ins-seg button.on { color: var(--hi); background: color-mix(in srgb, var(--bl) 26%, var(--ui2)); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 1px 2px rgba(0,0,0,.4); }
+.ins-seg button.on { color: var(--hi); background: color-mix(in srgb, var(--bl) 26%, var(--ui2)); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 1px 2px rgba(0,0,0,calc(.4*var(--sx-k))); }
 .ins-tog { display: inline-flex; align-items: center; gap: 8px; background: none; border: 0; color: var(--tx1b); cursor: pointer; font-size: 12px; padding: 0; text-align: left; }
 /* the suite's switch (Movies, Scenes Toolkit, Tags Toolkit): 26x15, an 11px knob */
-.ins-tog i { position: relative; width: 26px; height: 15px; border-radius: 8px; background: var(--ui3); box-shadow: inset 0 1px 2px rgba(0,0,0,.5); flex: none; transition: background .12s; }
+.ins-tog i { position: relative; width: 26px; height: 15px; border-radius: 8px; background: var(--ui3); box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.5*var(--sx-k))); flex: none; transition: background .12s; }
 .ins-tog i::after { content: ""; position: absolute; left: 2px; top: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--tx1b); transition: left .12s; }
 .ins-tog.on i { background: var(--gr); } .ins-tog.on i::after { left: 13px; background: var(--hi); }
 .ins-tog:disabled, .ins-seg button:disabled { opacity: .5; cursor: default; }
@@ -2847,7 +3114,7 @@
 .ins-sum em { font-style: normal; color: var(--tx2b); letter-spacing: .06em; margin-right: 7px; font-size: 11px; }
 .ins-sum b { color: var(--hi); font-weight: 600; }
 .ins-dups { max-height: 560px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ui3) transparent; }
-.ins-dg { padding: 6px 0; } .ins-dg + .ins-dg { border-top: 1px solid #262524; }
+.ins-dg { padding: 6px 0; } .ins-dg + .ins-dg { border-top: 1px solid var(--ins-div1); }
 .ins-dg.review { background: color-mix(in srgb, var(--ye) 6%, transparent); border-radius: 8px; padding: 6px 6px; }
 .ins-dg .why { color: var(--ye); font-size: 12px; display: flex; align-items: center; gap: 6px; margin: 0 0 4px 30px; }
 .ins-cp { display: grid; grid-template-columns: 20px 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 34px; font-size: 12.5px; }
@@ -2855,24 +3122,24 @@
 .ins-cp .m { color: var(--tx2); }
 .ins-cp .v { text-align: right; color: var(--tx2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ins-k { display: inline-block; min-width: 54px; text-align: center; font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 1px 6px; border-radius: 6px; margin-right: 8px; }
-.ins-k.keep { background: #2B3016; color: var(--up); } .ins-k.del { background: #3A1C19; color: var(--down); } .ins-k.look { background: #3A3014; color: var(--ye); }
+.ins-k.keep { background: var(--ins-up-bg); color: var(--up); } .ins-k.del { background: var(--ins-down-bg); color: var(--down); } .ins-k.look { background: var(--ins-warn-bg); color: var(--ye); }
 .ins-bx { width: 16px; height: 16px; border-radius: 5px; border: 1px solid var(--tx3); background: var(--bg2); cursor: pointer; padding: 0; position: relative;
-  box-shadow: inset 0 1px 2px rgba(0,0,0,.6); }
-.ins-bx.on { background: var(--re); border-color: #AF3029; }
-.ins-bx.on::after { content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid #100F0F; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); }
+.ins-bx.on { background: var(--re); border-color: var(--sx-re-d); }
+.ins-bx.on::after { content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid var(--sx-bg); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .ins-bx:disabled { cursor: default; opacity: .6; }
 .ins-btns { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; align-items: center; margin-top: 12px; }
-.ins-btn.danger { background: linear-gradient(180deg, #D14D41, #AF3029); color: #100F0F; font-weight: 600; border-top-color: #E8705F; }
-.ins-btn.danger:hover { color: #100F0F; filter: brightness(1.08); }
-.ins-btn.danger.armed { background: linear-gradient(180deg, #E8705F, #D14D41); box-shadow: 0 0 0 3px color-mix(in srgb, var(--re) 35%, transparent), 0 1px 2px rgba(0,0,0,.5); }
+.ins-btn.danger { background: linear-gradient(180deg, var(--sx-re), var(--sx-re-d)); color: var(--sx-on); font-weight: 600; border-top-color: var(--sx-re-tx); }
+.ins-btn.danger:hover { color: var(--sx-on); filter: brightness(1.08); }
+.ins-btn.danger.armed { background: linear-gradient(180deg, var(--sx-re-tx), var(--sx-re)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--re) 35%, transparent), 0 1px 2px rgba(0,0,0,calc(.5*var(--sx-k))); }
 .ins-btn:disabled { opacity: .45; cursor: default; filter: none; }
 .ins-run { display: flex; align-items: center; gap: 12px; margin-top: 12px; font-size: 12px; color: var(--tx1b); }
-.ins-run .bar { flex: 0 0 220px; height: 8px; border-radius: 4px; background: var(--bg2); box-shadow: inset 0 1px 2px rgba(0,0,0,.6); overflow: hidden; }
+.ins-run .bar { flex: 0 0 220px; height: 8px; border-radius: 4px; background: var(--bg2); box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); overflow: hidden; }
 .ins-run .bar i { display: block; height: 100%; background: var(--re); border-radius: 4px; transition: width .2s; }
 /* 2.5 Movies: posters are portrait, so their rows are narrower on the left */
 .ins-li.mv { grid-template-columns: 30px minmax(0, 1fr) auto; }
 .ins-poster { width: 30px; height: 44px; border-radius: 6px; object-fit: cover; background: var(--ui2); display: flex; align-items: center;
-  justify-content: center; color: var(--tx3); box-shadow: 0 1px 3px rgba(0,0,0,.5); }
+  justify-content: center; color: var(--tx3); box-shadow: 0 1px 3px rgba(0,0,0,calc(.5*var(--sx-k))); }
 .ins-mvh { display: flex; align-items: center; gap: 8px; margin: 12px 0 2px; font-size: 12px; color: var(--tx1b); }
 .ins-mvh i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .ins-mvh b { color: var(--hi); font-weight: 600; }
@@ -2882,8 +3149,8 @@
   .ins-side .h { width: 100%; } .ins-lr { grid-template-columns: 22px minmax(90px, 140px) minmax(80px, 1fr) 48px; } .ins-lr .nums { display: none; }
   .ins-sr { grid-template-columns: minmax(90px, 150px) minmax(0, 1fr) 70px; } .ins-sr .p, .ins-sr .n { display: none; } }
 .ins-foot { color: var(--tx3); font-size: 11px; text-align: center; padding: 4px 0 8px; }
-#ins-tip { position: fixed; z-index: 2000; pointer-events: none; background: #1C1B1A; border: 1px solid #403E3C; color: #E6E4D9;
-  border-radius: 8px; padding: 7px 10px; font-size: 12px; line-height: 1.5; max-width: 320px; box-shadow: 0 10px 28px rgba(0,0,0,.6);
+#ins-tip { position: fixed; z-index: 2000; pointer-events: none; background: var(--sx-bg2); border: 1px solid var(--sx-ui3); color: var(--sx-hi);
+  border-radius: 8px; padding: 7px 10px; font-size: 12px; line-height: 1.5; max-width: 320px; box-shadow: 0 10px 28px rgba(0,0,0,calc(.6*var(--sx-k)));
   display: none; white-space: pre-line; }
 @media (max-width: 700px) { .ins-hero { grid-template-columns: minmax(0, 1fr); } .ins-hero .big { font-size: 32px; }
   .ins-grid, .ins-grid3 { grid-template-columns: minmax(0, 1fr); } .ins-sub, .ins-stats { margin-left: 0; } }
@@ -2896,8 +3163,8 @@
   .ins-tab { grid-column: span 3; justify-content: center; padding: 6px 8px; min-width: 0; white-space: nowrap; }
   .ins-tabs:has(> .ins-tab:nth-child(7)) > .ins-tab:nth-child(-n+3) { grid-column: span 2; } }
 /* 2.8: Library to-do, the toolkits' hub at the top of Actions */
-.ins-pri { background: linear-gradient(180deg, #879A39, #66800B); color: #100F0F; font-weight: 600; border-top-color: #A9BA5A; }
-.ins-pri:hover { color: #100F0F; filter: brightness(1.08); }
+.ins-pri { background: linear-gradient(180deg, var(--sx-gr), var(--sx-gr-d)); color: var(--sx-on); font-weight: 600; border-top-color: var(--sx-gr-tx); }
+.ins-pri:hover { color: var(--sx-on); filter: brightness(1.08); }
 .ins-hub { margin-bottom: 14px; }
 .ins-hub0 { margin: -4px 0 12px; } .ins-hub0 .ins-note { margin-top: 0; }
 .ins-hubtop { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 8px 0 12px; }
@@ -2906,8 +3173,8 @@
 .ins-hubt b.one { color: var(--up); }
 .ins-hubt0 { color: var(--tx2); font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
 .ins-hubs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ins-hubqueue { margin-bottom: 12px; padding: 10px 12px; border-radius: 10px; background: var(--bg2); border: 1px solid #000; border-bottom-color: var(--ui2);
-  box-shadow: inset 0 2px 5px rgba(0,0,0,.5); }
+.ins-hubqueue { margin-bottom: 12px; padding: 10px 12px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2);
+  box-shadow: inset 0 2px 5px rgba(0,0,0,calc(.5*var(--sx-k))); }
 .ins-hqh { color: var(--hi); font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
 .ins-hqr { display: grid; grid-template-columns: 150px minmax(0, 1fr) 160px; gap: 10px; align-items: center; font-size: 12px; color: var(--tx2); padding: 3px 0; }
 .ins-hqr b { color: var(--tx); font-weight: 500; }
@@ -2918,11 +3185,11 @@
 .ins-hkh { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
 .ins-hkh b { color: var(--hi); font-size: 14px; font-weight: 600; }
 .ins-hkw { color: var(--tx2); font-size: 12px; flex: 1; min-width: 0; } .ins-hkw.busy { color: var(--cy); }
-.ins-hkbar { display: block; height: 6px; border-radius: 3px; background: var(--ui); box-shadow: inset 0 1px 2px rgba(0,0,0,.6); overflow: hidden; margin: 0 0 8px; }
+.ins-hkbar { display: block; height: 6px; border-radius: 3px; background: var(--ui); box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); overflow: hidden; margin: 0 0 8px; }
 .ins-hqr .ins-hkbar { margin: 0; }
 .ins-hkbar i { display: block; height: 100%; background: var(--cy); border-radius: 3px; box-shadow: inset 0 1px 0 rgba(255,255,255,.2); transition: width .3s; }
 .ins-hki { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0; }
-.ins-hki + .ins-hki, .ins-hkc + .ins-hki { border-top: 1px solid #262524; }
+.ins-hki + .ins-hki, .ins-hkc + .ins-hki { border-top: 1px solid var(--ins-div1); }
 .ins-hkn { font-size: 18px; font-weight: 700; color: var(--c); display: flex; align-items: center; justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .ins-hki.info .ins-hkn { color: var(--tx1b); }
 .ins-hkn i { width: 7px; height: 7px; border-radius: 2px; background: var(--c); margin-right: auto; flex: none; opacity: .9; }
@@ -2932,7 +3199,7 @@
 .ins-hkl { color: var(--tx); min-width: 0; }
 .ins-hka { display: flex; justify-content: flex-end; }
 .ins-hkrun { white-space: nowrap; }
-.ins-hkc { margin: 2px 0 8px 86px; padding: 10px 12px; border-radius: 8px; background: var(--ui); border: 1px solid #0d0c0c; border-top-color: var(--ui3);
+.ins-hkc { margin: 2px 0 8px 86px; padding: 10px 12px; border-radius: 8px; background: var(--ui); border: 1px solid var(--sx-line); border-top-color: var(--ui3);
   color: var(--tx); font-size: 13px; line-height: 1.5; }
 .ins-hkc .ins-btns { margin-top: 8px; }
 .ins-hkmsg { color: var(--tx2); font-size: 12px; padding: 6px 0 2px; display: flex; align-items: center; gap: 6px; line-height: 1.45; }
@@ -2946,7 +3213,7 @@
 .ins-hmiss { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .ins-hubpick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 4px; }
 .ins-hchip { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 10px 4px 5px; border-radius: 8px; cursor: pointer; font-size: 13px;
-  background: var(--bg2); border: 1px solid #000; border-bottom-color: var(--ui2); color: var(--tx2); box-shadow: inset 0 2px 4px rgba(0,0,0,.4); transition: background .12s, color .12s; }
+  background: var(--bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); color: var(--tx2); box-shadow: inset 0 2px 4px rgba(0,0,0,calc(.4*var(--sx-k))); transition: background .12s, color .12s; }
 .ins-hchip .ins-hbadge { opacity: .5; filter: grayscale(.6); }
 .ins-hchip:hover:not(:disabled) { color: var(--tx); }
 .ins-hchip.on { color: var(--hi); background: var(--ui2); background: color-mix(in srgb, var(--c) 22%, var(--ui2));
@@ -2960,7 +3227,7 @@
 .ins-hchip:disabled:not(.busy) { opacity: .6; cursor: default; }
 .ins-hpq { display: inline-flex; gap: 4px; margin-left: 4px; }
 .ins-hlink { background: none; border: 0; color: var(--bl); font-size: 12px; padding: 8px 6px; cursor: pointer; border-radius: 6px; }
-.ins-hlink:hover:not(:disabled) { color: #66A0C8; } .ins-hlink:disabled { opacity: .5; cursor: default; }
+.ins-hlink:hover:not(:disabled) { color: var(--sx-bl-tx); } .ins-hlink:disabled { opacity: .5; cursor: default; }
 .ins-hpn { margin: 2px 0 12px; }
 @media (max-width: 576px) {
   .ins-hubgrid { grid-template-columns: minmax(0, 1fr); }
@@ -3107,7 +3374,7 @@
       return a;
     }).join("");
     return `<div class="ins-ring" style="width:${size}px;height:${size}px"><svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#282726" stroke-width="13"/>${arcs}</svg>
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--sx-ui)" stroke-width="13"/>${arcs}</svg>
       <div class="mid"><b>${big}</b><span>${small}</span></div></div>`;
   }
 
@@ -3319,10 +3586,15 @@
 
   // O's in Flexoki blue like everywhere in the suite (magenta up to 2.5).
   // Plays share the ramp; the calendar shows one or the other, never both.
-  const RAMP = { o: ["#282726", "#133051", "#1A4F8C", "#205EA6", "#4385BE", "#92BFDB"],
-                 watch: ["#282726", "#14302D", "#1C5A54", "#24837B", "#3AA99F", "#87D3C3"],
-                 hour: ["#282726", "#2A2640", "#3F3765", "#5E409D", "#8B7EC8", "#C4B9F0"],
-                 play: ["#282726", "#133051", "#1A4F8C", "#205EA6", "#4385BE", "#92BFDB"] };
+  // The steps are theme tokens (--ins-<ramp><n>, worked out in THEME's
+  // extra): Flexoki's own steps with Flexoki on, the theme's surface into
+  // the hue without it.
+  const RAMP_STEPS = { o: ["#133051", "#1A4F8C", "#205EA6", "#4385BE", "#92BFDB"],
+                       watch: ["#14302D", "#1C5A54", "#24837B", "#3AA99F", "#87D3C3"],
+                       hour: ["#2A2640", "#3F3765", "#5E409D", "#8B7EC8", "#C4B9F0"] };
+  const RAMP_HUE = { o: "bl", watch: "cy", hour: "pu" };
+  const rampOf = (k) => ["var(--sx-ui)"].concat([1, 2, 3, 4, 5].map((n) => `var(--ins-${k}${n})`));
+  const RAMP = { o: rampOf("o"), watch: rampOf("watch"), hour: rampOf("hour"), play: rampOf("o") };
   function heat(v, max, ramp) {
     if (v <= 0) return ramp[0];
     const r = v / max;
@@ -3631,7 +3903,7 @@
 
   // ── Library ───────────────────────────────────────────────────────────────
 
-  const CYCLE = ["#3AA99F", "#DA702C", "#8B7EC8", "#4385BE", "#D0A215", "#879A39", "#CE5D97", "#D14D41"];
+  const CYCLE = ["var(--sx-cy)", "var(--sx-or)", "var(--sx-pu)", "var(--sx-bl)", "var(--sx-ye)", "var(--sx-gr)", "var(--sx-ma)", "var(--sx-re)"];
   function ago(ms) {
     const min = Math.round((Date.now() - ms) / 60000);
     if (min < 1) return tc("刚刚", "just now");
@@ -3657,8 +3929,8 @@
     // where the space goes: by resolution, other copies, images
     const resSegs = RES_ORDER.filter((r) => fs.res.has(r)).map((r) => ({ label: r, size: fs.res.get(r).size, color: RES_COLOR[r] }));
     const firstFiles = resSegs.reduce((a, x) => a + x.size, 0);
-    if (L.size - firstFiles > total * 0.002) resSegs.push({ label: isZh() ? "额外副本" : "extra copies", size: L.size - firstFiles, color: "#6F6E69" });
-    if (imgSize) resSegs.push({ label: isZh() ? "图片" : "images", size: imgSize, color: "#879A39" });
+    if (L.size - firstFiles > total * 0.002) resSegs.push({ label: isZh() ? "额外副本" : "extra copies", size: L.size - firstFiles, color: "var(--sx-tx2b)" });
+    if (imgSize) resSegs.push({ label: isZh() ? "图片" : "images", size: imgSize, color: "var(--sx-gr)" });
 
     // release or added timeline
     const source = l.timeline === "added" ? m.lib.added : m.lib.released;
@@ -4491,7 +4763,7 @@
     };
 
     const P2 = problemChecks(m);
-    const ringColor = H.score === null ? "#575653" : H.score >= 0.8 ? "#879A39" : H.score >= 0.66 ? "#D0A215" : H.score >= 0.5 ? "#DA702C" : "#D14D41";
+    const ringColor = H.score === null ? "var(--sx-tx3)" : H.score >= 0.8 ? "var(--sx-gr)" : H.score >= 0.66 ? "var(--sx-ye)" : H.score >= 0.5 ? "var(--sx-or)" : "var(--sx-re)";
 
     el.innerHTML = `
       <section class="ins-card ins-hero" style="--c:var(--ye)">
@@ -4533,13 +4805,13 @@
       data-tip="${esc(tc(`${fmtDate(x.from, { month: "long", year: "numeric" })}\n新增 ${fmtN(x.added)} · 共 ${fmtN(x.total)}\n当时占磁盘 ${fmtBytes(x.size)}`,
                           `${fmtDate(x.from, { month: "long", year: "numeric" })}\n+${fmtN(x.added)} added · ${fmtN(x.total)} in all\n${fmtBytes(x.size)} on disk then`))}"/>`).join("");
     return `<div class="ins-well" style="padding:8px 10px 4px"><svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block;overflow:visible">
-      <defs><linearGradient id="ins-gg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#879A39" stop-opacity=".45"/><stop offset="1" stop-color="#879A39" stop-opacity="0"/></linearGradient></defs>
-      ${ticks.map((v) => `<line x1="${padL}" x2="${W}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="#282726" stroke-width="1" vector-effect="non-scaling-stroke"/>
-        <text x="${padL - 6}" y="${(Y(v) + 4).toFixed(1)}" fill="#878580" font-size="11" text-anchor="end">${fmtN(v)}</text>`).join("")}
-      ${years.map((x) => `<text x="${X(x.i).toFixed(1)}" y="${H - 5}" fill="#878580" font-size="11" text-anchor="${x.i === 0 ? "start" : "middle"}">${x.d.getFullYear()}</text>
-        <line x1="${X(x.i).toFixed(1)}" x2="${X(x.i).toFixed(1)}" y1="${H - padB}" y2="${H - padB + 4}" stroke="#575653" vector-effect="non-scaling-stroke"/>`).join("")}
+      <defs><linearGradient id="ins-gg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--sx-gr)" stop-opacity=".45"/><stop offset="1" stop-color="var(--sx-gr)" stop-opacity="0"/></linearGradient></defs>
+      ${ticks.map((v) => `<line x1="${padL}" x2="${W}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--sx-ui)" stroke-width="1" vector-effect="non-scaling-stroke"/>
+        <text x="${padL - 6}" y="${(Y(v) + 4).toFixed(1)}" fill="var(--sx-tx2)" font-size="11" text-anchor="end">${fmtN(v)}</text>`).join("")}
+      ${years.map((x) => `<text x="${X(x.i).toFixed(1)}" y="${H - 5}" fill="var(--sx-tx2)" font-size="11" text-anchor="${x.i === 0 ? "start" : "middle"}">${x.d.getFullYear()}</text>
+        <line x1="${X(x.i).toFixed(1)}" x2="${X(x.i).toFixed(1)}" y1="${H - padB}" y2="${H - padB + 4}" stroke="var(--sx-tx3)" vector-effect="non-scaling-stroke"/>`).join("")}
       <path d="${line} L${X(g.length - 1).toFixed(1)} ${H - padB} L${padL} ${H - padB} Z" fill="url(#ins-gg)"/>
-      <path d="${line}" fill="none" stroke="#A9BA5A" stroke-width="2.5" vector-effect="non-scaling-stroke"/>${hit}</svg></div>`;
+      <path d="${line}" fill="none" stroke="var(--sx-gr-tx)" stroke-width="2.5" vector-effect="non-scaling-stroke"/>${hit}</svg></div>`;
   }
 
   function renderCollection(el) {
@@ -4599,7 +4871,7 @@
       <div class="ins-grid">
         ${card({ title: tc("热门标签", "Top tags"), icon: "tag", c: "gr", sub: tc("每个标签对应的场景数。点一个看看它常和什么一起出现。", "Scenes with each tag. Click one to see what goes with it.") },
           `<div class="ins-scroll" style="max-height:470px">${rows(tags.slice(0, 40).map((t) => ({ labelHtml: `<span style="${tagSel && t.id === tagSel.id ? "color:var(--hi);font-weight:600" : ""}">${esc(t.name)}</span>`,
-            value: t.n, text: `${fmtN(t.n)} <small>${pct(t.n / Math.max(1, N))}</small>`, color: tagSel && t.id === tagSel.id ? "#A9BA5A" : "var(--gr)",
+            value: t.n, text: `${fmtN(t.n)} <small>${pct(t.n / Math.max(1, N))}</small>`, color: tagSel && t.id === tagSel.id ? "var(--sx-gr-tx)" : "var(--gr)",
             set: `col.tag=${t.id}`, tip: tc(`${t.name}：${plural(t.n, "scene")}`, `${t.name}: ${plural(t.n, "scene")}`) })), { lw: "minmax(110px,170px)", vw: "100px" })}</div>`)}
         ${card({ title: tagSel ? tc(`常与 ${esc(tagSel.name)} 一同出现`, `Goes with ${esc(tagSel.name)}`) : tc("常与…一同出现", "Goes with"), icon: "link", c: "gr",
           right: tagSel ? go(S([{ type: "tags", modifier: "INCLUDES", value: items(tagSel.id, tagSel.name) }]), tc(`${fmtN(tagSel.n)} 个场景`, `${fmtN(tagSel.n)} scenes`)) : "",
