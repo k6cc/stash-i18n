@@ -1,6 +1,6 @@
 name: O Stats I18n
 description: "Stash 统计页的 O 统计增强：今日、全部时间与纪录、场景亮点、活动图表（含 O 日历与观看日历热力图）、当日回顾（含 24 小时时间线）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
-version: 2.0.0-2
+version: 2.0.0-3
 url: https://discourse.stashapp.cc/t/o-stats/4766/7
 ui:
   javascript:
@@ -121,10 +121,10 @@ exec:
 interface: raw
 tasks:
   - name: saveWatchData
-    description: Used by the O Stats page to save watch time while you watch. You don't need to run this yourself.
+    description: 由 O 统计页在您观看时保存观看时长，无需手动运行。
     defaultArgs:
       mode: save
   - name: loadWatchData
-    description: Used by the O Stats page to load watch time. You don't need to run this yourself.
+    description: 由 O 统计页读取观看时长，无需手动运行。
     defaultArgs:
       mode: load
