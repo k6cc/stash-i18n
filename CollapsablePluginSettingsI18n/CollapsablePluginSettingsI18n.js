@@ -15,7 +15,7 @@
   window.__CollapsablePluginSettingsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '0.10.1-3';
+  var PLUGIN_VERSION = '0.10.4-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -118,9 +118,7 @@
   async function loadSettings() {
     let cfg = null;
     try {
-      // A plain string URL on purpose: plugins that wrap window.fetch (e.g.
-      // Shinobi-Api) call url.includes(...) on the first argument and throw a
-      // TypeError on a URL object, which made every settings read fail.
+      // Pass a plain string: other plugins wrap window.fetch and expect args[0] to be a string
       const graphqlUrl = new URL("graphql", document.baseURI).href;
       const res = await fetch(graphqlUrl, {
         method: "POST",
@@ -129,9 +127,11 @@
         body: JSON.stringify({ query: "query { configuration { plugins } }" }),
       });
       const json = await res.json();
+      if (json && json.errors) throw new Error(json.errors.map((e) => e.message).join("; "));
       const all = json && json.data && json.data.configuration.plugins;
       cfg = (all && all[PLUGIN_ID]) || {};
-    } catch {
+    } catch (err) {
+      console.warn("[CollapsablePluginSettingsI18n] Could not read the plugin settings:", err);
       cfg = null;
     }
     mode = normalizeMode(cfg && cfg.defaultState);
@@ -186,26 +186,54 @@
 
   // ---- Bereiche (Scopes) -------------------------------------------------
 
-  // Heading that is exactly "Plugins" (not "Installed Plugins"). It may sit inside
-  // or just above the tab content, so the surrounding area is searched.
-  // Fallback: first heading outside of a plugin group.
   const HEADING_SELECTOR = "h1, h2, h3, h4, h5, h6, .setting-heading";
 
-  // Heading of the Plugins tab (lower case); add the text of your UI language if needed
+  // Heading of the Plugins tab (lower case); only a fallback for the structural lookup
   const PANE_HEADINGS = ["plugins", "插件"];
 
+  const h1Of = (sec) => Array.from(sec.children).find((c) => c.tagName === "H1") || null;
+
+  // Heading of the plugin list in the Plugins tab. Found by structure, so it works in every
+  // UI language: the last section that contains plugin groups (the sections "Installed Plugins"
+  // and "Available Plugins" come before it). Fallback: heading text, then the first heading.
   function findHeading(pane) {
+    const sections = Array.from(pane.querySelectorAll(".setting-section")).filter((sec) =>
+      sec.querySelector(SELECTORS.group)
+    );
+    const h = sections.length ? h1Of(sections[sections.length - 1]) : null;
+    if (h) return h;
+
     const scope =
       (pane.closest(".tab-content") && pane.closest(".tab-content").parentElement) ||
       pane.parentElement ||
       document;
     const all = Array.from(scope.querySelectorAll(HEADING_SELECTOR)).filter(
-      (h) => !h.closest("[data-csp-key]")
+      (el) => !el.closest("[data-csp-key]")
     );
     const exact = all.find(
-      (h) => h.offsetParent !== null && PANE_HEADINGS.includes((h.textContent || "").trim().toLowerCase())
+      (el) => el.offsetParent !== null && PANE_HEADINGS.includes((el.textContent || "").trim().toLowerCase())
     );
-    return exact || all.find((h) => pane.contains(h)) || null;
+    return exact || all.find((el) => pane.contains(el)) || null;
+  }
+
+  // The section "Plugin Tasks" in the Tasks tab. Found by structure, so it works in every UI
+  // language: Stash renders it as the last block of ".tasks-panel-tasks", after the last <hr>
+  // (and not at all when no enabled plugin has tasks). Fallback: heading text.
+  function findPluginTasksSection(tasksPane) {
+    const list = tasksPane.querySelector(".tasks-panel-tasks");
+    if (list) {
+      const hrs = Array.from(list.children).filter((c) => c.tagName === "HR");
+      const last = hrs[hrs.length - 1];
+      const next = last && last.nextElementSibling;
+      const sec = next && (next.matches(".setting-section") ? next : next.querySelector(".setting-section"));
+      if (sec && sec.querySelector(SELECTORS.group)) return sec;
+    }
+    return (
+      Array.from(tasksPane.querySelectorAll(".setting-section")).find((sec) => {
+        const h = h1Of(sec);
+        return h && TASKS.headings.includes((h.textContent || "").trim().toLowerCase());
+      }) || null
+    );
   }
 
   function resolveScopes() {
@@ -227,11 +255,7 @@
 
     const tasksPane = document.querySelector(TASKS.pane);
     if (tasksPane) {
-      const h1Of = (sec) => Array.from(sec.children).find((c) => c.tagName === "H1");
-      const section = Array.from(tasksPane.querySelectorAll(".setting-section")).find((sec) => {
-        const h = h1Of(sec);
-        return h && TASKS.headings.includes((h.textContent || "").trim().toLowerCase());
-      });
+      const section = findPluginTasksSection(tasksPane);
       if (section) {
         out.push({
           id: "tasks",
@@ -573,7 +597,10 @@
   }
 
   // The toolbar stays outside the React tree and is placed by coordinates,
-  // right-aligned at the height of the heading.
+  // right-aligned at the height of the heading. It keeps a low z-index so the
+  // bands that stay pinned to the top of the viewport - Stash's top navigation
+  // bar (fixed, 1030) and the job queue on the tasks page (sticky, 2) - paint
+  // over it when the page scrolls the heading underneath them.
   function positionToolbar(sc) {
     if (!toolbar || toolbar.style.display === "none") return;
     const heading = sc.heading;
@@ -593,8 +620,9 @@
       right = sc.pane.getBoundingClientRect().right - padRight;
     }
 
+    const width = toolbar.offsetWidth;
     const topPx = Math.round(top + window.scrollY) + "px";
-    const leftPx = Math.round(Math.max(0, right - toolbar.offsetWidth + window.scrollX)) + "px";
+    const leftPx = Math.round(Math.max(0, right - width + window.scrollX)) + "px";
     if (toolbar.style.top !== topPx) toolbar.style.top = topPx;
     if (toolbar.style.left !== leftPx) toolbar.style.left = leftPx;
   }
