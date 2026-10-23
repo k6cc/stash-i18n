@@ -1,6 +1,6 @@
 name: O Stats I18n
-description: "Stash 统计页的 O 统计增强：今日、全部时间与纪录、场景亮点、活动图表（含 O 日历与观看日历热力图）、当日回顾（含 24 小时时间线）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
-version: 2.1.0-1
+description: "Stash 统计页的 O 统计增强：今日、全部时间与纪录、亮点、活动图表（含 O 日历与观看日历热力图）、当日回顾（含 24 小时时间线与图片 O）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
+version: 2.2.0-1
 url: https://discourse.stashapp.cc/t/o-stats/4766/7
 ui:
   javascript:
@@ -10,6 +10,10 @@ ui:
   assets:
     /: .
 settings:
+  00_hideImageOs:
+    displayName: 隐藏图片 O
+    type: BOOLEAN
+    description: 不计入图片上的 O。开启显示时，图片 O 会计入今日 O 数、连续天数、单日最多 O、O 次数图表和 O 日历，在「当日回顾」时间线上显示为橙色标记并出现在其「查看的内容」列表中，另有专属的「最 O 图片」亮点。平均分钟/O 只统计场景上的 O，因为图片没有观看时长。即使开启本项，每张图片上每次 O 的时间仍会被记录。默认关闭。
   01_hideTopStats:
     displayName: 隐藏今日统计行
     type: BOOLEAN
@@ -47,25 +51,29 @@ settings:
     type: BOOLEAN
     description: 隐藏「平均分钟/O」。开启「隐藏全部时间与纪录行」时该项无效。默认关闭。
   07_hideSceneHighlights:
-    displayName: 隐藏场景亮点
+    displayName: 隐藏亮点
     type: BOOLEAN
-    description: 隐藏整个场景亮点行（最 O 场景、最长播放时长、最近 O 和最早 O）。默认关闭。
+    description: 隐藏整个亮点行（最 O 场景、最长播放时长、最近 O、最早 O 和最 O 图片）。默认关闭。
   08_hideSceneHighlightsMostOs:
-    displayName: '[场景亮点行] 隐藏最 O 场景'
+    displayName: '[亮点行] 隐藏最 O 场景'
     type: BOOLEAN
-    description: 隐藏「最 O 场景」亮点。开启「隐藏场景亮点」时该项无效。默认关闭。
+    description: 隐藏「最 O 场景」亮点。开启「隐藏亮点」时该项无效。默认关闭。
   09_hideSceneHighlightsLongestPlay:
-    displayName: '[场景亮点行] 隐藏最长播放时长'
+    displayName: '[亮点行] 隐藏最长播放时长'
     type: BOOLEAN
-    description: 隐藏「最长播放时长」亮点。开启「隐藏场景亮点」时该项无效。默认关闭。
+    description: 隐藏「最长播放时长」亮点。开启「隐藏亮点」时该项无效。默认关闭。
   10_hideSceneHighlightsMostRecentO:
-    displayName: '[场景亮点行] 隐藏最近 O'
+    displayName: '[亮点行] 隐藏最近 O'
     type: BOOLEAN
-    description: 隐藏「最近 O」亮点。开启「隐藏场景亮点」时该项无效。默认关闭。
+    description: 隐藏「最近 O」亮点。开启「隐藏亮点」时该项无效。默认关闭。
   11_hideSceneHighlightsOldestO:
-    displayName: '[场景亮点行] 隐藏最早 O'
+    displayName: '[亮点行] 隐藏最早 O'
     type: BOOLEAN
-    description: 隐藏「最早 O」亮点。开启「隐藏场景亮点」时该项无效。默认关闭。
+    description: 隐藏「最早 O」亮点。开启「隐藏亮点」时该项无效。默认关闭。
+  11a_hideHighlightsMostOImage:
+    displayName: '[亮点行] 隐藏最 O 图片'
+    type: BOOLEAN
+    description: 隐藏「最 O 图片」亮点。开启「隐藏图片 O」时不显示。开启「隐藏亮点」时该项无效。默认关闭。
   12_hideOGraph:
     displayName: 隐藏 O 次数图表
     type: BOOLEAN
@@ -94,14 +102,6 @@ settings:
     displayName: '[当日回顾] 显示时间线上的观看标记'
     type: BOOLEAN
     description: 在「当日回顾」时间线上显示灰色标记，表示没有 O 但观看过的视频。悬停查看缩略图，点击打开场景。默认关闭。
-  18_expandOnThisDayTimeline:
-    displayName: '[当日回顾] 默认展开时间线'
-    type: BOOLEAN
-    description: 「当日回顾」时间线默认显示得更高，便于分辨靠得很近的标记。仍可用按钮收起。默认关闭。
-  19_expandOnThisDayList:
-    displayName: '[当日回顾] 默认展开观看视频列表'
-    type: BOOLEAN
-    description: 「当日回顾」中的「观看的视频」列表默认显示完整内容，而非较短的滚动列表。仍可用按钮收起。默认关闭。
   20_hideOnThisDayStats:
     displayName: '[当日回顾] 隐藏统计'
     type: BOOLEAN
@@ -115,9 +115,9 @@ settings:
     type: BOOLEAN
     description: 隐藏页面底部的「导出 JSON」与「导入 JSON」按钮。默认关闭。
 
-# 由统计页与场景播放器（runPluginOperation）调用，读取与保存观看时长；
-# 见 save_watch_data.py
+# 由统计页、场景播放器与图片 O 调用（runPluginOperation），读取与保存观看时长与图片 O；
+# 见 osaver.py
 exec:
   - python
-  - '{pluginDir}/save_watch_data.py'
+  - '{pluginDir}/osaver.py'
 interface: raw
