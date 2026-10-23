@@ -20,7 +20,7 @@
   window.__LockdownI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.8.0-1';
+  var PLUGIN_VERSION = '2.11.0-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -49,15 +49,27 @@
   console.log('[LockdownI18n] Lockdown I18n v' + PLUGIN_VERSION + ' loaded');
 
   const PLUGIN_ID = "LockdownI18n";
-  const DATA_KEYS = ["history", "stats", "active", "presets"];   // in Suite Data's store when it is installed
+  const DATA_KEYS = ["history", "stats", "active", "presets", "pics"];   // in Suite Data's store when it is installed (pics: 2.9)
   const STATE_KEY = "lockdownI18nState";   // this browser's copy of the active lock
   const PREF_KEY  = "lockdownI18nPrefs";   // { setup, last, guideSeen, barTipSeen }
   const HOLD_MS   = 5000;              // how long Give up must be held
   const ARM_MS    = 6000;              // "Click again to ..." stays armed this long (suite standard)
   const HISTORY_MAX = 200;
-  const SYNC_LOCKED_MS = 5000;         // how often a locked page re-reads the lock
-  const SYNC_IDLE_MS = 20000;          // how often an unlocked page looks for one
-  const SAVE_MS = 15000;               // progress (watch time, playhead) is written at most this often
+  const SYNC_LOCKED_MS = 5000;         // how often a locked page re-reads the lock (the polling tab)
+  // 2.11 (review M5): an unlocked page looks for a lock every minute (it was
+  // 20 s on every Stash tab of every user), and at once when the tab comes
+  // back, gets focus or opens New run
+  const SYNC_IDLE_MS = 60000;
+  const SYNC_FOLLOW_MS = 30000;        // a locked tab that is not the polling one (it follows the storage event)
+  const SYNC_FULL_MS = 60000;          // with Suite Data, a sync reads `active` alone; everything at most this often
+  const O_SCENE_MS = 2500;             // the open scene's own O count (one small query)
+  const O_FULL_SCENE_MS = 15000;       // every O of the target, on a scene page (the open scene catches the rest)
+  const O_FULL_MS = 10000;             // and elsewhere
+  const OWNER_KEY = "lockdownPollOwner";   // which tab of this browser polls while locked (single-owner tab lock)
+  const OWNER_TTL_MS = 6000, OWNER_RENEW_MS = 2000;
+  const PENDING_KEY = "lockdownPendingEnd";   // finished runs whose write has not landed yet (review M4)
+  const GQL_TIMEOUT_MS = 20000;        // a request that never answers no longer freezes a loop (review M6)
+  const SAVE_MS = 15000;              // progress (watch time, playhead) is written at most this often
   const SEEK_SLACK = 2;                // seconds forward that are not a skip
   const INPUT_MS = 1000;               // a seek this soon after a click, key or wheel is the user's
   // Not under /plugin/: Stash's server owns that prefix (plugin files) and
@@ -291,9 +303,9 @@
     // 2.5.1 (user): heat 1, and Next scene allowed; with a Skip budget it
     // costs a skip, so the budget below it decides how free that is
     { k: "roulette", name: tc("轮盘", "Roulette"), heat: [1], ranks: [tc("随机场景", "Random scenes")],
-      text: tc("场景不由你选：每个都是随机挑的，放完后下一个也一样。点「下一个场景」会再随机挑一个；有跳过配额时会用掉一次跳过。", "You don't choose scenes: each one is picked at random, and so is the next when it ends. Next scene picks another one; with a Skip budget it uses a skip.") },
+      text: tc("场景不由你选：每个都是随机挑的，放完后下一个也一样。点「下一个场景」（播放器的下一个按钮）会再随机挑一个，且始终免费；跳过配额只用于在场景内拖动进度。", "You don't choose scenes: each one is picked at random, and so is the next when it ends. Next scene (the player's next button) picks another one, always free; a Skip budget only counts seeking inside a scene.") },
     { k: "stay", name: tc("坚持到底", "Stay to the end"), heat: [2], ranks: [tc("每个场景都看完", "Finish every scene")],
-      text: tc("一旦某个场景开始播放，在它放完之前不会打开别的场景。", "Once a scene plays, no other scene opens until it has played to the end.") },
+      text: tc("一旦某个场景开始播放，在它放完（且看满 80%）之前不会打开别的场景。", "Once a scene plays, no other scene opens until it has played to the end, with most of it (80%) watched.") },
     { k: "speed", name: tc("禁止快进", "No fast-forward"), heat: [0.5], ranks: [tc("1 倍速", "1x speed")],
       text: tc("播放速度固定在 1 倍速。", "Playback speed is held at 1x.") },
     { k: "blind", name: tc("盲拖进度条", "Blind seeking"), heat: [1], ranks: [tc("无预览", "No previews")],
@@ -494,6 +506,8 @@
   // same 10 a minute, up to the target's length again; the target part and
   // the skip cap are as before, so a run without it scores as it did.
   const SKIP_COST = 5;
+  const PIC_MS = 3000;                 // 2.9: a picture counts once it has been on screen this long
+  const PICS_MAX = 100;                // and a run counts at most this many
   function scoreOf(e) {
     if (!e || e.result !== "done" || !(e.v >= 3)) return null;
     const g = e.goal || {};
@@ -503,9 +517,66 @@
     const slips = g.type === "edge" ? -100 * (e.slips || 0) : 0;
     const overtime = g.type === "edge" && e.overtimeMs > 0 ? Math.round((Math.min(e.overtimeMs, g.watchMs || 0) / 60000) * 10) : 0;
     const out = 100;
+    // 2.9: one point per new picture viewed (PIC_MS on screen), at most
+    // PICS_MAX a run; runs from before 2.9 have none and score as they did
+    const pics = Math.min(PICS_MAX, Math.max(0, Math.floor(e.pics || 0)));
     const heat = typeof e.heat === "number" ? e.heat : heatOf(e.conds || condsFromRules(e.rules, g), g);
     const mult = heatMult(heat);
-    return { watched, skips, slips, overtime, out, heat, mult, total: Math.max(0, Math.round((watched + skips + slips + overtime + out) * mult)) };
+    // 2.11: the novelty bonus the run carried (`nov`, worked out at its
+    // start); runs without it score exactly as before
+    const nov = Math.min(NOV_MAX, Math.max(0, Number(e.nov) || 0));
+    return { watched, skips, slips, overtime, pics, out, heat, mult, nov,
+             total: Math.max(0, Math.round((watched + skips + slips + overtime + pics + out) * mult * (1 + nov))) };
+  }
+
+  // ── 2.11: novelty bonus and the suggested next setup (review 3.4, 3.5) ──
+  // The user kept playing the same presets: nothing rewarded trying another.
+  // Each condition with heat, at a rank not used in the last NOV_RUNS runs of
+  // that way out, adds 3% (at most 15%); the exact setup of the last run adds
+  // nothing, and without an earlier run of that way out there is nothing to
+  // compare with, so nothing. Worked out when the run starts and stored on it
+  // (`nov`, `novK`), so the history never rescores it differently.
+  const NOV_STEP = 0.03, NOV_MAX = 0.15, NOV_RUNS = 5;
+  const condsOfEntry = (e) => (e && e.conds) || (e && e.rules ? condsFromRules(e.rules, e.goal) : {});
+  function recentOfGoal(list, g) {
+    return (list || []).filter((e) => e && typeof e.at === "number" && goalType(e) === g && (e.conds || e.rules))
+      .sort((a, b) => b.at - a.at).slice(0, NOV_RUNS);
+  }
+  function novelty(conds, goal, list) {
+    const g = goal && goal.type ? goal.type : goal;
+    const prev = recentOfGoal(list, g).map(condsOfEntry);
+    if (!prev.length) return { nov: 0, ks: [] };
+    const c = conds || {};
+    const ks = heatParts(c, g).filter((p) => p.heat > 0 && !prev.some((u) => (u[p.k] || 0) === c[p.k])).map((p) => p.k);
+    return { nov: Math.min(NOV_MAX, Math.round(ks.length * NOV_STEP * 100) / 100), ks };
+  }
+  const novNames = (ks) => (ks || []).map((k) => (conditions().find((c) => c.k === k) || { name: k }).name);
+  // One change for the next run, from a finished entry and the history: the
+  // condition used least in the last runs of that way out, raised one rank
+  // (added if it was off), the cheapest such change first. null when every
+  // condition is at its top, or for an image run (no conditions).
+  function suggestNext(e, list) {
+    if (!e || e.media === "images") return null;
+    const g = goalType(e);
+    const conds = { ...condsOfEntry(e) };
+    const prev = recentOfGoal(list, g).map(condsOfEntry);
+    const h0 = heatOf(conds, g);
+    const opts = [];
+    conditions().forEach((c, i) => {
+      if (c.noHeat || !condApplies(c, g)) return;
+      const r = conds[c.k] || 0;
+      if (r >= c.ranks.length) return;
+      const next = { ...conds, [c.k]: r + 1 };
+      const h1 = heatOf(next, g);
+      if (!(h1 > h0)) return;                    // Stay to the end next to One scene adds nothing
+      opts.push({ c, r, next, h1, i, uses: prev.filter((u) => (u[c.k] || 0) > 0).length });
+    });
+    if (!opts.length) return null;
+    opts.sort((a, b) => a.uses - b.uses || a.h1 - b.h1 || a.i - b.i);
+    const o = opts[0];
+    const what = o.r ? `${o.c.name} · ${o.c.ranks[o.r]}` : `+ ${o.c.name}`;
+    return { k: o.c.k, conds: o.next, from: h0, to: o.h1, text: tc(`试试 ${what}：热度 ${h0} → ${o.h1}`, `Try ${what}: heat ${h0} → ${o.h1}`),
+             mult: `×${heatMult(h0)} → ×${heatMult(o.h1)}` };
   }
 
   // ── The active lock ───────────────────────────────────────────────────────
@@ -723,6 +794,24 @@
     if (r.skips < b) return { allow: true, skip: true, rec: { ...r, skips: r.skips + 1 }, left: b - r.skips - 1 };
     return { allow: false, skip: false, rec: r, left: 0 };
   }
+  // What Next scene says when it cannot go anywhere (2.8.2).
+  function nextSceneText(why, fresh) {
+    if (why === "skips") return tc("这个场景的跳过次数用完了：继续看，或等它放完", "No skips left on this scene: watch on, or let it end");
+    return fresh ? tc("本盘已经没有其他未看的场景了", "No other unwatched scene left in this run") : tc("本盘没有其他场景了", "No other scene in this run");
+  }
+  // Which scene the player's media belongs to (2.8.2). Stash keeps the old
+  // scene playing while it loads the next one, so for a moment the URL says
+  // B while the video is still A: A's playhead read as B's made the source
+  // swap look like the user seeking in B, which cost B a skip (or, under No
+  // skips, sent B back to A's time), and A ending there picked yet another
+  // scene. A source is the scene's that was open when it was first seen; a
+  // new source (the swap, a quality change) belongs to the page it loads on.
+  // `prev` { src, id } or null; returns the new one.
+  function mediaOwner(prev, src, here) {
+    if (!src) return prev;
+    if (prev && prev.src === src) return prev;
+    return { src, id: here || null };
+  }
   // Skips left on a scene under a budget (null: no budget), its moment's
   // extra skip counted (2.6).
   const skipsLeft = (rec, budget) => (budget === null || budget === undefined ? null
@@ -830,7 +919,7 @@
   function momentLinks(e) {
     return ((e && e.moments) || []).map((m) => ({
       href: `/scenes/${encodeURIComponent(m.scene)}?t=${Math.max(0, Math.floor(Number(m.seconds) || 0))}`,
-      label: `${m.title || "Marker"} ${fmtClock((Number(m.seconds) || 0) * 1000)}`,
+      label: `${m.title || tc("标记", "Marker")} ${fmtClock((Number(m.seconds) || 0) * 1000)}`,
     }));
   }
 
@@ -856,6 +945,33 @@
   // device that had not seen the target reached yet, banks the score).
   const endResult = (L, result) => (result === "gaveup" && L && L.over ? "done" : result);
 
+  // 2.11 (review M1): One scene's scene across devices. Dropping it (it is
+  // gone, or will not play) counts up `drop`; the copy that dropped more
+  // has the newer word and its scene wins, null included, so a dropped
+  // scene never comes back from a copy that still names it (2.10 merged
+  // `b.id || a.id`: the stale id returned on the next save and the player
+  // was bounced to the broken scene every few seconds). With the same count
+  // the copy that knows the scene wins (the first play claimed it).
+  function mergeOne(a, b) {
+    const x = a || {}, y = b || {};
+    const dx = x.drop || 0, dy = y.drop || 0;
+    const out = { id: dx !== dy ? ((dx > dy ? x.id : y.id) || null) : (y.id || x.id || null), loops: Math.max(x.loops || 0, y.loops || 0) };
+    if (dx || dy) out.drop = Math.max(dx, dy);
+    return out;
+  }
+  const dropOne = (one) => ({ ...(one || {}), id: null, drop: ((one && one.drop) || 0) + 1 });
+
+  // 2.11 (review M3): Stay to the end is done when the scene has really been
+  // watched, not when the playhead is near its end (one drag did that):
+  // 80% of it played, or all but 30 s for a scene under 2.5 minutes.
+  const STAY_SHARE = 0.8, STAY_SLACK_S = 30;
+  function stayCovered(ranges, dur) {
+    if (!(dur > 0) || !isFinite(dur)) return { done: false, left: 0 };
+    const need = Math.max(0, Math.min(STAY_SHARE * dur, dur - STAY_SLACK_S));
+    const have = watchedSec(ranges);
+    return { done: have >= need, left: Math.max(0, need - have) };
+  }
+
   // The same lock as two devices saw it: whatever only grows takes the
   // larger, per scene too (watched parts are joined). The writer's baseline
   // wins (it just read the sum).
@@ -868,11 +984,9 @@
     const seen = (x) => (x.os || 0) + (x.early || 0) + (x.slips || 0);
     if (seen(remote) > seen(local)) { out.baseO = remote.baseO; if (remote.oBase) out.oBase = remote.oBase; }
     for (const k of ["os", "early", "slips", "slipMs", "watchedMs", "slowFrom"]) out[k] = Math.max(remote[k] || 0, local[k] || 0);
-    // One scene: the copy that knows which scene it is, and the most loops
-    if (remote.one || local.one) {
-      const a = remote.one || {}, b = local.one || {};
-      out.one = { id: b.id || a.id || null, loops: Math.max(a.loops || 0, b.loops || 0) };
-    }
+    // One scene: the copy that dropped the scene more often, else the one
+    // that knows which scene it is; the most loops (mergeOne, 2.11)
+    if (remote.one || local.one) out.one = mergeOne(remote.one, local.one);
     const scenes = { ...(remote.scenes || {}) };
     for (const [id, r] of Object.entries(local.scenes || {})) {
       const o = scenes[id] || {};
@@ -896,6 +1010,9 @@
     // either device is reached, at the earlier time, and overtime started on
     // either is on, from the earlier start
     if ((remote.moments && remote.moments.length) || (local.moments && local.moments.length)) out.moments = mergeMoments(remote.moments, local.moments);
+    // 2.9: the pictures either device counted, at most PICS_MAX
+    if ((remote.pics && remote.pics.length) || (local.pics && local.pics.length))
+      out.pics = [...new Set([...(remote.pics || []), ...(local.pics || [])].map(String))].slice(0, PICS_MAX);
     if (remote.over || local.over) {
       const a = remote.over || {}, b = local.over || {};
       const ats = [a.at, b.at].filter((x) => x > 0);
@@ -961,7 +1078,18 @@
                              difficulty: e.difficulty, heat: e.heat, conds: e.conds, watchedMs: e.watchedMs || 0, skipsUsed: e.skipsUsed || 0,
                              slips: e.slips || 0, ms: e.ms, at: e.at, score: e.score,
                              // 2.6: kept, or rescoring a board-only run would drop its overtime
-                             ...(e.overtimeMs > 0 ? { overtimeMs: e.overtimeMs } : {}) });
+                             ...(e.overtimeMs > 0 ? { overtimeMs: e.overtimeMs } : {}),
+                             // 2.9: kept for the same reason
+                             ...(e.pics > 0 ? { pics: e.pics } : {}),
+                             // 2.11: the novelty bonus, for the same reason
+                             ...(e.nov > 0 ? { nov: e.nov, novK: e.novK || [] } : {}),
+                             // 2.10: what the leaderboard's picture, breakdown, Open and Same
+                             // setup again need once the history entry is gone (older runs
+                             // borrow them from the history while it has them: boardEntry)
+                             ...(e.tid || e.pid ? { tid: String(e.tid || e.pid) } : {}),
+                             ...(typeof e.os === "number" ? { os: e.os } : {}),
+                             ...(e.v >= 3 ? { moments: e.moments || [] } : {}),
+                             ...(e.tags ? { tags: e.tags, mode: e.mode } : {}) });
   function addTop(top, e) {
     if (!e || e.result !== "done" || !(e.score > 0)) return (top || []).slice();
     // 20 of each way out: Finish runs filling the list emptied the Edge and
@@ -1182,6 +1310,10 @@
     if (L.over && L.over.at) e.reachedAt = L.over.at;
     if (edgeState(L) === "over") e.overtimeMs = Math.round(overtimeMs(L));
     if (L.moments && L.moments.length) e.moments = L.moments.map((m) => ({ scene: String(m.scene), marker: String(m.marker), title: m.title || "", seconds: m.seconds || 0 }));
+    // 2.9: new pictures viewed
+    if (L.pics && L.pics.length) e.pics = Math.min(PICS_MAX, L.pics.length);
+    // 2.11: the novelty bonus it started with
+    if (L.nov > 0) { e.nov = L.nov; e.novK = L.novK || []; }
     const sc = scoreOf(e);
     if (sc) e.score = sc.total;
     return e;
@@ -1234,7 +1366,8 @@
                          scene_count: target.scene_count, image_count: target.image_count,
                          ...(target.tags ? { tags: target.tags.map((x) => ({ id: String(x.id), name: x.name })), mode: target.mode } : {}) } : null;
     return { id: `p${now.toString(36)}`, name: String(name).trim().slice(0, 40), at: now, setup: normaliseSetup(setup),
-             target: t, src: !t && src ? { type: src.type, ...(src.type === "filter" ? { id: String(src.id), name: src.name } : {}) } : null };
+             target: t, src: !t && src ? { type: src.type, ...(src.type === "filter" ? { id: String(src.id), name: src.name } : {}),
+                                           ...(src.type === "rec" ? { chip: recChipOk(src.chip) } : {}) } : null };
   }
   function addPreset(list, x) {
     const k = x.name.toLowerCase();
@@ -1243,7 +1376,7 @@
   // One line about a preset, for its tooltip.
   function presetLine(x) {
     const S = normaliseSetup(x.setup);
-    const who = x.target ? x.target.name : x.src ? (x.src.type === "fav" ? tc(`来自收藏的随机${kl(S.kind)}`, `a random favourite ${kl(S.kind)}`) : tc(`从“${x.src.name}”中随机一个${kl(S.kind)}`, `a random ${kl(S.kind)} from “${x.src.name}”`)) : "?";
+    const who = x.target ? x.target.name : x.src ? (x.src.type === "fav" ? tc(`来自收藏的随机${kl(S.kind)}`, `a random favourite ${kl(S.kind)}`) : x.src.type === "rec" ? tc(`随机推荐的${kl(S.kind)}（${recChipLabel(x.src.chip)}）`, `a random recommended performer (${recChipLabel(x.src.chip)})`) : tc(`从“${x.src.name}”中随机一个${kl(S.kind)}`, `a random ${kl(S.kind)} from “${x.src.name}”`)) : "?";
     const h = heatOf(S.conds, S.goal);
     return `${who} · ${goalLabel(goalOf(S))}${h ? ` · ${tc("热度", "heat")} ${h}` : ""}`;
   }
@@ -1272,7 +1405,10 @@
     const pr = parsePresets(mine.presets);
     const full = completeStats(stats, list);
     const r = bad ? { list, top: full.top, changed: false } : rescore(list, full.top);
-    return { list: r.list, stats: r.changed ? { ...full, top: r.top } : full, active: parseActive(mine.active), bad, presets: pr || [], presetsBad: pr === null, rescored: r.changed };
+    // 2.9: the pictures earlier runs counted (`pics`), as stored and as a Set
+    const pc = parsePics(mine.pics);
+    return { list: r.list, stats: r.changed ? { ...full, top: r.top } : full, active: parseActive(mine.active), bad, presets: pr || [], presetsBad: pr === null, rescored: r.changed,
+             pics: pc || [], picsBad: pc === null, picsSeen: pc === null ? new Set() : picsSet(mine.pics) };
   }
 
   // The whole new map for a change `next` ({ list?, stats?, active?,
@@ -1282,15 +1418,410 @@
   // except one that only clears the active lock, so an unreadable history
   // can never leave every device locked.
   function packConfig(mine, cur, next) {
-    if (!next || (!("list" in next) && !("stats" in next) && !("active" in next) && !("presets" in next))) return null;
+    if (!next || (!("list" in next) && !("stats" in next) && !("active" in next) && !("presets" in next) && !("pics" in next))) return null;
     if ((next.list || next.stats) && cur.bad) throw new Error(tc("已保存的历史无法读取，保持原样", "saved history could not be read; left as it was"));
     if (next.presets && cur.presetsBad) throw new Error(tc("已保存的预设无法读取，保持原样", "saved presets could not be read; left as they were"));
+    if (next.pics && cur.picsBad) throw new Error(tc("已保存的图片记录无法读取，保持原样", "saved pictures could not be read; left as they were"));
     const input = { ...mine };
     if (next.list) input.history = JSON.stringify(next.list.slice(-HISTORY_MAX));
     if (next.stats) input.stats = JSON.stringify(next.stats);
     if ("active" in next) input.active = next.active ? JSON.stringify(next.active) : "";
     if (next.presets) input.presets = JSON.stringify(next.presets.slice(0, PRESETS_MAX));
+    if (next.pics) input.pics = JSON.stringify(next.pics);
     return input;
+  }
+
+  // ── 2.9: points for pictures ───────────────────────────────────────────────
+  // During a run each of the target's images on screen for PIC_MS (in
+  // Slideshow, on its image page or in Stash's lightbox) is one point, at
+  // most PICS_MAX a run, times heat; only a picture no earlier run counted.
+  // `st`: { acc: { id: ms on screen so far }, run: ids counted this run,
+  // earlier: Set of ids counted by runs before }; `belongs`: true, false, or
+  // undefined while the check is out (the time is kept, the count waits).
+  // Returns the new { acc, run } and why: counted | early | old | dup | cap | no | wait.
+  function picTime(st, id, ms, belongs) {
+    const k = String(id || "");
+    const acc = { ...((st && st.acc) || {}) }, run = ((st && st.run) || []).map(String);
+    if (!/^\d+$/.test(k)) return { acc, run, why: "no" };
+    const earlier = (st && st.earlier) || new Set();
+    if (run.includes(k)) return { acc, run, why: "dup" };
+    if (earlier.has(k)) return { acc, run, why: "old" };
+    acc[k] = (acc[k] || 0) + Math.max(0, Number(ms) || 0);
+    if (acc[k] < PIC_MS) return { acc, run, why: "early" };
+    if (belongs === false) return { acc, run, why: "no" };
+    if (belongs !== true) return { acc, run, why: "wait" };
+    if (run.length >= PICS_MAX) return { acc, run, why: "cap" };
+    return { acc, run: run.concat(k), why: "counted" };
+  }
+  // The ids counted by earlier runs, kept compactly as Lockdown's data key
+  // `pics`: [{ r: run id, at, ids }] oldest first, `ids` sorted and written
+  // as base-36 steps ("1a.3.f"); past PICS_KEEP ids in all, the oldest runs
+  // go (their pictures could then count again, a documented limit).
+  const PICS_KEEP = 30000;
+  function encodeIds(ids) {
+    const n = [...new Set((ids || []).map((x) => parseInt(x, 10)).filter((x) => Number.isFinite(x) && x >= 0))].sort((a, b) => a - b);
+    return n.map((x, i) => (i ? x - n[i - 1] : x).toString(36)).join(".");
+  }
+  function decodeIds(text) {
+    const out = [];
+    let at = 0;
+    for (const p of String(text || "").split(".")) {
+      if (!p) continue;
+      const d = parseInt(p, 36);
+      if (!Number.isFinite(d)) continue;
+      at = out.length ? at + d : d;
+      out.push(String(at));
+    }
+    return out;
+  }
+  // [] for none stored; null when stored but unreadable (never overwritten, rule 5)
+  function parsePics(raw) {
+    if (raw === undefined || raw === null || raw === "") return [];
+    try {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v.filter((c) => c && typeof c === "object" && typeof c.ids === "string") : null;
+    } catch (_) { return null; }
+  }
+  // The stored key as a Set of ids, worked out again only when it changed
+  // (every 5 s sync reads it).
+  let picsMemo = { raw: null, set: new Set() };
+  function picsSet(raw) {
+    if (picsMemo.raw === raw) return picsMemo.set;
+    const set = new Set();
+    for (const c of parsePics(raw) || []) for (const id of decodeIds(c.ids)) set.add(id);
+    picsMemo = { raw, set };
+    return set;
+  }
+  function addPicsChunk(chunks, runId, ids, now) {
+    const list = (chunks || []).filter((c) => c && c.r !== runId);
+    if (!ids || !ids.length) return list;
+    let out = list.concat({ r: runId, at: now, ids: encodeIds(ids) });
+    let total = out.reduce((a, c) => a + decodeIds(c.ids).length, 0);
+    while (out.length > 1 && total > PICS_KEEP) { total -= decodeIds(out[0].ids).length; out = out.slice(1); }
+    return out;
+  }
+  // "Pictures 23 · +23": the points before heat, as the breakdown shows them.
+  const picsText = (n) => tc(`图片 ${n || 0} · +${Math.min(PICS_MAX, n || 0)}`, `Pictures ${n || 0} · +${Math.min(PICS_MAX, n || 0)}`);
+
+  // ── 2.9: recommended performers ────────────────────────────────────────────
+  // Four rankings for the setup's Recommended block and the Random pick
+  // source, worked out from one performer list and the library's scenes
+  // (play counts, O's, last played, studios): For you (your taste), Neglected
+  // (liked, not watched for a long time), Backlog (most unwatched, by rating),
+  // Discover (like your top performers, barely watched). Pure; the data is
+  // read once and kept for a day (recFresh).
+  // 2.11: version 2 (items carry their main studio and last play); older
+  // caches are dropped and worked out again
+  const REC_V = 2;
+  const REC_CHIPS = [["foryou", "For you"], ["neglected", "Neglected"], ["backlog", "Backlog"], ["discover", "Discover"], ["surprise", "Surprise me"]];
+  const REC_CHIPS_ZH = { foryou: "为你推荐", neglected: "久未光顾", backlog: "待看积压", discover: "发现新人", surprise: "给我惊喜" };
+  const REC_MIN_SCENES = 3, REC_RECENT_MS = 7 * 86400000, REC_SHOW = 8, REC_SPIN = 20, REC_KEEP = 60;
+  const recChipOk = (k) => (REC_CHIPS.some(([c]) => c === k) ? k : "foryou");
+  const recChipLabel = (k) => { const ok = recChipOk(k); return tc(REC_CHIPS_ZH[ok] || ok, (REC_CHIPS.find(([c]) => c === ok) || REC_CHIPS[0])[1]); };
+  const DAY_MS = 86400000;
+
+  // ── 2.11: recommendations that rotate (review §1; user: "refreshing ...
+  // doesn't really change the results"). The lists were deterministic, ties
+  // went by name and the cards were always the top 8, so Refresh (a whole
+  // re-read of the library) worked out the same answer. Now the 8 cards are
+  // drawn from the chip's pool (REC_KEEP) by score with a temperature
+  // (Gumbel top-k: a softmax draw without replacement), seeded by the day,
+  // the chip and how often Shuffle was pressed, so a redraw of the same
+  // dialog is stable and Shuffle (no query) gives a new draw. A card shown
+  // and not picked weighs less for three days (0.6 per showing, per
+  // browser); For you and Backlog rest anyone played in the last days
+  // (outside Lockdown too); at most 2 cards per studio; Surprise me is the
+  // long tail no other chip reaches.
+  const REC_T = 0.25, REC_SEEN_DECAY = 0.6, REC_SEEN_MS = 3 * DAY_MS, REC_SEEN_KEEP_MS = 14 * DAY_MS, REC_SEEN_MAX = 400;
+  const REC_REST_DAYS = 3, REC_PER_STUDIO = 2, REC_WHEEL_SKIP = 5, REC_SURPRISE_MAX = 240, REC_TOP_OTHERS = 20;
+  const REC_RESTS = new Set(["foryou", "backlog"]);
+  function hashStr(s) {
+    let h = 2166136261;
+    const t = String(s);
+    for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
+  // mulberry32: a small seeded generator in [0, 1)
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const dayKey = (now) => { const d = new Date(now); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+  const recDrawKey = (day, chip, n) => `${day}|${recChipOk(chip)}|${n || 0}`;
+  // How often a card was shown without being picked (the last 3 days); the
+  // draw being made (`key`) does not count against itself, so drawing it
+  // again after a reload gives the same cards.
+  function recSeenN(store, id, now, key) {
+    const e = store && store.ids && store.ids[String(id)];
+    if (!e || !(now - (e.at || 0) < REC_SEEN_MS)) return 0;
+    return Math.max(0, (e.n || 0) - (key && e.k === key ? 1 : 0));
+  }
+  // Each item's log-weight: score normalised to 0..1 in the pool over the
+  // temperature, less for each showing, rested after a recent play.
+  function recWeights(pool, o) {
+    const list = (pool || []).filter(Boolean);
+    if (!list.length) return [];
+    const sc = list.map((x) => Number(x.score) || 0);
+    const lo = Math.min(...sc), hi = Math.max(...sc);
+    const T = (o && o.T) || REC_T, now = (o && o.now) || 0;
+    return list.map((x, i) => {
+      const s = hi > lo ? (sc[i] - lo) / (hi - lo) : 1;
+      const n = recSeenN(o && o.seen, x.id, now, o && o.key);
+      const rest = o && o.rest && x.last > 0 ? 1 - Math.exp(-Math.max(0, now - x.last) / DAY_MS / REC_REST_DAYS) : 1;
+      return { x, s, n, rest, lw: s / T + n * Math.log(REC_SEEN_DECAY) + Math.log(Math.max(1e-4, rest)) };
+    });
+  }
+  // `k` cards: Gumbel top-k on the log-weights, at most REC_PER_STUDIO per
+  // studio (filled up from the rest when a library is mostly one studio).
+  // Ties never go by name: by a hash of the seed and the id.
+  function recDraw(pool, o) {
+    const rnd = mulberry32((o && o.seed) >>> 0);
+    const keyed = recWeights(pool, o).map((w) => ({ ...w, g: w.lw - Math.log(-Math.log(Math.max(1e-12, rnd()))), h: hashStr(`${o && o.seed}:${w.x.id}`) }))
+      .sort((a, b) => b.g - a.g || a.h - b.h);
+    const k = (o && o.k) || REC_SHOW, cap = (o && o.perStudio) || REC_PER_STUDIO, per = {}, out = [], left = [];
+    for (const w of keyed) {
+      if (out.length >= k) break;
+      const st = w.x.studio;
+      if (st && (per[st] || 0) >= cap) { left.push(w); continue; }
+      if (st) per[st] = (per[st] || 0) + 1;
+      out.push(w);
+    }
+    for (const w of left) { if (out.length >= k) break; out.push(w); }
+    return out.map((w) => w.x);
+  }
+  // The shown-cards store (localStorage lockdownRecSeen, a UI preference):
+  // { v, ids: { id: { n, at, k } }, spins: [last wheel picks], shuf: { day, n: { chip: presses } } }.
+  function recSeenPrune(store, now) {
+    const src = store && typeof store === "object" ? store : {};
+    const ids = {};
+    Object.entries(src.ids && typeof src.ids === "object" ? src.ids : {}).filter(([, e]) => e && now - (e.at || 0) < REC_SEEN_KEEP_MS)
+      .sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, REC_SEEN_MAX).forEach(([k, e]) => { ids[k] = e; });
+    const day = dayKey(now);
+    return { v: 1, ids, spins: (Array.isArray(src.spins) ? src.spins : []).map(String).slice(0, REC_WHEEL_SKIP),
+             shuf: src.shuf && src.shuf.day === day ? { day, n: { ...(src.shuf.n || {}) } } : { day, n: {} } };
+  }
+  // Cards shown by the draw `key`: counted once per draw, however often it is drawn.
+  function recSeenAdd(store, ids, key, now) {
+    const s = recSeenPrune(store, now);
+    let changed = false;
+    for (const id of ids || []) {
+      const k = String(id), e = s.ids[k];
+      if (e && e.k === key) continue;
+      s.ids[k] = { n: e && now - (e.at || 0) < REC_SEEN_MS ? (e.n || 0) + 1 : 1, at: now, k: key };
+      changed = true;
+    }
+    return { store: s, changed };
+  }
+  // A card picked or a lock started to them: their showings are forgotten.
+  const recSeenPick = (store, id, now) => { const s = recSeenPrune(store, now); delete s.ids[String(id)]; return s; };
+  // The wheel's last picks, newest first.
+  const recSpinAdd = (store, id, now) => {
+    const s = recSeenPrune(store, now);
+    s.spins = [String(id)].concat(s.spins.filter((x) => x !== String(id))).slice(0, REC_WHEEL_SKIP);
+    return s;
+  };
+  const recShuffle = (store, chip, now) => { const s = recSeenPrune(store, now); const c = recChipOk(chip); s.shuf.n[c] = (s.shuf.n[c] || 0) + 1; return s; };
+  // The Recommended wheel: the pool without its last REC_WHEEL_SKIP picks,
+  // weighted like the cards (exp of the log-weight, not the raw score,
+  // whose spread was nearly flat), the best REC_SPIN.
+  function recWheel(pool, store, o) {
+    const skip = new Set((store && store.spins) || []);
+    const left = (pool || []).filter((x) => x && !skip.has(String(x.id)));
+    const ws = recWeights(left.length ? left : pool, o);
+    if (!ws.length) return [];
+    const top = Math.max(...ws.map((w) => w.lw));
+    return ws.map((w) => ({ ...w.x, score: Math.exp(w.lw - top) })).sort((a, b) => b.score - a.score).slice(0, REC_SPIN);
+  }
+  // "worked out 6 h ago"
+  function agoText(at, now) {
+    const m = Math.max(0, Math.round((now - at) / 60000));
+    return m < 1 ? tc("刚刚", "just now") : m < 60 ? tc(`${m} 分钟前`, `${m} min ago`) : m < 1440 ? tc(`${Math.round(m / 60)} 小时前`, `${Math.round(m / 60)} h ago`) : tc(`${Math.round(m / 1440)} 天前`, `${Math.round(m / 1440)} days ago`);
+  }
+
+  // Ratings Toolkit's overall on 1-5 (its overall(): the weighted mean of the
+  // group means, a "not sure" score counting half), or null.
+  function rtOverall(crit, c) {
+    if (!crit || !Array.isArray(crit.groups) || !Array.isArray(crit.items) || !c) return null;
+    let tot = 0, wsum = 0;
+    for (const g of crit.groups) {
+      const w = Number.isFinite(+g.weight) ? +g.weight : 1;
+      let s = 0, n = 0;
+      for (const i of crit.items) {
+        const e = i && i.group === g.id ? c[i.id] : null;
+        if (!e || !Number.isInteger(e.s) || e.s < 1 || e.s > 5) continue;
+        const ww = e.ns ? 0.5 : 1;
+        s += e.s * ww; n += ww;
+      }
+      if (n && w > 0) { tot += (s / n) * w; wsum += w; }
+    }
+    return wsum ? tot / wsum : null;
+  }
+  // Ratings Toolkit's data keys (JSON text) -> { performer id: overall 1-5 }.
+  // Anything unreadable is no scores (the Stash rating is used then).
+  function rtFives(scoresRaw, critRaw) {
+    const out = {};
+    try {
+      const sc = typeof scoresRaw === "string" ? JSON.parse(scoresRaw) : scoresRaw;
+      const cr = typeof critRaw === "string" ? JSON.parse(critRaw) : critRaw;
+      if (!sc || typeof sc !== "object" || !cr) return out;
+      for (const [pid, r] of Object.entries(sc)) {
+        const f = rtOverall(cr, r && r.c);
+        if (f !== null) out[String(pid)] = Math.round(f * 100) / 100;
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  // Scene rows -> per performer: scenes, played ones, unplayed ones, plays,
+  // O's, the last play (ms) and scenes per studio; plus the library's totals.
+  function recAggregate(scenes) {
+    const per = {}, studioNames = {};
+    let plays = 0, os = 0;
+    for (const s of scenes || []) {
+      if (!s) continue;
+      const pc = Math.max(0, s.play_count || 0), o = Math.max(0, s.o_counter || 0);
+      const last = s.last_played_at ? Date.parse(s.last_played_at) || 0 : 0;
+      plays += pc; os += o;
+      const sid = s.studio && s.studio.id ? String(s.studio.id) : null;
+      if (sid && s.studio.name) studioNames[sid] = s.studio.name;
+      for (const p of s.performers || []) {
+        const k = String(p.id);
+        const a = per[k] || (per[k] = { n: 0, played: 0, unplayed: 0, plays: 0, os: 0, last: 0, studios: {} });
+        a.n++; a.plays += pc; a.os += o;
+        if (pc > 0 || last) a.played++; else a.unplayed++;
+        if (last > a.last) a.last = last;
+        if (sid) a.studios[sid] = (a.studios[sid] || 0) + 1;
+      }
+    }
+    return { per, studioNames, plays, os };
+  }
+
+  const stars = (f) => tc(`${(Math.round(f * 10) / 10).toFixed(1)} 分`, `${(Math.round(f * 10) / 10).toFixed(1)} rating`);
+  // Every performer's numbers, then the four lists, best first (REC_KEEP
+  // each). `perfs`: [{ id, name, image_path, scene_count, image_count,
+  // rating100, favorite, tags: [{ id, name }] }]; `fives`: Ratings Toolkit's.
+  // Anyone with fewer than REC_MIN_SCENES scenes is left out.
+  function recLists(perfs, agg, fives, now) {
+    const A = agg || { per: {}, studioNames: {}, plays: 0, os: 0 };
+    const usual = A.plays > 0 ? A.os / A.plays : 0;
+    const rows = [];
+    for (const p of perfs || []) {
+      if (!p || p.id === undefined || p.id === null) continue;
+      const id = String(p.id), a = A.per[id] || { n: 0, played: 0, unplayed: 0, plays: 0, os: 0, last: 0, studios: {} };
+      const n = Math.max(a.n, p.scene_count || 0);
+      if (n < REC_MIN_SCENES) continue;
+      const five = fives && typeof fives[id] === "number" ? fives[id] : null;
+      const q = five !== null ? (five - 1) / 4 : typeof p.rating100 === "number" && p.rating100 > 0 ? p.rating100 / 100 : null;
+      const rating = five !== null ? five : q !== null ? p.rating100 / 20 : null;
+      const oRate = a.plays > 0 ? a.os / a.plays : 0;
+      // 2.11: smoothed toward the library's usual (5 plays' worth), so one
+      // lucky play no longer tops For you; the card still says the real rate
+      const oSm = a.plays > 0 ? (a.os + usual * 5) / (a.plays + 5) : 0;
+      const oRel = a.plays > 0 && usual > 0 ? Math.min(2, oSm / usual) / 2 : 0.25;
+      rows.push({ p, id, a, n, q, q0: q === null ? 0.35 : q, rating, oRate, oRel, fav: p.favorite ? 1 : 0,
+                  unplayed: Math.max(0, n - a.played) });
+    }
+    // what works for you: the top performers' common tags and studios
+    const base = (r) => 0.5 * r.q0 + 0.3 * r.oRel + 0.2 * r.fav;
+    const top = rows.filter((r) => r.q !== null || r.a.plays > 0 || r.fav).sort((x, y) => base(y) - base(x)).slice(0, 15);
+    const topIds = new Set(top.map((r) => r.id));
+    const tagN = {}, tagName = {}, stN = {};
+    for (const r of top) {
+      for (const t of r.p.tags || []) { const k = String(t.id); tagN[k] = (tagN[k] || 0) + 1; tagName[k] = t.name; }
+      for (const [sid, c] of Object.entries(r.a.studios)) stN[sid] = (stN[sid] || 0) + c;
+    }
+    const topTags = new Set(Object.keys(tagN).filter((k) => tagN[k] >= 2).sort((x, y) => tagN[y] - tagN[x]).slice(0, 12));
+    const topStudios = new Set(Object.keys(stN).sort((x, y) => stN[y] - stN[x]).slice(0, 8));
+    for (const r of rows) {
+      const tags = (r.p.tags || []).map((t) => String(t.id));
+      const shared = tags.filter((t) => topTags.has(t));
+      const inSt = Object.entries(r.a.studios).filter(([sid]) => topStudios.has(sid));
+      const stShare = r.a.n ? inSt.reduce((x, [, c]) => x + c, 0) / r.a.n : 0;
+      r.aff = 0.5 * Math.min(1, shared.length / Math.max(1, Math.min(5, tags.length))) + 0.5 * stShare;
+      const bestSt = inSt.sort((x, y) => y[1] - x[1])[0];
+      r.like = bestSt && A.studioNames[bestSt[0]] ? A.studioNames[bestSt[0]] : shared.length ? tagName[shared[0]] : "";
+    }
+    // 2.11: the main studio (at most 2 cards each) and the last play (the rest)
+    const mainStudio = (r) => { const b = Object.entries(r.a.studios).sort((x, y) => y[1] - x[1])[0]; return b ? b[0] : null; };
+    const item = (r, score, why) => ({ id: r.id, name: r.p.name || "?", image_path: r.p.image_path || "", scene_count: r.n,
+      image_count: r.p.image_count || 0, unplayed: r.unplayed, score: Math.round(score * 1000) / 1000, why: why.filter(Boolean).slice(0, 3).join(" · "),
+      studio: mainStudio(r), last: r.a.last || 0 });
+    const rate = (r) => (r.rating !== null ? stars(r.rating) : "");
+    const days = (r) => (r.a.last ? Math.floor((now - r.a.last) / DAY_MS) : null);
+    // ties by a hash of the id (seeded by the day), not A to Z (review §1)
+    const dk = dayKey(now);
+    const tie = (x, y) => hashStr(`${dk}:${x.id}`) - hashStr(`${dk}:${y.id}`);
+    const best = (list) => list.sort((x, y) => y.score - x.score || tie(x, y)).slice(0, REC_KEEP);
+    const foryou = best(rows.map((r) => item(r, 0.45 * r.q0 + 0.25 * r.oRel + 0.15 * r.fav + 0.15 * r.aff,
+      [rate(r), r.oRate >= 0.05 ? tc(`每次播放 ${(Math.round(r.oRate * 10) / 10).toFixed(1)} 次O`, `${(Math.round(r.oRate * 10) / 10).toFixed(1)} O's a play`) : "", r.fav ? tc("收藏", "favourite") : "",
+       !r.fav && r.aff >= 0.5 && r.like ? tc(`与你常看的一致：${r.like}`, `like your top: ${r.like}`) : ""])));
+    const neglected = best(rows.filter((r) => (r.fav || (r.q !== null && r.q >= 0.7)) && r.a.played > 0)
+      .map((r) => ({ r, d: days(r) === null ? 365 : days(r) })).filter((x) => x.d >= 14)
+      .map(({ r, d }) => item(r, (0.5 + r.q0 + 0.3 * r.fav) * Math.min(d, 365),
+        [rate(r) || (r.fav ? tc("收藏", "favourite") : ""), days(r) === null ? tc("很久没看了", "not watched in a long time") : tc(`${d} 天没看`, `not watched in ${d} days`), r.unplayed ? tc(`${r.unplayed} 个未看`, `${r.unplayed} unwatched`) : ""])));
+    const backlog = best(rows.filter((r) => r.unplayed > 0).map((r) => item(r, r.unplayed * (0.4 + r.q0) * (r.fav ? 1.2 : 1),
+      [rate(r), tc(`${r.unplayed} 个未看`, `${r.unplayed} unwatched`), r.a.played ? tc(`已看 ${r.a.played}/${r.n}`, `${r.a.played} of ${r.n} watched`) : tc("从未看过", "never watched")])));
+    const discover = best(rows.filter((r) => !topIds.has(r.id) && r.aff > 0 && r.a.played / r.n <= 0.25)
+      .map((r) => item(r, r.aff * (1 - r.a.played / r.n) * (0.6 + 0.4 * r.q0),
+        [r.like ? tc(`与你常看的一致：${r.like}`, `like your top: ${r.like}`) : tc("与你常看的演员相似", "like your top performers"), rate(r), r.a.played ? tc(`已看 ${r.a.played}/${r.n}`, `${r.a.played} of ${r.n} watched`) : tc("从未看过", "never watched")])));
+    // 2.11: Surprise me (the exploration in epsilon-greedy): anyone eligible
+    // in none of the other chips' top 20, all alike; a day's sample of them
+    // when there are many (the cache stays small)
+    const others = new Set([foryou, neglected, backlog, discover].flatMap((l) => l.slice(0, REC_TOP_OTHERS).map((x) => x.id)));
+    const surprise = rows.filter((r) => !others.has(r.id)).map((r) => item(r, 1, [tc("换个口味", "something different"), rate(r),
+        r.a.played ? tc(`已看 ${r.a.played}/${r.n}`, `${r.a.played} of ${r.n} watched`) : tc(`${r.n} 个场景，从未看过`, `${r.n} scenes, never watched`)]))
+      .sort(tie).slice(0, REC_SURPRISE_MAX);
+    return { foryou, neglected, backlog, discover, surprise };
+  }
+  // Performers with a Lockdown run that started in the last 7 days.
+  function recentPerformers(list, now) {
+    const out = new Set();
+    for (const e of list || []) {
+      if (!e || typeof e.at !== "number" || now - e.at > REC_RECENT_MS) continue;
+      if ((e.kind || "performer") === "performer" && (e.tid || e.pid)) out.add(String(e.tid || e.pid));
+    }
+    return out;
+  }
+  // A list as the setup shows it: without the recent ones, and with
+  // Unwatched only, only those with an unwatched scene.
+  function recShown(items, recent, fresh) {
+    return (items || []).filter((x) => x && !(recent && recent.has(String(x.id))) && (!fresh || x.unplayed > 0));
+  }
+  // One of `list` by its `score` (r in [0, 1)); all zero: uniform.
+  function weightedPick(list, r) {
+    if (!list || !list.length) return null;
+    const w = list.map((x) => Math.max(0, Number(x && x.score) || 0));
+    const sum = w.reduce((a, b) => a + b, 0);
+    if (!(sum > 0)) return list[Math.min(list.length - 1, Math.floor(r * list.length))];
+    let at = r * sum;
+    for (let i = 0; i < list.length; i++) { at -= w[i]; if (at < 0) return list[i]; }
+    return list[list.length - 1];
+  }
+  // A day's cache of the lists, per browser (localStorage `lockdownRecs`).
+  const recFresh = (c, now) => !!c && c.v === REC_V && typeof c.at === "number" && now - c.at < DAY_MS && now >= c.at && !!c.lists;
+
+  // ── 2.9: the player's own "next" controls under Roulette ──────────────────
+  // Stash's skip buttons (video.js, shown with a queue), the queue panel's
+  // controls and Lockdown's own button in the control bar all mean Next
+  // scene; so do Stash's "p n" / "p p" / "p r" queue keys (queueKey).
+  const NEXT_SEL = ".video-js .vjs-skip-button, .video-js .vjs-icon-next-item, .video-js .vjs-icon-previous-item, .queue-controls button, .ld-vjsnext";
+  // Which image is on screen in Stash's own viewer: the lightbox's (its
+  // footer links the image) or the image page's; null for none, or for a
+  // lightbox showing something without that link.
+  function pictureHere(pathname, lightboxHref, lightboxOpen) {
+    const m = /\/images\/(\d+)/.exec(lightboxHref || "");
+    if (m) return m[1];
+    if (lightboxOpen) return null;
+    const p = /^\/images\/(\d+)\/?$/.exec(pathname || "");
+    return p ? p[1] : null;
+  }
+  function queueKey(prev, key, now) {
+    return !!prev && prev.key === "p" && now - prev.at < 1500 && (key === "n" || key === "p" || key === "r");
   }
 
   // ── The suite's toast: kinds, how long each stays, where it is mounted ────
@@ -1322,6 +1853,458 @@
     return NAV_KEYS.has(ev.key) ? "keep" : "stop";
   }
 
+  // ── 2.10: the leaderboard, "Hall of fame" ────────────────────────────────
+  // The approved redesign (mockup canvas "Lockdown leaderboard": Main,
+  // Expanded, EdgeFilter, Empty, Phone): a podium 2-1-3 with big pictures, a
+  // records strip, places 4-12 as wide rows (Show more to 20) that open the
+  // score's breakdown. Everything here is pure (data in, data or markup out)
+  // and sits above the test hook so the tests reach it; `renderBoard` below
+  // does the clicks and the one portrait query.
+  const LB_ROWS = 12;                  // places shown before Show more
+  const LB_MAX = 20;                   // and after it
+  // The heat meter is as long as the most heat a run can have: every
+  // condition at its top rank for the way out that allows the most (Finish
+  // today, 11.5), so a full meter means a run nobody can top.
+  const HEAT_MAX = Math.max(...["finish", "timer", "edge"].map((g) =>
+    heatOf(conditions().reduce((o, c) => { o[c.k] = c.ranks.length; return o; }, {}), g)));
+  const LB_SEGS = Math.ceil(HEAT_MAX);
+  const LB_GOALS = [["all", "All"], ["finish", "Finish"], ["timer", "Timer"], ["edge", "Edge"]];
+  const LB_GOALS_ZH = { all: "全部", finish: "完成", timer: "计时", edge: "边缘" };
+  const LB_WAY = { finish: "Finish", timer: "Timer", edge: "Edge" };
+  const lbGoal = (g) => tc(LB_GOALS_ZH[g] || g, (LB_GOALS.find(([k]) => k === g) || [g, g])[1]);
+  // Line icons on the 16 grid (the suite's), for the board only.
+  const lbIc = (d, cls) => `<svg class="ld-lbic${cls ? " " + cls : ""}" viewBox="0 0 16 16" aria-hidden="true">${d}</svg>`;
+  const LB_FLAME = '<path d="M8 1.5c.6 2.6 3.8 4 3.8 7.6a3.8 3.8 0 0 1-7.6 0c0-1.7.8-2.8 1.7-3.6.2 1.2.8 2 1.5 2.3C7.1 6 7.1 3.8 8 1.5z"/>';
+  const LB_DROP = '<path d="M8 2c2.5 3.2 4 5.4 4 7.3A4 4 0 0 1 4 9.3C4 7.4 5.5 5.2 8 2z"/>';
+  const LB_CUP = '<path d="M5 2.5h6v3a3 3 0 0 1-6 0zM5 3.5H2.8a2.2 2.2 0 0 0 2.4 2.6M11 3.5h2.2a2.2 2.2 0 0 1-2.4 2.6M8 8.5v3M5.5 13.5h5"/>';
+  const LB_LOCK = '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5 7V5a3 3 0 0 1 6 0v2"/>';
+  const LB_CROWN = '<path d="M2 5l3 3 3-5 3 5 3-3-1.2 7.5H3.2z"/>';
+  const LB_CHEV = '<path d="M4 6l4 4 4-4"/>';
+  const lbNum = (n) => Math.round(Number(n) || 0).toLocaleString();
+
+  // The first day of this month, local time ("This month" is the runs
+  // started since then, by their stored `at`).
+  function monthStart(now) {
+    const d = new Date(now);
+    d.setDate(1); d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+  const inPeriod = (x, period, now) => period !== "month" || (typeof x.at === "number" && x.at >= monthStart(now));
+
+  // A board run with what the history still knows about it. Runs slimmed
+  // before 2.10 kept no target id, O's or moments; the history entry of the
+  // same id has them while it is in the list (the last 200). The board's own
+  // fields win; nothing is written back.
+  function boardEntry(x, h) {
+    if (!h) return x;
+    const out = { ...x };
+    if (!out.tid && (h.tid || h.pid)) out.tid = String(h.tid || h.pid);
+    if (out.os === undefined && typeof h.os === "number") out.os = h.os;
+    if (!("moments" in out) && h.v >= 3) out.moments = h.moments || [];
+    if (!out.tags && h.tags) { out.tags = h.tags; out.mode = h.mode; }
+    if (!out.image && h.image) out.image = h.image;
+    return out;
+  }
+
+  // What the board shows for a way out and a period: the counts per way out
+  // (in the period), the ranked runs (at most 20), the podium in its 2-1-3
+  // order, the rows after it (9, or up to 20 with `more`), and how many
+  // Show more would add. `#1` gets the personal best pill under All and All
+  // time; the newest run on the whole board is the latest.
+  function boardView(top, o) {
+    o = o || {};
+    const goal = o.goal || "all", period = o.period || "all", now = o.now || Date.now();
+    const byId = new Map(((o.list) || []).filter((e) => e && e.id).map((e) => [String(e.id), e]));
+    const all = boardRows(top, "all").map((x) => boardEntry(x, byId.get(String(x.id))));
+    const per = all.filter((x) => inPeriod(x, period, now));
+    const counts = {};
+    for (const [g] of LB_GOALS) counts[g] = per.filter((x) => g === "all" || goalType(x) === g).length;
+    const rows = per.filter((x) => goal === "all" || goalType(x) === goal);
+    let latest = null;
+    for (const x of all) if (typeof x.at === "number" && (!latest || x.at > latest.at)) latest = x;
+    const first = rows.length ? rows[0].score : 1;
+    const ranked = rows.slice(0, LB_MAX).map((x, i) => ({
+      x, rank: i + 1, pct: Math.max(4, Math.round((x.score / first) * 100)),
+      latest: !!latest && x.id === latest.id, best: i === 0 && goal === "all" && period === "all",
+      behind: i > 0 ? rows[i - 1].score - x.score : 0,
+    }));
+    const podium = [ranked[1], ranked[0], ranked[2]].filter(Boolean);
+    const restAll = ranked.slice(3);
+    const rest = o.more ? restAll : restAll.slice(0, LB_ROWS - 3);
+    return { goal, period, counts, ranked, podium, rest, more: restAll.length - rest.length, total: rows.length, all: all.length };
+  }
+
+  // The most locked target with its key in the totals (bare id for a
+  // performer, "s:<id>" a studio, "t:<id>" a tag), as mostLocked picks it.
+  function mostLockedEntry(stats) {
+    let best = null;
+    for (const [key, v] of Object.entries((stats && stats.perf) || {})) {
+      if (!v || !v.n) continue;
+      if (!best || v.n > best.n || (v.n === best.n && String(v.name) < String(best.name))) best = { key, name: v.name, n: v.n };
+    }
+    return best;
+  }
+  // A totals key as a target: { kind, id } (several tags: no single id).
+  function keyTarget(key) {
+    const k = String(key || "");
+    if (/^s:\d+$/.test(k)) return { kind: "studio", id: k.slice(2) };
+    if (/^t:/.test(k)) return { kind: "tag", id: /^t:\d+$/.test(k) ? k.slice(2) : "" };
+    if (/^\d+$/.test(k)) return { kind: "performer", id: k };
+    return { kind: "performer", id: "" };
+  }
+
+  // The records strip, from the lifetime totals: highest heat got out of,
+  // longest edge, best streak and the one running now, the most locked
+  // target, and every run got out of or given up.
+  function boardRecords(stats) {
+    const st = { ...EMPTY_STATS, ...(stats || {}) };
+    return { heat: st.bestHeat || 0, edgeMs: st.longestEdgeMs || 0, best: st.bestStreak || 0, now: st.streak || 0,
+             done: st.done || 0, gaveUp: st.gaveUp || 0, runs: (st.done || 0) + (st.gaveUp || 0), most: mostLockedEntry(st) };
+  }
+
+  // How a run's score adds up, line by line, from scoreOf (the same rule
+  // the run was scored with). A board run whose stored score differs (an
+  // Edge run from before 2.5.1 keeps its old score) shows the stored one,
+  // with `old` set.
+  function scoreLines(x) {
+    const sc = scoreOf({ ...x, result: "done", v: 3 });
+    if (!sc) return null;
+    const g = x.goal || {};
+    const wMs = g.type === "edge" && g.watchMs ? Math.min(x.watchedMs || 0, g.watchMs) : (x.watchedMs || 0);
+    const lines = [{ k: tc("观看", "Watched"), d: `${fmtMinutes(wMs / 60000)} × 10`, v: sc.watched, c: "cy" }];
+    if (sc.overtime) lines.push({ k: tc("加时", "Overtime"), d: `${fmtMinutes(Math.min(x.overtimeMs, g.watchMs || 0) / 60000)} × 10`, v: sc.overtime, c: "ma" });
+    if (sc.skips) lines.push({ k: tc("跳过", "Skips"), d: `${x.skipsUsed} × ${SKIP_COST}${-sc.skips < SKIP_COST * x.skipsUsed ? tc("，最多扣一半", ", at most half") : ""}`, v: sc.skips, c: "re" });
+    if (sc.slips) lines.push({ k: tc("目标前的 O", "O's before the Edge target"), d: `${x.slips} × 100`, v: sc.slips, c: "re" });
+    if (sc.pics) lines.push({ k: tc("图片", "Pictures"), d: tc(`${sc.pics} 张新图`, `${sc.pics} new`), v: sc.pics, c: "" });
+    lines.push({ k: tc("出局", "Got out"), d: "", v: sc.out, c: "gr" });
+    const sub = lines.reduce((a, l) => a + l.v, 0);
+    const stored = typeof x.score === "number" ? x.score : sc.total;
+    return { lines, sub, heat: sc.heat, mult: sc.mult, nov: sc.nov, novK: x.novK || [], total: stored, computed: sc.total, old: stored !== sc.total };
+  }
+
+  // The conditions a run had on, with what each added to its heat.
+  function heatParts(conds, goal) {
+    const g = goal && goal.type ? goal.type : goal;
+    const one = !!(conds && conds.one) && g === "timer";
+    return conditions().filter((c) => conds && conds[c.k] && condApplies(c, g) && !(one && c.k === "stay"))
+      .map((c) => ({ k: c.k, name: c.name, rank: c.ranks[conds[c.k] - 1] || "", heat: c.heat[conds[c.k] - 1] || 0 }));
+  }
+  // A condition as a chip: the Skip budget by its rank ("No skips", "1 skip
+  // per scene"), the others by name.
+  const condChip = (p) => (p.k === "skip" ? p.rank.charAt(0).toUpperCase() + p.rank.slice(1) : p.name);
+  const runConds = (x) => heatParts(x.conds || (x.rules ? condsFromRules(x.rules, x.goal) : {}), x.goal);
+  const runHeat = (x) => (typeof x.heat === "number" ? x.heat : heatOf(x.conds || condsFromRules(x.rules, x.goal), x.goal));
+
+  // "Edge · 45 min · heat 6 · 2 moments · Roulette, No skips": how it was won.
+  function howLine(x) {
+    const bits = [goalLabel(x.goal), tc(`热度 ${runHeat(x)}`, `heat ${runHeat(x)}`)];
+    const m = (x.moments || []).length;
+    if (m) bits.push(plural(m, "moment", "moments"));
+    const c = runConds(x).slice(0, 2).map(condChip);
+    if (c.length) bits.push(c.join(", "));
+    return bits.join(" · ");
+  }
+
+  // ── Pictures ──
+  // Performers have their picture on the run (`image`, the target's
+  // image_path when it started). Old runs without one, and the most locked
+  // tile, are looked up in ONE query by ids for everything on screen
+  // (performers and studios together); tags never are (a lettered card,
+  // the user's choice). `cache` maps "kind:id" to a path ("" for none).
+  const picKey = (kind, id) => `${kind || "performer"}:${id}`;
+  function portraitNeeds(items, cache) {
+    const need = { performer: [], studio: [] };
+    for (const it of items || []) {
+      if (!it || it.image || !it.id) continue;
+      const kind = it.kind || "performer";
+      if (!need[kind] || (cache && cache.has(picKey(kind, it.id)))) continue;
+      if (!need[kind].includes(String(it.id))) need[kind].push(String(it.id));
+    }
+    return need;
+  }
+  function portraitQuery(need) {
+    const p = (need && need.performer) || [], s = (need && need.studio) || [];
+    if (!p.length && !s.length) return null;
+    const vars = [], parts = [], variables = {};
+    if (p.length) { vars.push("$p: [ID!]"); parts.push("p: findPerformers(ids: $p, filter: { per_page: -1 }) { performers { id image_path } }"); variables.p = p; }
+    if (s.length) { vars.push("$s: [ID!]"); parts.push("s: findStudios(ids: $s, filter: { per_page: -1 }) { studios { id image_path } }"); variables.s = s; }
+    return { query: `query (${vars.join(", ")}) { ${parts.join(" ")} }`, variables };
+  }
+  // The answer into the cache; ids asked for and not found get "" so they
+  // are not asked again this session.
+  function portraitFill(cache, need, d) {
+    for (const r of (d && d.p && d.p.performers) || []) cache.set(picKey("performer", r.id), r.image_path || "");
+    for (const r of (d && d.s && d.s.studios) || []) cache.set(picKey("studio", r.id), r.image_path || "");
+    for (const kind of ["performer", "studio"]) for (const id of (need && need[kind]) || []) if (!cache.has(picKey(kind, id))) cache.set(picKey(kind, id), "");
+    return cache;
+  }
+  const lbPics = new Map();            // this session's looked-up pictures
+  const runPic = (x, cache) => x.image || (x.tid && (cache || lbPics).get(picKey(x.kind, x.tid))) || "";
+
+  // A picture's frame: a performer's photo from the top (faces show), a
+  // studio's logo on a light plate, a tag as a big lettered card; with no
+  // picture a performer gets their initial on a tinted ground.
+  const LB_HUES = ["pu", "cy", "re", "bl", "ye", "ma", "gr", "or"];
+  const hueOf = (s) => LB_HUES[[...String(s || "")].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7) % LB_HUES.length];
+  function lbPicHtml(kind, name, img, big) {
+    const nm = escapeHtml(name || "?");
+    if (kind === "studio") {
+      return `<span class="ld-lbplate${big ? " ld-big" : ""}">${img ? `<img src="${escapeHtml(img)}" alt="" loading="lazy">` : `<b>${nm}</b>`}` +
+        `${big ? `<small>${tc("工作室", "Studio")}</small>` : ""}</span>`;
+    }
+    if (kind === "tag") return `<span class="ld-lbtag${big ? " ld-big" : ""}">${big ? `<small>${tc("标签", "Tag")}</small>` : ""}<b>${nm}</b></span>`;
+    return img ? `<img class="ld-lbphoto" src="${escapeHtml(img)}" alt="" loading="lazy">`
+      : `<span class="ld-lbinit" style="--h:var(--sx-${hueOf(name)}-d)">${escapeHtml(String(name || "?").trim().charAt(0).toUpperCase() || "?")}</span>`;
+  }
+  const wayHtml = (x, cls) => `<span class="ld-lbway ld-way-${goalType(x)}${cls ? " " + cls : ""}">${escapeHtml(goalLabel(x.goal))}</span>`;
+  function meterHtml(h) {
+    let s = "";
+    for (let i = 0; i < LB_SEGS; i++) s += `<i class="${h >= i + 1 ? "ld-on" : h > i ? "ld-half" : ""}"></i>`;
+    return `<span class="ld-lbmeter" title="${escapeHtml(tc(`热度 ${h} / ${HEAT_MAX}`, `Heat ${h} of ${HEAT_MAX}`))}">${s}</span>`;
+  }
+  const heatRow = (h) => `<span class="ld-lbheat">${lbIc(LB_FLAME, "ld-lbflame")}<b>${tc("热度 " + h, "Heat " + h)}</b>${meterHtml(h)}<em>×${heatMult(h)}</em></span>`;
+  const kindLabel = (x) => (x.kind === "studio" ? tc("工作室", "Studio") : x.kind === "tag" ? tc("标签", "Tag") : "");
+  const shortDate = (at, now) => (typeof at === "number" ? fmtWhen(at, now).replace(/\s\d{1,2}:\d{2}(\s?[AP]M)?$/i, "") : "");
+
+  function podiumHtml(v, now, cache, open) {
+    return `<section class="ld-lbpod" aria-label="${tc("领奖台", "Podium")}"><div class="ld-lbpodrow" data-a="pod">` + v.podium.map((r) => {
+      const x = r.x, h = runHeat(x), kl = kindLabel(x);
+      return `<div class="ld-lbstep ld-s${r.rank}"><article class="ld-lbpc ld-p${r.rank}${r.latest ? " ld-latest" : ""}${open === x.id ? " ld-open" : ""}" ` +
+        `data-open="${escapeHtml(x.id)}" role="button" tabindex="0" aria-expanded="${open === x.id}" aria-label="${escapeHtml(tc(`第 ${r.rank} 名：${x.name || "?"}，${lbNum(x.score)}`, `Place ${r.rank}: ${x.name || "?"}, ${lbNum(x.score)}`))}">` +
+        `<div class="ld-lbpic">${lbPicHtml(x.kind, x.name, runPic(x, cache), true)}` +
+          `<div class="ld-lbcap"><b>${escapeHtml(x.name || "?")}</b><span>${escapeHtml([kl, tc(`${fmtMinutes((x.ms || 0) / 60000)} 锁定`, `${fmtMinutes((x.ms || 0) / 60000)} locked`)].filter(Boolean).join(" · "))}</span></div>` +
+          `<span class="ld-lbmedal" aria-label="${tc("第 " + r.rank + " 名", "Place " + r.rank)}">${r.rank}</span>${wayHtml(x, "ld-onpic")}` +
+          `${r.best ? `<span class="ld-lbpb">${tc("个人最佳", "Personal best")}</span>` : ""}${r.latest ? `<span class="ld-lbnew">${tc("最新一局", "Latest run")}</span>` : ""}</div>` +
+        `<div class="ld-lbscore"><b>${lbNum(x.score)}</b><span${typeof x.at === "number" ? ` title="${escapeHtml(fmtStamp(x.at))}"` : ""}>${escapeHtml(shortDate(x.at, now))}</span></div>` +
+        heatRow(h) +
+        `<div class="ld-lbhow">${escapeHtml(howLine(x))}</div></article>` +
+        `<div class="ld-lbplinth" aria-hidden="true">${r.rank}</div></div>`;
+    }).join("") + `</div>` +
+      (v.podium.length > 1 ? `<div class="ld-lbdots" aria-hidden="true">${v.podium.map((r, i) => `<i class="${i === 0 ? "ld-on" : ""}"></i>`).join("")}</div>` : "") + `</section>`;
+  }
+
+  function recordsHtml(rec, cache) {
+    const tile = (hue, ico, big, small) => `<div class="ld-lbtile"><span class="ld-lbtico" style="--h:var(--sx-${hue});--ht:var(--sx-${hue}-tx)">${lbIc(ico)}</span>` +
+      `<span><b>${big}</b><small>${small}</small></span></div>`;
+    const m = rec.most, mt = m ? keyTarget(m.key) : null;
+    const mImg = mt && mt.id ? (cache || lbPics).get(picKey(mt.kind, mt.id)) || "" : "";
+    return `<section class="ld-lbrec" aria-label="${tc("纪录", "Records")}"><div class="ld-lbcapt">${tc("纪录", "Records")}</div><div class="ld-lbtiles">` +
+      tile("or", LB_FLAME, rec.heat ? tc(`热度 ${rec.heat}`, `Heat ${rec.heat}`) : "–", tc("出局时拿到的最高热度", "highest heat got out of")) +
+      tile("ma", LB_DROP, rec.edgeMs ? escapeHtml(fmtMinutes(rec.edgeMs / 60000)) : "–", tc("最长的一次边缘", "longest edge")) +
+      tile("ye", LB_CUP, rec.best ? tc(`${rec.best} 连胜`, `${rec.best} in a row`) : "–", tc(`最佳连胜${rec.now ? ` · 当前 ${rec.now}` : ""}`, `best streak${rec.now ? ` · now ${rec.now}` : ""}`)) +
+      (m ? `<div class="ld-lbtile ld-lbmost"><span class="ld-lbthumb ld-k-${mt.kind}">${lbPicHtml(mt.kind, m.name, mImg, false)}</span>` +
+             `<span><b>${escapeHtml(m.name)}</b><small>${tc(`锁定最多 · ${m.n} 次`, `most locked to · ${plural(m.n, "time", "times")}`)}</small></span></div>`
+         : tile("pu", LB_CROWN, "–", tc("锁定最多", "most locked to"))) +
+      tile("re", LB_LOCK, plural(rec.runs, "run", "runs"), tc(`${rec.done} 次出局 · ${rec.gaveUp} 次放弃`, `${rec.done} got out · ${rec.gaveUp} gave up`)) +
+      `</div></section>`;
+  }
+
+  function rowHtml2(r, now, open, cache) {
+    const x = r.x, h = runHeat(x), kl = kindLabel(x);
+    const chips = runConds(x).slice(0, 3).map((p) => `<span class="ld-lbcond" title="${escapeHtml(`${p.name}: ${p.rank}`)}">${escapeHtml(condChip(p))}</span>`).join("");
+    const small = [shortDate(x.at, now), tc(`${fmtMinutes((x.watchedMs || 0) / 60000)} 观看`, `${fmtMinutes((x.watchedMs || 0) / 60000)} watched`),
+                   x.skipsUsed ? plural(x.skipsUsed, "skip", "skips") : tc("未跳过", "no skips"), x.pics > 0 ? plural(x.pics, "picture", "pictures") : ""].filter(Boolean).join(" · ");
+    return `<div class="ld-lbitem${open ? " ld-open" : ""}"><button type="button" class="ld-lbrow${r.latest ? " ld-latest" : ""}" data-open="${escapeHtml(x.id)}" aria-expanded="${open}">` +
+      `<span class="ld-lbrank">${r.rank}</span>` +
+      `<span class="ld-lbthumb ld-k-${escapeHtml(x.kind || "performer")}">${lbPicHtml(x.kind, x.name, runPic(x, cache), false)}</span>` +
+      `<span class="ld-lbmain"><span class="ld-lbname"><b>${escapeHtml(x.name || "?")}</b>${kl ? `<small>${kl}</small>` : ""}` +
+        `${r.latest ? `<span class="ld-lbnew">${tc("最新一局", "Latest run")}</span>` : ""}</span>` +
+        `<span class="ld-lbchips">${wayHtml(x)}${chips}</span><span class="ld-lbsmall">${escapeHtml(small)}</span>` +
+        `<span class="ld-lbbar ld-lbbar2"><i style="width:${r.pct}%"></i></span></span>` +
+      `<span class="ld-lbhot">${heatRow(h)}</span>` +
+      `<span class="ld-lbpts"><b>${lbNum(x.score)}</b><span class="ld-lbbar"><i style="width:${r.pct}%"></i></span><small>${tc(`第 1 名的 ${r.pct}%`, `${r.pct}% of #1`)}</small><em class="ld-lbph">${tc("热度 " + h, "Heat " + h)}</em></span>` +
+      `${lbIc(LB_CHEV, "ld-lbchev")}</button>${open ? moreHtml(r, now) : ""}</div>`;
+  }
+
+  // The opened row: how the score adds up, and the run.
+  function moreHtml(r, now) {
+    const x = r.x, sl = scoreLines(x), parts = runConds(x);
+    const sign = (v) => (v < 0 ? `−${lbNum(-v)}` : `+${lbNum(v)}`);
+    const sum = sl ? sl.lines.map((l) => `<span>${escapeHtml(l.k)}</span><span class="ld-lbd">${escapeHtml(l.d)}</span>` +
+        `<span class="ld-lbv${l.c ? ` ld-c-${l.c}` : ""}">${sign(l.v)}</span>`).join("") +
+      `<span class="ld-lbsub">${tc("热度前", "Before heat")}</span><span class="ld-lbsub"></span><span class="ld-lbv ld-lbsub ld-hi">${lbNum(sl.sub)}</span>` +
+      `<span class="ld-c-or">${tc("热度 " + sl.heat, "Heat " + sl.heat)}</span><span class="ld-lbd">${tc("每点 +20%", "+20% a point")}</span><span class="ld-lbv ld-c-or">×${sl.mult}</span>` +
+      // 2.11: the novelty bonus, when the run had one
+      (sl.nov > 0 ? `<span class="ld-c-cy">${tc("新颖度", "Novelty")}</span><span class="ld-lbd">${escapeHtml(tc(novNames(sl.novK).join("、") || "新条件", novNames(sl.novK).join(", ") || "new conditions"))}${tc("，每项 +3%", ", +3% each")}</span>` +
+        `<span class="ld-lbv ld-c-cy">×${Math.round((1 + sl.nov) * 100) / 100}</span>` : "") +
+      `<span class="ld-lbtot">${tc("得分", "Score")}</span><span></span><span class="ld-lbv ld-lbtot">${lbNum(sl.total)}</span>` : "";
+    const from = parts.filter((p) => p.heat).map((p) => `${p.name} (${p.rank}, +${p.heat})`);
+    const note = [from.length ? tc(`热度来自 ${from.length > 1 ? from.slice(0, -1).join("、") + " 和 " + from[from.length - 1] : from[0]}。`, `Heat came from ${from.length > 1 ? from.slice(0, -1).join(", ") + " and " + from[from.length - 1] : from[0]}.`) : tc("没有热度：这是一盘免费局。", "No heat: a free run."),
+                  r.behind > 0 ? tc(`距离第 ${r.rank - 1} 名还差 ${r.behind} 分。`, `${plural(r.behind, "point", "points")} short of #${r.rank - 1}.`) : "",
+                  sl && sl.old ? tc(`按旧规则计分（今日相当于 ${lbNum(sl.computed)}）。`, `Scored under an older rule (${lbNum(sl.computed)} today).`) : ""].filter(Boolean).join(" ");
+    const fact = (big, small, c) => `<div class="ld-lbfact"><b${c ? ` class="ld-c-${c}"` : ""}>${escapeHtml(String(big))}</b><span>${small}</span></div>`;
+    const links = momentLinks(x);
+    const K = KINDS[x.kind] || KINDS.performer;
+    const openHref = x.tid && !(x.tags && x.tags.length > 1) ? `/${K.path}/${encodeURIComponent(x.tid)}` : "";
+    return `<div class="ld-lbmore"><div class="ld-lbcol"><div class="ld-lbcapt">${tc("得分怎么来的", "How the score adds up")}</div><div class="ld-lbsum">${sum}</div>` +
+        `<div class="ld-lbnote">${escapeHtml(note)}</div></div>` +
+      `<div class="ld-lbcol"><div class="ld-lbcapt">${tc("这一局", "The run")}</div><div class="ld-lbfacts">` +
+        fact(fmtMinutes((x.watchedMs || 0) / 60000), tc("观看", "watched"), "cy") + fact(x.skipsUsed || 0, tc("已跳过", "skips used")) +
+        (typeof x.os === "number" ? fact(x.os, tc("次O", "O's"), "bl") : "") + (Array.isArray(x.moments) ? fact(x.moments.length, tc("瞬间", "moments")) : "") +
+        fact(x.pics || 0, tc("图片", "pictures")) + fact(fmtMinutes((x.ms || 0) / 60000), tc("锁定", "locked")) + `</div>` +
+        (links.length ? `<div class="ld-lbmom"><span>${tc(`找到 ${plural(links.length, "moment", "moments")}`, `Found ${plural(links.length, "moment", "moments")}`)}</span>` +
+          links.map((l) => `<a class="ld-mlink" href="${escapeHtml(l.href)}">${escapeHtml(l.label)}</a>`).join("") + `</div>` : "") +
+        (typeof x.at === "number" ? `<div class="ld-lbwhen">${escapeHtml(fmtStamp(x.at))}</div>` : "") +
+        `<div class="ld-lbacts">${openHref ? `<a class="ld-lbbtn" href="${escapeHtml(openHref)}" data-lbopen="1">${tc(`打开 ${x.name || "?"}`, `Open ${x.name || "?"}`)}</a>` : ""}` +
+        `<button type="button" class="ld-lbbtn" data-again="${escapeHtml(x.id)}">${tc("再来同一套设置", "Same setup again")}</button></div></div></div>`;
+  }
+
+  function emptyBoardHtml(v) {
+    const title = v.all === 0 ? tc("还没有计分的对局", "No scored runs yet") : v.period === "month" && v.goal === "all" ? tc("本月还没有对局", "No runs this month")
+      : tc(`还没有${v.goal === "all" ? "" : lbGoal(v.goal) + "类"}计分对局${v.period === "month" ? "（本月）" : ""}`, `No scored ${v.goal === "all" ? "" : LB_WAY[v.goal] + " "}runs${v.period === "month" ? " this month" : " yet"}`);
+    return `<section class="ld-lbempty" aria-label="${tc("领奖台（空）", "Podium, empty")}"><div class="ld-lbpodrow" aria-hidden="true">` +
+      `<div class="ld-lbstep ld-s2"><div class="ld-lbghost">2</div><div class="ld-lbplinth"></div></div>` +
+      `<div class="ld-lbstep ld-s1"><div class="ld-lbghost ld-g1">${lbIc(LB_CROWN)}</div><div class="ld-lbplinth"></div></div>` +
+      `<div class="ld-lbstep ld-s3"><div class="ld-lbghost">3</div><div class="ld-lbplinth"></div></div></div>` +
+      `<div class="ld-lbetext"><b>${escapeHtml(title)}</b><span>${tc("从一场锁局中出局，就会出现在这里。只有出局的对局才参与排名", "Get out of a lockdown and it shows up here. Only runs you got out of are ranked")}` +
+      `${v.all === 0 ? tc("，所以你完成的第一盘会直接登上榜首", ", so the first one you finish takes the top spot") : ""}。</span>` +
+      `<button type="button" class="ld-lbbtn ld-pri" data-a="lbstart">${lbIc(LB_LOCK)}${tc("开始一盘", "Start a run")}</button></div></section>`;
+  }
+
+  // The whole tab. `s`: { goal, period, more, open (a run id) }; `notice`:
+  // markup above the foot (an unreadable history).
+  function boardHtml(top, list, stats, s, now, cache, notice) {
+    const v = boardView(top, { goal: s.goal, period: s.period, more: s.more, now, list });
+    const rec = boardRecords(stats);
+    const label = v.period === "month" ? new Date(now).toLocaleDateString(undefined, { month: "long" }) : tc("全部时间", "All time");
+    const sub = v.all === 0 ? tc("还没有排名", "Nothing ranked yet") : tc(`${label} · 共 ${plural(v.total, "run", "runs")} 盘排名`, `${label} · ${plural(v.total, "run", "runs")} ranked`);
+    const chips = LB_GOALS.map(([g, l]) => `<button type="button" class="ld-lbchip${g === v.goal ? " ld-on" : ""}" data-g="${g}" aria-pressed="${g === v.goal}">${lbGoal(g)} <b>${v.counts[g]}</b></button>`).join("");
+    const periods = [["month", tc("本月", "This month")], ["all", tc("全部时间", "All time")]].map(([p, l]) =>
+      `<button type="button" class="ld-lbper${p === v.period ? " ld-on" : ""}" data-p="${p}" aria-pressed="${p === v.period}">${l}</button>`).join("");
+    const last = v.ranked.length ? 3 + v.rest.length : 0;
+    return `<div class="ld-lb"><div class="ld-lbhead"><div><div class="ld-lbkicker">${tc("名人堂", "Hall of fame")}</div>` +
+        `<h3 class="ld-lbtitle">${v.goal === "all" ? tc("你的最佳对局", "Your best runs") : tc(`你的最佳${lbGoal(v.goal)}对局`, `Your best ${LB_WAY[v.goal]} runs`)}</h3><div class="ld-lbsubl">${escapeHtml(sub)}</div></div>` +
+        `<div class="ld-lbctl"><div class="ld-lbchips2" role="group" aria-label="${tc("出口方式", "Way out")}">${chips}</div>` +
+        `<div class="ld-lbpers" role="group" aria-label="${tc("时间范围", "Period")}">${periods}</div></div></div>` +
+      (v.ranked.length ? podiumHtml(v, now, cache, s.open) : emptyBoardHtml(v)) +
+      // a podium run opened shows its breakdown under the podium
+      v.podium.filter((r) => r.x.id === s.open).map((r) => `<div class="ld-lbitem ld-open ld-lbpodmore">${moreHtml(r, now)}</div>`).join("") +
+      (rec.runs ? recordsHtml(rec, cache) : "") +
+      (v.rest.length ? `<section class="ld-lblist" aria-label="${tc(`第 4 到 ${last} 名`, `Places 4 to ${last}`)}"><div class="ld-lblhead"><div class="ld-lbcapt">${tc(`第 4 到 ${last} 名`, `Places 4 to ${last}`)}</div>` +
+          `<span>${tc("点开一盘可以看到得分怎么算的", "Click a run to see how its score adds up")}</span></div>` +
+          v.rest.map((r) => rowHtml2(r, now, s.open === r.x.id, cache)).join("") +
+          (v.more > 0 ? `<button type="button" class="ld-lbbtn ld-lbshow" data-a="lbmore">${tc(`再显示 ${v.more} 盘`, `Show ${v.more} more`)}</button>` : "") + `</section>` : "") +
+      (notice || "") +
+      `<div class="ld-lbfoot">${tc(`只有出局的对局才参与排名：每种出口方式取你的前 ${LB_MAX} 名。2.1 之前的对局没有观看时长，不计分。`, `Only runs you got out of are ranked: your ${LB_MAX} best of each way out. Runs from before 2.1 have no watch time and aren't scored.`)}</div></div>`;
+  }
+
+  // ── 2.11: decisions pulled out of the loops, so they are tested ───────────
+
+  // Whether an item belongs, from a check's answer (review M2): a check that
+  // failed (Stash busy, a network blip, logged out, a timeout) is not a
+  // "no". It is never cached, keeps the veil up and is tried again; only a
+  // definite answer is cached, and only a definite "no" lets go of Stay to
+  // the end's or One scene's scene (2.10 cached the failure as "no" for the
+  // whole run and released the condition).
+  function belongVerdict(ok, failed) {
+    if (failed) return { allow: false, cache: false, release: false, retry: true };
+    return ok ? { allow: true, cache: true, release: false, retry: false } : { allow: false, cache: true, release: true, retry: false };
+  }
+  // The wait before try n (1, 2, ...): base, doubling, at most max.
+  const backoffMs = (n, base, max) => (n > 0 ? Math.min(max, base * Math.pow(2, n - 1)) : 0);
+
+  // The end of a run, as one change to Stash's copy (recordEnd and its
+  // retries): the entry, the totals and the pictures, unless the history
+  // already has this run (another device, or an earlier try that landed:
+  // never counted twice), and the active lock cleared when it is this run.
+  function endChange(cur, done, found, result, now) {
+    const { list, stats, active, pics, picsBad } = cur;
+    const M = active && active.id === done.id ? mergeLock(active, done) : done;
+    const L = M.moments ? { ...M, moments: keepMoments(M.moments, found) } : M;
+    const out = {};
+    if (!list.some((e) => e && e.id === done.id)) {
+      const entry = entryFromLock(L, endResult(L, result), now);
+      out.list = list.concat(entry);
+      out.stats = addToStats(stats, entry);
+      // 2.9: a run got out of uses up its pictures: no later run counts
+      // them again (a given-up run scored nothing for them, so they stay new)
+      if (entry.result === "done" && L.pics && L.pics.length && !picsBad) out.pics = addPicsChunk(pics, done.id, L.pics, now);
+    }
+    if (!active || active.id === done.id) out.active = null;
+    return out;
+  }
+  // Runs whose end has not been written yet (review M4), newest first, one
+  // per run id: localStorage lockdownPendingEnd until the write lands.
+  const pendingAdd = (list, p) => [p].concat((list || []).filter((x) => x && x.id !== p.id));
+  const pendingDrop = (list, id) => (list || []).filter((x) => x && x.id !== id);
+
+  // What a sync has to read (review M5): with Suite Data, the active lock
+  // alone, unless the history is needed (a lock gone from Stash: ended
+  // elsewhere, with which result; a lock to take up: not one that ended)
+  // or the last full read is SYNC_FULL_MS old.
+  function syncPlan(lockId, remote, ended, sinceFull) {
+    if (!(sinceFull < SYNC_FULL_MS)) return "full";
+    if (!remote) return lockId ? "full" : "light";
+    if (remote.id === lockId) return "light";
+    return ended && ended.has(remote.id) ? "light" : "full";
+  }
+  // What a sync does with what it read (2.0's rules, unchanged): a run that
+  // already ended (in the history, or here) is not taken up and its ghost is
+  // cleared (`clear`); none here: adopt Stash's; gone from Stash: ended
+  // elsewhere when Stash had it (or the history has it), else push it; a
+  // different run: adopt it; the same: merge. `list` null: not read.
+  function syncDecision(local, remote, list, ended, confirmedId) {
+    const inList = (id) => !!list && list.some((e) => e && e.id === id);
+    let r = remote || null, ghost = null;
+    if (r && ((ended && ended.has(r.id)) || inList(r.id))) { ghost = r.id; r = null; }
+    const clear = ghost && (!local || local.id !== ghost) ? ghost : null;
+    if (!local) return { act: r ? "adopt" : "none", remote: r, clear };
+    if (!r) {
+      const entry = (list && list.find((e) => e && e.id === local.id)) || null;
+      return { act: confirmedId === local.id || entry ? "ended" : "push", entry, remote: null, clear };
+    }
+    return { act: r.id !== local.id ? "adopt" : "merge", remote: r, clear };
+  }
+
+  // One tab per browser polls while locked (review M5d): the tab on screen
+  // that holds `lockdownPollOwner` ({ tab, at, vis }), renewed every 2 s; a
+  // hidden owner lets go, a stale one (closed tab) lapses after 6 s. The
+  // others follow through the storage event of the lock's copy.
+  function pollOwner(cur, me, visible, now) {
+    const c = cur && typeof cur === "object" ? cur : null;
+    const mine = !!c && c.tab === me;
+    if (!visible) return { own: false, write: mine && c.vis ? { tab: me, at: now, vis: false } : null };
+    const live = !!c && !!c.tab && !!c.vis && now - (c.at || 0) < OWNER_TTL_MS;
+    if (live && !mine) return { own: false, write: null };
+    const write = !mine || !c.vis || now - (c.at || 0) >= OWNER_RENEW_MS ? { tab: me, at: now, vis: true } : null;
+    return { own: true, write };
+  }
+  // How often each poll runs: an unlocked page looks for a lock every
+  // minute; locked, the polling tab syncs every 5 s and reads every O of
+  // the target every 10 s (15 s on a scene page, where the open scene's own
+  // count is read every 2.5 s and calls for the full read when it moved);
+  // another tab syncs every 30 s and reads only its open scene's count.
+  function pollIntervals(locked, own, onScene) {
+    if (!locked) return { sync: SYNC_IDLE_MS, oFull: 0, oScene: 0 };
+    return { sync: own ? SYNC_LOCKED_MS : SYNC_FOLLOW_MS, oFull: own ? (onScene ? O_FULL_SCENE_MS : O_FULL_MS) : 0, oScene: onScene ? O_SCENE_MS : 0 };
+  }
+  // The O check now: "full" (every O of the target), "scene" (the open
+  // scene's count), or null. `s`: { now, lastFull, lastScene, own, onScene,
+  // hasBase (per-scene counts, 2.2), allowed (the open scene belongs) }.
+  function oCheckPlan(s) {
+    const iv = pollIntervals(true, s.own, s.onScene);
+    if (iv.oFull && s.now - (s.lastFull || 0) >= iv.oFull) return "full";
+    if (iv.oScene && s.hasBase && s.allowed && s.now - (s.lastScene || 0) >= iv.oScene) return "scene";
+    return null;
+  }
+  // The open scene's count against what the run last saw (oBase holds the
+  // scenes with an O; none is 0): a change calls for the full read.
+  const oSceneMoved = (oBase, sid, count) => !!oBase && typeof count === "number" && count !== (oBase[String(sid)] || 0);
+
+  // A request with a time limit (review M6): `run(signal)` is aborted and
+  // the promise rejects after `ms`, so a hung request can no longer hold a
+  // busy flag (sync, O's, saving, cards) until a reload.
+  function fetchWithin(run, ms, T) {
+    // wrapped: called as t.set(...), the browser's own setTimeout throws "Illegal invocation"
+    const t = T || { set: (f, n) => setTimeout(f, n), clear: (x) => clearTimeout(x), AC: typeof AbortController !== "undefined" ? AbortController : null };
+    const ac = t.AC ? new t.AC() : null;
+    let timer = null;
+    const late = new Promise((_, no) => {
+      timer = t.set(() => { try { if (ac) ac.abort(); } catch (_) {} no(new Error(`Stash did not answer in ${Math.round(ms / 1000)} s`)); }, ms);
+    });
+    return Promise.race([Promise.resolve().then(() => run(ac ? ac.signal : undefined)), late]).finally(() => t.clear(timer));
+  }
+
   if (window.__LOCKDOWN_TEST__) {
     window.__LockdownTest = { suiteData, DATA_KEYS, unpack, packConfig, toastKind, toastHost, modalKey, TOAST_MS, routeCheck, enumOf, toGraphQLFilter, spinSchedule, fmtDuration, fmtClock, fmtMinutes,
                               addToStats, statsFromHistory, completeStats, parseStats, fmtWhen, entryKey,
@@ -1334,21 +2317,38 @@
                               scoreOf, addTop, topFrom, rescore, limitTop, SKIP_COST, boardRows, PAGE_PATH, slimRun,
                               skipsLeft, watchedSec, addMoment, markersSeen, mergeMoments, keepMoments, momentLinks, MOMENTS_MAX, MOMENT_WATCH_S,
                               edgeState, overtimeMs, overtimeCap, overtimeFull, overtimePts, reachEdge, startOvertime, endResult, overtimeText,
-                              CONDITIONS: conditions(), DEFAULT_SETUP, parseMinutes, stepMinutes, slipText, sceneFilterFor, listUrl, perfKey, keepsListFilter };
+                              CONDITIONS: conditions(), DEFAULT_SETUP, parseMinutes, stepMinutes, slipText, sceneFilterFor, listUrl, perfKey, keepsListFilter,
+                              pickOther, mediaOwner, nextSceneText,
+                              PIC_MS, PICS_MAX, PICS_KEEP, picTime, encodeIds, decodeIds, parsePics, picsSet, addPicsChunk, picsText,
+                              REC_CHIPS, REC_MIN_SCENES, REC_SPIN, recChipOk, rtOverall, rtFives, recAggregate, recLists, recentPerformers, recShown, weightedPick, recFresh,
+                              NEXT_SEL, queueKey, pictureHere,
+                              LB_ROWS, LB_MAX, HEAT_MAX, LB_SEGS, monthStart, inPeriod, boardEntry, boardView, mostLockedEntry, keyTarget, boardRecords,
+                              scoreLines, heatParts, condChip, howLine, portraitNeeds, portraitQuery, portraitFill, picKey, runPic, lbPicHtml,
+                              meterHtml, podiumHtml, recordsHtml, rowHtml2, moreHtml, emptyBoardHtml, boardHtml,
+                              // 2.11
+                              mergeOne, dropOne, stayCovered, novelty, novNames, suggestNext, NOV_STEP, NOV_MAX, NOV_RUNS,
+                              hashStr, mulberry32, dayKey, recDrawKey, recSeenN, recWeights, recDraw, recSeenPrune, recSeenAdd, recSeenPick,
+                              recSpinAdd, recShuffle, recWheel, agoText, REC_SHOW, REC_KEEP, REC_PER_STUDIO, REC_WHEEL_SKIP, REC_TOP_OTHERS, REC_RESTS,
+                              belongVerdict, backoffMs, endChange, pendingAdd, pendingDrop, syncPlan, syncDecision, pollOwner, pollIntervals,
+                              oCheckPlan, oSceneMoved, fetchWithin, SYNC_IDLE_MS, SYNC_LOCKED_MS, SYNC_FOLLOW_MS, SYNC_FULL_MS, OWNER_TTL_MS, GQL_TIMEOUT_MS };
     return;
   }
 
   // ═══ Stash ═════════════════════════════════════════════════════════════════
 
-  async function gql(query, variables) {
-    const res = await fetch("/graphql", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, variables }),
-    });
-    let json;
-    try { json = await res.json(); }
-    catch { throw new Error(`Stash returned ${res.status}${res.status === 401 ? ": logged out?" : ""}`); }
+  // 2.11: every request has a time limit (fetchWithin, GQL_TIMEOUT_MS; the
+  // recommendations' scene pages 60 s). Suite Data's calls go through here
+  // too (the shared client's `o.gql`), so they have it as well.
+  async function gql(query, variables, ms) {
+    const json = await fetchWithin(async (signal) => {
+      const res = await fetch("/graphql", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, variables }), signal,
+      });
+      try { return await res.json(); }
+      catch { throw new Error(`Stash returned ${res.status}${res.status === 401 ? ": logged out?" : ""}`); }
+    }, ms || GQL_TIMEOUT_MS);
     if (json?.errors?.length) throw new Error(json.errors[0].message);
     return json?.data ?? null;
   }
@@ -1483,6 +2483,61 @@
   }
   const oRows = (L) => (L.media === "images" ? imageORows(L) : sceneORows(L));
 
+  // ── 2.9: recommended performers: the data ──────────────────────────────────
+  // Read lazily, when the setup opens on performers: one performer list, the
+  // library's scenes in pages of 5000 (play count, O's, last played, studio,
+  // performers: no query per performer), and Ratings Toolkit's scores when it
+  // is installed (through Suite Data, read only). The lists are kept for the
+  // session and a day in localStorage (`lockdownRecs`, REC_V), so opening
+  // New run again asks Stash nothing. "Update" works them out again (2.11; Shuffle only draws again).
+  const REC_KEY = "lockdownRecs";
+  let recMem = null, recLoading = null;
+  function recCached() {
+    const now = Date.now();
+    if (recFresh(recMem, now)) return recMem;
+    try { const c = JSON.parse(localStorage.getItem(REC_KEY) || "null"); if (recFresh(c, now)) return (recMem = c); } catch (_) {}
+    return null;
+  }
+  function loadRecs(force) {
+    if (!force) { const c = recCached(); if (c) return Promise.resolve(c); }
+    if (recLoading) return recLoading;
+    recLoading = computeRecs().then((c) => {
+      recMem = c;
+      try { localStorage.setItem(REC_KEY, JSON.stringify(c)); } catch (_) {}
+      return c;
+    }).finally(() => { recLoading = null; });
+    return recLoading;
+  }
+  async function computeRecs() {
+    const [perfs, scenes, fives] = await Promise.all([recPerformers(), recScenes(), recFives()]);
+    return { v: REC_V, at: Date.now(), lists: recLists(perfs, recAggregate(scenes), fives, Date.now()), rt: Object.keys(fives).length };
+  }
+  async function recPerformers() {
+    const d = await gql(`query ($x: PerformerFilterType) { findPerformers(performer_filter: $x, filter: { per_page: -1 }) {
+                           performers { id name image_path scene_count image_count rating100 favorite tags { id name } } } }`,
+                        { x: { scene_count: { modifier: "GREATER_THAN", value: REC_MIN_SCENES - 1 } } });
+    return d?.findPerformers?.performers ?? [];
+  }
+  async function recScenes() {
+    const out = [];
+    for (let page = 1; page <= 50; page++) {
+      const d = await gql(`query ($f: FindFilterType) { findScenes(filter: $f) { count
+                             scenes { play_count o_counter last_played_at studio { id name } performers { id } } } }`,
+                          { f: { per_page: 5000, page, sort: "id", direction: "ASC" } }, 60000);
+      const r = d?.findScenes, list = r?.scenes ?? [];
+      out.push(...list);
+      if (!list.length || out.length >= (r.count || 0)) break;
+    }
+    return out;
+  }
+  async function recFives() {
+    try {
+      const d = await gql(CONFIG_Q, { p: ["RatingsToolkit"] });
+      const m = await SD.overlay("RatingsToolkit", d?.configuration?.plugins?.RatingsToolkit || {});
+      return rtFives(m.scores, m.criteria);
+    } catch (_) { return {}; }
+  }
+
   // ── 2.5: Play pictures, with the Slideshow plugin ─────────────────────────
   // A run whose target has images gets a "Pictures" button (bar and run
   // page) that plays exactly them in Slideshow: Lockdown's own image filter
@@ -1530,14 +2585,21 @@
     return d?.findScenes?.count ?? 0;
   }
 
+  // { id, only }: a scene other than `notId`, or id null with `only` when
+  // `notId` is all there is (2.8.2: it used to hand the current scene back,
+  // and Next scene "opened" the page already open, with no word why).
+  function pickOther(list, notId) {
+    const ids = (list || []).map((s) => String(s.id));
+    const other = ids.find((id) => notId == null || id !== String(notId));
+    return { id: other || null, only: !other && ids.length > 0 };
+  }
+
   async function randomScene(L, notId) {
     const seed = Math.floor(Math.random() * 1e8);
     const d = await gql(`query ($x: SceneFilterType, $f: FindFilterType) { findScenes(scene_filter: $x, filter: $f) {
                            scenes { id } } }`,
                         { x: sceneFilterFor(L, L.rules && L.rules.fresh), f: { per_page: 2, sort: `random_${seed}` } });
-    const list = d?.findScenes?.scenes ?? [];
-    const pick = list.find((s) => String(s.id) !== String(notId)) || list[0];
-    return pick ? String(pick.id) : null;
+    return pickOther(d?.findScenes?.scenes ?? [], notId);
   }
 
   // Which items belong to the lock, in one request: aliases of findScene /
@@ -1846,7 +2908,7 @@
   // packConfig for what is refused. Resolves to the unpacked result.
   // `mirror`: a run's end and history edits refresh the config's copy at once.
   function updateConfig(fn, quiet, mirror) {
-    return writeMine((mine) => { const cur = unpack(mine); return packConfig(mine, cur, fn(cur) || {}); }, quiet, mirror).then(unpack);
+    return writeMine((mine) => { const cur = unpack(mine); return packConfig(mine, cur, fn(cur) || {}); }, quiet, mirror).then(unpack).then(seenFrom);
   }
 
   function apolloClient() {
@@ -1880,8 +2942,46 @@
   }
 
   async function readConfig() {
-    try { return unpack(await SD.read()); }
+    try { return seenFrom(unpack(await SD.read())); }
     catch (_) { return { list: [], stats: { ...EMPTY_STATS, perf: {}, wins: {} }, active: undefined, failed: true, presets: [] }; }
+  }
+
+  // 2.11 (review M5a): the active lock alone, from Suite Data's store, for
+  // the sync: one small `get` with `keys` (as Tasks Toolkit's kitRun reads
+  // one key), instead of this plugin's whole config (history, totals,
+  // presets, the pictures; 100-200 KB) plus every stored key each 5 s. The
+  // shared client (suiteData) is not changed: it stays identical in every
+  // plugin. Only while the client is in "store" mode; null means "read it
+  // all" (no Suite Data, not answering, or the key not in the store).
+  async function readActive() {
+    if (SD.mode() !== "store") return null;
+    try {
+      const d = await gql(`mutation ($a: Map) { runPluginOperation(plugin_id: "SuiteData", args: $a) }`,
+                          { a: { mode: "get", plugin: PLUGIN_ID, keys: JSON.stringify(["active"]) } });
+      const r = d && d.runPluginOperation;
+      const it = r && r.items && r.items.active;
+      if (!it || typeof it.rev !== "number") return null;
+      return { active: parseActive(it.value) };
+    } catch (e) { log(`Light sync read failed: ${e.message}`); return null; }
+  }
+
+  // 2.11: the shown-cards store of the recommendations (a UI preference,
+  // per browser; anything unreadable is a fresh one)
+  const REC_SEEN_KEY = "lockdownRecSeen";
+  function recSeenLoad() {
+    try { return recSeenPrune(JSON.parse(localStorage.getItem(REC_SEEN_KEY) || "null"), Date.now()); }
+    catch (_) { return recSeenPrune(null, Date.now()); }
+  }
+  function recSeenSave(s) { try { localStorage.setItem(REC_SEEN_KEY, JSON.stringify(s)); } catch (_) {} }
+
+  // 2.11 (review M4): finished runs waiting for their write, per browser
+  function pendingRead() {
+    try { const v = JSON.parse(localStorage.getItem(PENDING_KEY) || "[]"); return Array.isArray(v) ? v.filter((x) => x && x.id && x.done) : []; }
+    catch (_) { return []; }
+  }
+  function pendingWrite(list) {
+    try { if (list.length) localStorage.setItem(PENDING_KEY, JSON.stringify(list)); else localStorage.removeItem(PENDING_KEY); }
+    catch (e) { log(`Could not keep the finished run: ${e.message}`, "error"); }
   }
 
   // ═══ State ═════════════════════════════════════════════════════════════════
@@ -1920,6 +3020,11 @@
 
   let lock = readState();
   let confirmedId = null;   // the lock id Stash is known to hold
+  // 2.9: the pictures earlier runs counted (data key `pics`), from the last read
+  let picEarlier = new Set();
+  // 2.11: and the history from the last read (the result card's suggestion)
+  let lastList = [];
+  const seenFrom = (u) => { if (u && u.picsSeen && !u.picsBad) picEarlier = u.picsSeen; if (u && Array.isArray(u.list) && !u.failed) lastList = u.list; return u; };
 
   // ═══ Theme tokens (suiteTheme) ═════════════════════════════════════════════
   // The suite's colours, taken from whatever theme Stash shows (docs/THEME.md
@@ -2225,7 +3330,7 @@ body.ld-on .top-nav { visibility: hidden !important; }
 #ld-bar .ld-time { font-variant-numeric: tabular-nums; color: var(--sx-ye); font-weight: 600; min-width: 64px; }
 #ld-bar .ld-goal { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; display: inline-flex;
   align-items: center; gap: 8px; }
-#ld-bar .ld-goal.finish { color: var(--sx-bl); }
+#ld-bar .ld-goal.finish { color: var(--sx-bl-tx); }
 #ld-bar .ld-goal.timer { color: var(--sx-ye); }
 #ld-bar .ld-goal.edge { color: var(--sx-cy); }
 #ld-bar .ld-goal small { color: var(--sx-tx2); font-weight: 400; font-size: 12px; }
@@ -2263,7 +3368,7 @@ body.ld-on .top-nav { visibility: hidden !important; }
    bar's Pictures (Play pictures is on the run page) go, and the buttons
    are narrower, so Give up stays on screen. */
 @media (max-width: 480px) {
-  #ld-bar .ld-watch, #ld-bar .ld-links .ld-pics { display: none; }
+  #ld-bar .ld-watch, #ld-bar .ld-links .ld-pics, #ld-bar .ld-picn { display: none; }
   #ld-bar .ld-links a, #ld-bar .ld-links button, #ld-bar .ld-giveup { padding: 0 8px; }
 }
 #ld-veil { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1064; background: var(--sx-bg); display: none; }
@@ -2365,7 +3470,7 @@ body.ld-checking #ld-veil { display: block; }
 .ld-lock { width: 19px; height: 19px; }
 .ld-lock rect { fill: var(--sx-re); }
 .ld-lock path { stroke: var(--sx-re); stroke-width: 1.6; }
-.ld-modal .ld-link { background: none; border: 0; padding: 0; color: var(--sx-bl); font: inherit; font-size: 13px;
+.ld-modal .ld-link { background: none; border: 0; padding: 0; color: var(--sx-bl-tx); font: inherit; font-size: 13px;
   cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
 .ld-modal .ld-head .ld-link:first-of-type { margin-left: auto; }
 .ld-modal .ld-link:hover { text-decoration: underline; color: var(--sx-bl-tx); }
@@ -2579,20 +3684,6 @@ body.ld-blind .hover-scrubber, body.ld-blind .preview-scrubber { display: none !
 .ld-bonus { font-style: normal; color: var(--sx-ye); font-size: 12px; margin-left: auto; padding-right: 6px; }
 .ld-frow > span .ld-ico { width: 14px; height: 14px; color: var(--sx-tx2); margin-right: 3px; vertical-align: -2px; }
 .ld-scorepill { color: var(--sx-ye); border-color: color-mix(in srgb, var(--sx-ye) 45%, transparent); font-variant-numeric: tabular-nums; }
-.ld-board .ld-brow { display: grid; grid-template-columns: 30px minmax(0, 1fr) 80px 54px 74px 80px; gap: 10px; align-items: center;
-  padding: 8px 6px; border-top: 1px solid var(--sx-ui); font-size: 13.5px; }
-.ld-board .ld-bhead { color: var(--sx-tx2b); font-size: 11.5px; border-top: 0; }
-.ld-board .ld-brun { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.ld-board .ld-brun b { color: var(--sx-hi); font-weight: 600; }
-.ld-board .ld-brun small { display: block; color: var(--sx-tx2); font-size: 11.5px; margin-top: 2px; }
-.ld-board .ld-brun small .ld-ico { width: 12px; height: 12px; }
-.ld-board .ld-rank { font-weight: 700; color: var(--sx-tx2b); }
-.ld-board .ld-rank.r1 { color: var(--sx-ye); } .ld-board .ld-rank.r2 { color: var(--sx-tx1b); } .ld-board .ld-rank.r3 { color: var(--sx-or); }
-.ld-board .ld-bscore { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--sx-hi); }
-.ld-board .ld-brow:nth-child(2) .ld-bscore { color: var(--sx-ye); }
-.ld-ruleico .ld-ico { width: 14px; height: 14px; color: var(--sx-tx1b); margin-right: 3px; }
-@media (max-width: 640px) { .ld-board .ld-brow { grid-template-columns: 24px minmax(0, 1fr) 64px; }
-  .ld-board .ld-brow > span:nth-child(4), .ld-board .ld-brow > span:nth-child(5), .ld-board .ld-brow > span:nth-child(3) { display: none; } }
 .ld-live { max-width: 720px; }
 .ld-live .ld-tiles { margin: 8px 0 12px; }
 .ld-live .ld-lvgo { width: auto; margin: 4px 0 8px; }
@@ -2611,6 +3702,12 @@ body.ld-blind .hover-scrubber, body.ld-blind .preview-scrubber { display: none !
 .ld-score .ld-total b { font-size: 18px; }
 .ld-score .ld-place { justify-content: center; color: var(--sx-ye); font-size: 12.5px; }
 .ld-score .ld-place:empty { display: none; }
+.ld-suggest { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 10px;
+  padding: 8px 12px; border-radius: 10px; background: var(--sx-bg2); border: 1px dashed var(--sx-ui3); font-size: 13px; color: var(--sx-tx1b); }
+.ld-suggest small { color: var(--sx-tx2); }
+.ld-suggest .ld-ico { width: 13px; height: 13px; vertical-align: -2px; color: var(--sx-or); }
+.ld-recfoot .ld-recago { margin-left: 6px; color: var(--sx-tx2); }
+.ld-novline { color: var(--sx-cy-tx); }
 .ld-heatsum { margin-left: 6px; color: var(--sx-or); font-weight: 700; display: inline-flex; align-items: center; gap: 3px; }
 .ld-heatsum .ld-ico { width: 13px; height: 13px; }
 .ld-clearheat { margin-left: auto; font-size: 12px !important; }
@@ -2679,7 +3776,6 @@ body.ld-blind .hover-scrubber, body.ld-blind .preview-scrubber { display: none !
 .ld-heatpill .ld-ico { width: 11px; height: 11px; }
 .ld-condpill { color: var(--sx-hi); }
 .ld-condpill .ld-ico { color: var(--sx-or); }
-.ld-board .ld-bheat { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ld-score .ld-mline .ld-ico { width: 13px; height: 13px; vertical-align: -2px; }
 .ld-drop path { fill: var(--sx-bl); }
 /* The parts of a scene watched in this lock, on video.js's progress bar. */
@@ -2756,6 +3852,271 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
 .ld-live [data-a="lvmoments"] .ld-moments { margin: -4px 0 10px; }
 .ld-spin .ld-msg.ld-otline { color: var(--sx-cy); font-variant-numeric: tabular-nums; }
 .ld-spin .ld-msg.ld-note { color: var(--sx-tx1b); }
+/* 2.9: pictures viewed; the recommended performers; the player's Next scene */
+#ld-bar .ld-picn { color: var(--sx-bl-tx); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#ld-bar .ld-picn:empty { display: none; }
+.ld-rpics { display: block; margin-top: 2px; font-size: 11px; color: var(--sx-bl-tx); }
+.ld-lvpicn { color: var(--sx-bl-tx); font-size: 13px; margin: -4px 0 8px; font-variant-numeric: tabular-nums; }
+.ld-lvpicn:empty { display: none; }
+.ld-recs { margin-top: 12px; border-top: 1px solid var(--sx-ui2); padding-top: 10px; }
+.ld-rechead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.ld-rechead .ld-plabel { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--sx-tx2); margin-right: 2px; }
+.ld-rechead .ld-filters { margin: 0; }
+.ld-reclist { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; }
+.ld-reccard { display: flex; align-items: center; gap: 10px; text-align: left; padding: 6px 8px; border-radius: 8px; cursor: pointer;
+  background: var(--sx-bg2); border: 1px solid var(--sx-ui2); color: var(--sx-tx); font: inherit; min-width: 0; }
+.ld-reccard:hover, .ld-reccard:focus-visible { border-color: var(--sx-ui3); background: var(--sx-ui); outline: none; }
+.ld-reccard.ld-sel { border-color: var(--sx-re); background: color-mix(in srgb, var(--sx-re) 12%, var(--sx-ui)); }
+.ld-reccard .ld-av { flex: none; }
+.ld-reccard > span:last-child { display: flex; flex-direction: column; min-width: 0; }
+.ld-reccard b { color: var(--sx-hi); font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ld-reccard small { color: var(--sx-tx2); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ld-recs .ld-hint .ld-link { font-size: 12px; }
+.video-js .ld-vjsnext { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.video-js .ld-vjsnext svg { pointer-events: none; }
+/* 2.10: the leaderboard (Hall of fame). Gold, silver and bronze are
+   Flexoki yellow, the light greys and dark orange through the tokens;
+   Stash's own font, weight and size for the drama. Text on pictures sits on
+   a fixed dark scrim in light text, so it reads on any picture and theme. */
+.ld-lb { --ld-gold: var(--sx-ye); --ld-gold-l: var(--sx-ye-l); --ld-gold-d: var(--sx-ye-d);
+  --ld-silver: var(--sx-tx1b); --ld-silver-l: var(--sx-hi); --ld-silver-d: var(--sx-tx2);
+  --ld-bronze: var(--sx-or-d); --ld-bronze-l: var(--sx-or-tx); --ld-bronze-d: var(--sx-or-d);
+  display: flex; flex-direction: column; gap: 22px; color: var(--sx-tx); font-size: 14px; line-height: 1.43; }
+.ld-lbic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.ld-lb button, .ld-lb a { font: inherit; color: inherit; }
+.ld-lbhead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.ld-lbkicker, .ld-lbcapt { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; font-weight: 700; color: var(--sx-tx2); }
+.ld-lbkicker { color: var(--sx-ye-tx); }
+.ld-modal .ld-lbtitle { margin: 2px 0; font-size: 30px; font-weight: 800; color: var(--sx-hi); letter-spacing: -.01em; line-height: 1.15; }
+.ld-lbsubl { font-size: 13px; color: var(--sx-tx2); }
+.ld-lbctl { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.ld-lbchips2 { display: flex; gap: 6px; flex-wrap: wrap; }
+.ld-lb .ld-lbchip { display: inline-flex; align-items: center; gap: 6px; background: var(--sx-bg2); color: var(--sx-tx1b); border: 1px solid var(--sx-deep);
+  border-bottom-color: var(--sx-ui2); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; min-height: 34px; }
+.ld-lbchip b { font-variant-numeric: tabular-nums; color: var(--sx-tx2); font-weight: 600; }
+.ld-lb .ld-lbchip:hover { color: var(--sx-hi); }
+.ld-lb .ld-lbchip.ld-on { color: var(--sx-hi); background: color-mix(in srgb, var(--sx-re) 22%, var(--sx-ui2)); border-color: color-mix(in srgb, var(--sx-re) 55%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+.ld-lbchip.ld-on b { color: var(--sx-hi); }
+.ld-lbpers { display: flex; gap: 4px; padding: 3px; border-radius: 10px; background: var(--sx-bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--sx-ui2); }
+.ld-lb .ld-lbper { background: none; border: 1px solid transparent; color: var(--sx-tx1b); border-radius: 8px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.ld-lb .ld-lbper:hover { color: var(--sx-hi); }
+.ld-lb .ld-lbper.ld-on { color: var(--sx-hi); background: color-mix(in srgb, var(--sx-ye) 24%, var(--sx-ui)); border-color: color-mix(in srgb, var(--sx-ye) 55%, transparent); }
+.ld-lb .ld-lbchip:focus-visible, .ld-lb .ld-lbper:focus-visible, .ld-lb .ld-lbrow:focus-visible, .ld-lb .ld-lbbtn:focus-visible, .ld-lbpc:focus-visible
+  { outline: 2px solid var(--sx-bl); outline-offset: 2px; }
+/* way-out badges: Finish green, Timer cyan, Edge magenta */
+.ld-lbway { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; border-radius: 6px; padding: 2px 8px; white-space: nowrap; border: 1px solid;
+  --w: var(--sx-gr); --wt: var(--sx-gr-tx); }
+.ld-lbway.ld-way-timer { --w: var(--sx-cy); --wt: var(--sx-cy-tx); }
+.ld-lbway.ld-way-edge { --w: var(--sx-ma); --wt: var(--sx-ma-tx); }
+.ld-lbway { color: var(--wt); background: color-mix(in srgb, var(--w) 16%, var(--sx-bg2)); border-color: color-mix(in srgb, var(--w) 45%, transparent); }
+.ld-lbway.ld-onpic { color: var(--sx-paper); background: rgba(16,15,15,.85); border-color: var(--w); }
+.ld-lbway.ld-onpic::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--w); }
+.ld-lbcond { font-size: 11px; color: var(--sx-tx1b); background: var(--sx-bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--sx-ui2);
+  border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+/* the heat meter: one segment a point of heat, as long as the most heat a run can have */
+.ld-lbheat { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ld-lbheat .ld-lbflame { color: var(--sx-or-tx); }
+.ld-lbheat b { font-size: 13px; color: var(--sx-hi); font-weight: 600; }
+.ld-lbheat em { font-style: normal; margin-left: auto; font-size: 13px; font-weight: 700; color: var(--sx-or-tx); font-variant-numeric: tabular-nums; }
+.ld-lbmeter { display: flex; gap: 2px; }
+.ld-lbmeter i { width: 7px; height: 12px; border-radius: 2px; background: var(--sx-ui3); }
+.ld-lbmeter i.ld-on { background: linear-gradient(180deg, var(--sx-or-tx), var(--sx-re)); }
+.ld-lbmeter i.ld-half { background: linear-gradient(90deg, var(--sx-or) 50%, var(--sx-ui3) 50%); }
+/* the podium, 2-1-3 on stepped plinths */
+.ld-lbpod { padding-top: 26px; border-radius: 14px; background: radial-gradient(ellipse 60% 70% at 50% 35%, color-mix(in srgb, var(--ld-gold) 13%, transparent), transparent 70%); }
+.ld-lbpodrow { display: flex; justify-content: center; align-items: flex-end; gap: 26px; }
+.ld-lbstep { display: flex; flex-direction: column; }
+.ld-lbpc { position: relative; display: flex; flex-direction: column; gap: 12px; padding: 12px; cursor: pointer; box-sizing: border-box;
+  background: linear-gradient(180deg, var(--sx-raise) 0, var(--sx-ui) 64px); border: 1px solid var(--sx-line); border-radius: 12px 12px 0 0; box-shadow: var(--sx-sh); }
+.ld-lbpc.ld-p1 { width: 316px; border-top: 2px solid var(--ld-gold);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ld-gold) 35%, transparent), 0 30px 80px -30px color-mix(in srgb, var(--ld-gold) 45%, transparent), var(--sx-sh); }
+.ld-lbpc.ld-p2 { width: 262px; border-top: 2px solid var(--ld-silver); }
+.ld-lbpc.ld-p3 { width: 262px; border-top: 2px solid var(--ld-bronze); }
+.ld-lbpc.ld-latest { outline: 1px solid color-mix(in srgb, var(--sx-bl) 70%, transparent); }
+.ld-lbpc.ld-open { background: var(--sx-ui2); }
+.ld-lbpic { position: relative; width: 100%; aspect-ratio: 2 / 3; border-radius: 9px; overflow: hidden; border: 1px solid var(--sx-deep); background: var(--sx-bg2); box-sizing: border-box; }
+.ld-lbphoto { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center top; display: block; }
+.ld-lbinit { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-weight: 800; color: var(--sx-hi);
+  background: linear-gradient(165deg, color-mix(in srgb, var(--h) 80%, var(--sx-bg2)) 0%, var(--sx-bg2) 82%); font-size: 26px; }
+.ld-lbpic .ld-lbinit { font-size: 96px; padding-bottom: 40px; }
+/* a studio's logo on a light plate; a tag as a big lettered card */
+.ld-lbplate { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 6px 4px; box-sizing: border-box;
+  background: linear-gradient(165deg, var(--sx-ui2), var(--sx-bg)); }
+.ld-lbplate img, .ld-lbplate b { width: 100%; box-sizing: border-box; border-radius: 5px; background: linear-gradient(180deg, #F2F0E5, #DAD8CE);
+  box-shadow: 0 4px 12px rgba(0,0,0,calc(.45*var(--sx-k))), inset 0 1px 0 #FFF; }
+.ld-lbplate img { max-height: 60%; object-fit: contain; padding: 6px 4px; display: block; }
+.ld-lbplate b { color: #161514; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; text-align: center; padding: 10px 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ld-lbplate.ld-big { flex-direction: column; padding: 18px; }
+.ld-lbplate.ld-big img, .ld-lbplate.ld-big b { border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,calc(.6*var(--sx-k))), inset 0 1px 0 #FFF; }
+.ld-lbplate.ld-big img { max-height: 40%; padding: 26px 18px 34px; }
+.ld-lbplate.ld-big b { font-size: 17px; letter-spacing: .16em; padding: 30px 14px 38px; white-space: normal; }
+.ld-lbplate.ld-big small { margin-top: -26px; font-size: 9.5px; letter-spacing: .3em; font-weight: 600; color: #161514; opacity: .7; text-transform: uppercase; position: relative; }
+.ld-lbtag { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 4px; text-align: center; box-sizing: border-box;
+  background: repeating-linear-gradient(135deg, rgba(255,255,255,.03) 0 12px, transparent 12px 24px), linear-gradient(165deg, color-mix(in srgb, var(--sx-pu-d) 55%, var(--sx-bg2)), var(--sx-bg2)); }
+.ld-lbtag b { font-size: 13px; line-height: 1.05; font-weight: 800; color: var(--sx-hi); overflow-wrap: break-word; max-width: 100%; }
+.ld-lbtag.ld-big { align-items: flex-start; text-align: left; padding: 22px 22px 80px; gap: 10px; }
+.ld-lbtag.ld-big small { font-size: 11px; letter-spacing: .24em; color: var(--sx-tx1b); font-weight: 700; text-transform: uppercase; }
+.ld-lbtag.ld-big b { font-size: 40px; line-height: 1.02; letter-spacing: -.02em; }
+.ld-lbcap { position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 14px 12px; background: linear-gradient(180deg, transparent, rgba(16,15,15,.92)); }
+.ld-lbcap b { display: block; font-size: 20px; font-weight: 700; color: var(--sx-paper); line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ld-lbcap span { font-size: 12px; color: rgba(255,252,240,.75); }
+.ld-lbmedal { position: absolute; left: 10px; top: 10px; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+  font-weight: 800; font-size: 20px; color: var(--sx-on); border: 2px solid rgba(16,15,15,.6); box-shadow: 0 4px 12px rgba(0,0,0,calc(.6*var(--sx-k))), inset 0 2px 0 rgba(255,255,255,.35);
+  background: radial-gradient(circle at 35% 30%, var(--ld-silver-l), var(--ld-silver) 60%, var(--ld-silver-d)); }
+.ld-p1 .ld-lbmedal { width: 54px; height: 54px; font-size: 24px; background: radial-gradient(circle at 35% 30%, var(--ld-gold-l), var(--ld-gold) 60%, var(--ld-gold-d)); }
+.ld-p3 .ld-lbmedal { background: radial-gradient(circle at 35% 30%, var(--ld-bronze-l), var(--ld-bronze) 60%, var(--ld-bronze-d)); }
+.ld-lbpic .ld-lbway { position: absolute; right: 10px; top: 12px; }
+.ld-lbpb, .ld-lbnew { font-size: 11px; font-weight: 700; border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
+.ld-lbpb { position: absolute; left: 10px; top: 72px; color: var(--sx-on); background: var(--ld-gold-l); }
+.ld-lbnew { color: var(--sx-on); background: var(--sx-bl); }
+.ld-lbpic .ld-lbnew { position: absolute; right: 10px; top: 42px; }
+.ld-lbscore { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ld-lbscore b { font-size: 36px; font-weight: 800; color: var(--sx-hi); font-variant-numeric: tabular-nums; line-height: 1; letter-spacing: -.02em; }
+.ld-p1 .ld-lbscore b { font-size: 46px; color: var(--sx-ye-tx); }
+.ld-lbscore span { font-size: 12px; color: var(--sx-tx2); }
+.ld-lbhow { font-size: 12.5px; color: var(--sx-tx1b); line-height: 1.45; border-top: 1px solid var(--sx-ui2); padding-top: 10px; }
+.ld-lbplinth { display: flex; align-items: flex-start; justify-content: center; border-radius: 0 0 12px 12px; font-weight: 800; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--sx-deep); border-top: 0; height: 40px; font-size: 28px; color: var(--ld-bronze-l);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ld-bronze) 22%, var(--sx-bg2)), var(--sx-bg2)); }
+.ld-s1 .ld-lbplinth { height: 92px; font-size: 44px; color: var(--ld-gold); background: linear-gradient(180deg, color-mix(in srgb, var(--ld-gold) 26%, var(--sx-bg2)), var(--sx-bg2)); }
+.ld-s2 .ld-lbplinth { height: 60px; font-size: 34px; color: var(--ld-silver); background: linear-gradient(180deg, color-mix(in srgb, var(--ld-silver) 18%, var(--sx-bg2)), var(--sx-bg2)); }
+.ld-lbdots { display: none; justify-content: center; gap: 6px; margin-top: 6px; }
+.ld-lbdots i { width: 8px; height: 8px; border-radius: 50%; background: var(--sx-ui3); transition: width .15s; }
+.ld-lbdots i.ld-on { width: 22px; border-radius: 3px; background: var(--ld-gold); }
+/* the empty board: dashed spots where the podium will stand */
+.ld-lbempty { display: flex; flex-direction: column; align-items: center; gap: 26px; padding: 26px 0 8px; }
+.ld-lbghost { width: 262px; height: 300px; border-radius: 12px 12px 0 0; border: 1px dashed var(--sx-ui3); border-bottom: 0; box-sizing: border-box;
+  background: color-mix(in srgb, var(--sx-bg2) 60%, transparent); display: flex; align-items: center; justify-content: center; color: var(--sx-tx2); font-size: 44px; font-weight: 800; }
+.ld-lbghost.ld-g1 { width: 316px; height: 380px; border-color: color-mix(in srgb, var(--ld-gold) 45%, transparent); color: color-mix(in srgb, var(--ld-gold) 70%, var(--sx-bg2)); }
+.ld-lbghost .ld-lbic { width: 54px; height: 54px; stroke-width: 1; }
+.ld-s3 .ld-lbghost { height: 260px; }
+.ld-lbempty .ld-lbplinth { background: var(--sx-bg2); }
+.ld-lbetext { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.ld-lbetext b { font-size: 17px; color: var(--sx-hi); }
+.ld-lbetext span { font-size: 13px; color: var(--sx-tx2); max-width: 470px; }
+.ld-lb .ld-lbbtn { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(180deg, var(--sx-ui2), var(--sx-ui)); color: var(--sx-tx);
+  border: 1px solid var(--sx-line2); border-top-color: var(--sx-ui3); border-radius: 8px; padding: 7px 13px; font-size: 13px; box-shadow: 0 1px 2px rgba(0,0,0,calc(.5*var(--sx-k)));
+  cursor: pointer; text-decoration: none; min-height: 36px; box-sizing: border-box; }
+.ld-lb .ld-lbbtn:hover { color: var(--sx-hi); text-decoration: none; }
+.ld-lb .ld-lbbtn.ld-pri { background: linear-gradient(180deg, var(--sx-re), var(--sx-re-d)); color: var(--sx-on); font-weight: 600; font-size: 14px; min-height: 40px; margin-top: 10px; }
+/* records */
+.ld-lbrec { display: flex; flex-direction: column; gap: 10px; }
+.ld-lbtiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.ld-lbtile { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-radius: 12px; min-width: 0;
+  background: var(--sx-bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--sx-ui2); box-shadow: var(--sx-well); }
+.ld-lbtile > span:last-child { min-width: 0; }
+.ld-lbtile b { display: block; font-size: 22px; font-weight: 800; color: var(--sx-hi); line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ld-lbtile small { display: block; font-size: 12px; color: var(--sx-tx2); }
+.ld-lbtico { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex: none; border: 1px solid; box-sizing: border-box;
+  color: var(--ht); background: color-mix(in srgb, var(--h) 16%, var(--sx-bg2)); border-color: color-mix(in srgb, var(--h) 45%, transparent); }
+.ld-lbtico .ld-lbic { width: 20px; height: 20px; }
+.ld-lbtile.ld-lbmost { padding: 8px 14px 8px 8px; }
+.ld-lbmost b { font-size: 17px; }
+.ld-lbtile .ld-lbthumb { width: 44px; height: 66px; }
+/* places 4 to 20 */
+.ld-lblist { display: flex; flex-direction: column; gap: 8px; }
+.ld-lblhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ld-lblhead span { font-size: 12px; color: var(--sx-tx2); }
+.ld-lb .ld-lbrow { display: grid; grid-template-columns: 48px 64px minmax(0, 1fr) 150px 200px 20px; align-items: center; gap: 16px; width: 100%; text-align: left;
+  cursor: pointer; padding: 10px 16px 10px 10px; border-radius: 12px; font-size: 14px; color: var(--sx-tx); box-sizing: border-box;
+  background: linear-gradient(180deg, var(--sx-raise) 0, var(--sx-ui) 64px); border: 1px solid var(--sx-line); border-top-color: var(--sx-edge); box-shadow: var(--sx-sh); }
+.ld-lb .ld-lbrow:hover { border-top-color: var(--sx-tx3); }
+.ld-lb .ld-lbrow.ld-latest { box-shadow: 0 0 0 1px color-mix(in srgb, var(--sx-bl) 55%, transparent), var(--sx-sh); }
+.ld-lbitem.ld-open .ld-lbrow { border-radius: 12px 12px 0 0; background: var(--sx-ui2); }
+.ld-lbitem.ld-open .ld-lbchev { transform: rotate(180deg); }
+.ld-lbrank { font-size: 22px; font-weight: 800; color: var(--sx-tx1b); text-align: center; font-variant-numeric: tabular-nums; }
+.ld-lbthumb { position: relative; display: block; width: 64px; height: 96px; border-radius: 8px; overflow: hidden; border: 1px solid var(--sx-deep); background: var(--sx-bg2); flex: none; box-sizing: border-box; }
+.ld-lbmain { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ld-lbname { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ld-lbname b { font-size: 16px; color: var(--sx-hi); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.ld-lbname small { font-size: 11px; color: var(--sx-tx2); }
+.ld-lbchips { display: flex; gap: 6px; flex-wrap: wrap; }
+.ld-lbsmall { font-size: 12px; color: var(--sx-tx2); }
+.ld-lbhot .ld-lbheat em { margin-left: 0; font-size: 12px; }
+.ld-lbhot .ld-lbmeter { order: 3; flex-basis: 100%; }
+.ld-lbhot .ld-lbflame { width: 14px; height: 14px; }
+.ld-lbpts { display: flex; flex-direction: column; gap: 7px; }
+.ld-lbpts b { font-size: 24px; font-weight: 800; color: var(--sx-hi); font-variant-numeric: tabular-nums; text-align: right; line-height: 1; }
+.ld-lbpts small { font-size: 11px; color: var(--sx-tx2); text-align: right; }
+.ld-lbpts .ld-lbph { display: none; font-style: normal; font-size: 11px; font-weight: 600; color: var(--sx-or-tx); text-align: right; }
+.ld-lbbar { display: block; height: 6px; border-radius: 3px; background: var(--sx-bg2); box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); overflow: hidden; }
+.ld-lbbar i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--sx-re-d), var(--sx-re-tx)); }
+.ld-lbbar.ld-lbbar2 { display: none; }
+.ld-lbchev { color: var(--sx-tx2); transition: transform .15s; }
+.ld-lb .ld-lbshow { align-self: center; margin-top: 6px; }
+/* the opened run */
+.ld-lbmore { border-radius: 0 0 12px 12px; background: var(--sx-bg2); border: 1px solid var(--sx-deep); border-top: 0; box-shadow: var(--sx-well);
+  padding: 18px 20px 20px 132px; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 28px; }
+.ld-lbpodmore .ld-lbmore { border-radius: 12px; border-top: 1px solid var(--sx-deep); padding-left: 20px; }
+.ld-lbcol { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ld-lbsum { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 16px; row-gap: 7px; font-size: 13px; align-items: baseline; color: var(--sx-tx1b); }
+.ld-lbd { color: var(--sx-tx2); font-size: 12px; text-align: right; }
+.ld-lbv { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; color: var(--sx-tx); }
+.ld-lbsub { border-top: 1px solid var(--sx-ui3); padding-top: 7px; }
+.ld-lbv.ld-hi { color: var(--sx-hi); }
+.ld-lbtot { color: var(--sx-hi); font-weight: 700; font-size: 15px; }
+.ld-lbv.ld-lbtot { font-weight: 800; font-size: 20px; }
+.ld-lb .ld-c-cy { color: var(--sx-cy-tx); } .ld-lb .ld-c-ma { color: var(--sx-ma-tx); } .ld-lb .ld-c-re { color: var(--sx-re-tx); }
+.ld-lb .ld-c-gr { color: var(--sx-gr-tx); } .ld-lb .ld-c-or { color: var(--sx-or-tx); } .ld-lb .ld-c-bl { color: var(--sx-bl-tx); }
+.ld-lbnote, .ld-lbwhen { font-size: 12px; color: var(--sx-tx2); line-height: 1.5; }
+.ld-lbfacts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ld-lbfact { background: var(--sx-ui); border-radius: 9px; padding: 8px 10px; min-width: 0; }
+.ld-lbfact b { display: block; font-size: 17px; font-weight: 700; color: var(--sx-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ld-lbfact span { font-size: 11px; color: var(--sx-tx2); }
+.ld-lbmom { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.ld-lbmom span { color: var(--sx-tx1b); }
+.ld-lb .ld-lbmom a { color: var(--sx-bl-tx); text-decoration: none; }
+.ld-lb .ld-lbmom a:hover { text-decoration: underline; }
+.ld-lbacts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+.ld-lbfoot { font-size: 12px; color: var(--sx-tx2); text-align: center; border-top: 1px solid var(--sx-ui2); padding-top: 14px; }
+@media (max-width: 960px) {
+  /* the podium becomes a swipe row, #1 first, with dots */
+  .ld-lbpod { padding-top: 6px; background: none; }
+  .ld-lbpod .ld-lbpodrow { justify-content: flex-start; align-items: stretch; gap: 14px; overflow-x: auto; scroll-snap-type: x mandatory;
+    padding: 6px 18px 14px; margin: 0 -18px; scrollbar-width: none; }
+  .ld-lbpod .ld-lbpodrow::-webkit-scrollbar { display: none; }
+  .ld-lbpod .ld-lbstep { flex: none; scroll-snap-align: center; }
+  .ld-lbpod .ld-s1 { order: 0; } .ld-lbpod .ld-s2 { order: 1; } .ld-lbpod .ld-s3 { order: 2; }
+  .ld-lbpod .ld-lbpc { width: 272px !important; height: 100%; border-radius: 12px; }
+  .ld-lbpod .ld-lbplinth { display: none; }
+  .ld-lbdots { display: flex; }
+  .ld-lb .ld-lbrow { grid-template-columns: 36px 48px minmax(0, 1fr) 110px; }
+  .ld-lbhot, .ld-lbchev, .ld-lbpts .ld-lbbar, .ld-lbpts small { display: none; }
+  .ld-lb .ld-lbrow .ld-lbthumb { width: 48px; height: 72px; }
+  .ld-lbmore { padding: 16px; grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 575.98px) {
+  .ld-lb { gap: 18px; }
+  .ld-modal .ld-lbtitle { font-size: 26px; }
+  .ld-lbctl, .ld-lbchips2 { flex-wrap: nowrap; }
+  .ld-lbctl { overflow-x: auto; margin: 0 -12px; padding: 0 12px; scrollbar-width: none; width: calc(100% + 24px); box-sizing: border-box; }
+  .ld-lb .ld-lbchip, .ld-lb .ld-lbper { min-height: 40px; flex: none; }
+  .ld-lbpod .ld-lbpodrow { margin: 0 -12px; padding: 6px 12px 14px; }
+  .ld-lbpod .ld-lbscore b { font-size: 34px; }
+  .ld-lbtiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .ld-lbtile { padding: 12px; }
+  .ld-lbtico { display: none; }
+  .ld-lbtile b { font-size: 18px; }
+  .ld-lbtile.ld-lbmost { grid-column: span 2; order: 4; }
+  .ld-lbtile:last-child { order: 3; }
+  .ld-lb .ld-lbrow { grid-template-columns: 28px 44px minmax(0, 1fr) auto; gap: 10px; padding: 8px 12px 8px 6px; border-radius: 9px; min-height: 44px; }
+  .ld-lb .ld-lbrow .ld-lbthumb { width: 44px; height: 66px; border-radius: 7px; }
+  .ld-lbrank { font-size: 17px; }
+  .ld-lbname b { font-size: 15px; }
+  .ld-lbchips .ld-lbcond, .ld-lbsmall { display: none; }
+  .ld-lbbar.ld-lbbar2 { display: block; height: 3px; margin-top: 3px; }
+  .ld-lbpts b { font-size: 18px; }
+  .ld-lbpts .ld-lbph { display: block; }
+  .ld-lb .ld-lbrow .ld-lbtag b { font-size: 10px; }
+  .ld-lbfacts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ld-lbempty .ld-lbpodrow { gap: 8px; }
+  .ld-lbghost { width: 90px; height: 120px; font-size: 28px; }
+  .ld-lbghost.ld-g1 { width: 110px; height: 160px; }
+  .ld-s3 .ld-lbghost { height: 100px; }
+  .ld-lbempty .ld-lbplinth { height: 24px; }
+}
 `;
     document.head.appendChild(s);
   }
@@ -2928,6 +4289,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     edge: [tc("边缘", "Edge"), tc("忍住不射地观看", "watch without finishing"), line('<path d="M8 1.8S3.6 6.8 3.6 10a4.4 4.4 0 0 0 8.8 0C12.4 6.8 8 1.8 8 1.8z"/>')],
   });
   const HEART = line('<path d="M8 13.4S2.2 10 2.2 6.1A2.9 2.9 0 0 1 8 4.6a2.9 2.9 0 0 1 5.8 1.5C13.8 10 8 13.4 8 13.4z"/>');
+  const STAR = line('<path d="M8 2.2l1.8 3.7 4 .6-2.9 2.8.7 4L8 11.4l-3.6 1.9.7-4L2.2 6.5l4-.6z"/>');
   const FUNNEL = line('<path d="M2.5 3h11l-4.2 5.2v4.6l-2.6 1.2V8.2z"/>');
   // The page's tab strip icons: 16-grid line icons at stroke 1.6, in the
   // tab's colour (the suite's tab strip).
@@ -2951,9 +4313,6 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     harsh: line('<path d="M6.5 2.5S3 6.5 3 9.2a3.5 3.5 0 0 0 7 0C10 6.5 6.5 2.5 6.5 2.5z"/><path d="M12.5 4v4M10.5 6h4"/>'),
     one: line('<path d="M13 6.5A5 5 0 0 0 4 4.5L2.5 6M3 9.5a5 5 0 0 0 9 2L13.5 10"/><path d="M2.5 3v3h3M13.5 13v-3h-3"/>'),
   };
-  // The conditions a run had on, as icons (leaderboard).
-  const condIcons = (conds, goal) => conditions().filter((c) => conds && conds[c.k] && condApplies(c, goal && goal.type))
-    .map((c) => `<span class="ld-ruleico" title="${escapeHtml(c.name)}: ${escapeHtml(c.ranks[conds[c.k] - 1])}">${COND_ICON[c.k]}</span>`).join("");
   const heatPill = (h) => `<span class="ld-pill ld-heatpill" title="${tc("热度", "Heat")}">${FLAME} ${h}</span>`;
 
   // The suite's empty state: a raised card, one bold line, one muted line.
@@ -3002,7 +4361,8 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     return `<div class="ld-row ${e.result}" data-key="${escapeHtml(entryKey(e))}">${icon(e)}` +
       `<span class="ld-av">${avatarHtml(e.name, e.image)}</span>` +
       `<span class="ld-rmain"><span class="ld-rname">${escapeHtml(e.name || "?")}${note ? `<small>${escapeHtml(note)}</small>` : ""}</span>` +
-        `<span class="ld-rsub">${scorePill}${pills}${detail ? `<em>${escapeHtml(detail)}</em>` : ""}</span>${momentsHtml(e)}</span>` +
+        `<span class="ld-rsub">${scorePill}${pills}${detail ? `<em>${escapeHtml(detail)}</em>` : ""}</span>` +
+        `${e.pics > 0 ? `<span class="ld-rpics">${escapeHtml(picsText(e.pics))}</span>` : ""}${momentsHtml(e)}</span>` +
       `<span class="ld-rend"><span class="ld-rtime">${e.result === "done" ? "" : tc("放弃 ", "gave up ")}${escapeHtml(fmtDuration(e.ms))}</span>` +
         `<span class="ld-rwhen"${typeof e.at === "number" ? ` title="${tc("开始于 ", "Started ")}${escapeHtml(fmtStamp(e.at))}"` : ""}>${escapeHtml(typeof e.at === "number" ? fmtWhen(e.at, now) : "")}${watched}</span></span>` +
       `<button class="ld-rbtn ld-again" title="${tc("重新设置同样的锁定", "Set up the same lockdown again")}">${tc("再玩一次", "Play again")}</button>` +
@@ -3091,8 +4451,10 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
           每多看一分钟再加 10 分（乘以热度），最多再补一个目标时长，直到一次 O、按停止，或时间走满。</li>
         <li><b>热度。</b> 各种条件让这一盘更难。每一点热度给分数加 20%。没有必选的条件：
           热度 0 就是无负担的一盘。</li>
-        <li><b>分数。</b> 观看分钟数 × 10，每次跳过减 5（最多扣掉观看所得的一半），边缘模式每次 O 减 100，边缘加时每分钟加 10，出局再加 100，全部
+        <li><b>分数。</b> 观看分钟数 × 10，每次跳过减 5（最多扣掉观看所得的一半），边缘模式每次 O 减 100，边缘加时每分钟加 10，每张新图片加 1（最多 100），出局再加 100，全部
           再乘以热度加成。只有成功出局的对局才计分。</li>
+        <li><b>图片。</b> 这一盘里的图片，你看满 3 秒（在 Slideshow、图片页或 Stash 的查看器里）就算一分，
+          一盘最多 100 张，且这张图没有被之前出局的对局计过分。</li>
         <li><b>时间轴。</b> 你看过的部分显示为蓝色。在那里拖动是免费的；其他地方会用掉一次跳过（见
           跳过配额）。</li>
         <li><b>瞬间。</b> 在一盘中给某个场景添加标记，且你已看过它 2 分钟，就算作你找到的一个瞬间：
@@ -3109,8 +4471,10 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
           again, until an O, Stop, or the time is full.</li>
         <li><b>Heat.</b> Conditions make the run harder. Each point of heat adds 20% to your score. None are required:
           heat 0 is a free run.</li>
-        <li><b>Score.</b> Watched minutes × 10, minus 5 per skip (at most half of what watching earned), minus 100 per O in Edge, plus 10 per minute of Edge overtime, plus 100 for getting out, all
+        <li><b>Score.</b> Watched minutes × 10, minus 5 per skip (at most half of what watching earned), minus 100 per O in Edge, plus 10 per minute of Edge overtime, plus 1 per new picture viewed (up to 100), plus 100 for getting out, all
           times your heat bonus. Only runs you get out of are scored.</li>
+        <li><b>Pictures.</b> Each of the run's pictures you look at for 3 seconds (in Slideshow, on its page or in Stash's viewer) is a point,
+          up to 100 a run, if no run you got out of counted it before.</li>
         <li><b>The timeline.</b> What you've watched shows blue. Seeking there is free; anywhere else uses a skip (see
           Skip budget).</li>
         <li><b>Moments.</b> Add a marker to a scene during a run, once you've watched 2 minutes of it, and it counts as a
@@ -3173,6 +4537,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
           <div class="ld-results" data-a="results"></div></div>
         <div data-a="random"><div class="ld-srcs" data-a="srcs"></div>
           <div class="ld-hint">${tc("按下开始后轮盘转动。", "The wheel spins when you press Start.")}</div></div>
+        <div class="ld-recs" data-a="recs" hidden></div>
       </div>
       <div class="ld-card"><div class="ld-step"><i>2</i>${tc("怎么出去？", "How do you get out?")}</div>
         <div class="ld-choices" data-a="goals">${Object.entries(goalInfo()).map(([k, [t, sub, ico]]) =>
@@ -3206,11 +4571,22 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     const err = (t) => { $("err").textContent = t || ""; };
     $("close")?.addEventListener("click", closeModal);
     let topRuns = [], bestHeat = 0, presets = [];
-    readConfig().then((d) => {
+    // 2.9: Recommended: the lists (null while read), the chip, who ran lately
+    let recs = recCached(), recErr = "", recRecent = new Set();
+    let recChip = recChipOk(src && src.type === "rec" ? src.chip : prefs().recChip);
+    // 2.11: the shown-cards store, this dialog's draws (memoised per draw, so
+    // re-renders never move the cards), and the history for the novelty bonus
+    let recStore = recSeenLoad(), histList = null;
+    const recMemo = new Map();
+    // review L8: a quick Random pick waits for this read, or it could land on
+    // someone run yesterday
+    const cfgReady = readConfig().then((d) => {
       topRuns = (d.stats && d.stats.top) || [];
       bestHeat = (d.stats && d.stats.bestHeat) || 0;
       presets = d.presets || [];
-      if (box.isConnected) { render(); renderPresets(); }
+      recRecent = recentPerformers(d.list, Date.now());
+      histList = d.failed ? null : d.list || [];
+      if (box.isConnected) { render(); renderPresets(); renderRecs(); if (S.pick === "random") renderSources(); }
     });
 
     // ── presets (2.3, forum: "save preset run settings with custom names"):
@@ -3368,6 +4744,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
       err("");
       renderResults();
       render();
+      renderRecs();
     };
     $("q").addEventListener("input", () => {
       clearTimeout(timer);
@@ -3393,6 +4770,84 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
       else if (ev.key === "Escape") closeModal();
     });
 
+    // 2.9: the Recommended block: four chips, each its own ranking; a card
+    // picks that performer (as I'll choose does)
+    const recFor = (chip) => (recs && recs.lists ? recShown(recs.lists[recChipOk(chip)], recRecent, rulesOf(S).fresh) : []);
+    // 2.11: the draw for a chip today: seeded by the day, the chip and the
+    // Shuffle presses; kept for this dialog
+    const recKey = (chip) => recDrawKey(dayKey(Date.now()), chip, (recStore.shuf.n || {})[recChipOk(chip)] || 0);
+    const recOpts = (chip) => ({ now: Date.now(), seen: recStore, rest: REC_RESTS.has(recChipOk(chip)) });
+    const recCards = (chip) => {
+      const pool = recFor(chip);
+      const key = recKey(chip);
+      const memo = `${key}|${recs && recs.at}|${rulesOf(S).fresh ? 1 : 0}|${pool.map((x) => x.id).join(",")}`;
+      if (!recMemo.has(memo)) recMemo.set(memo, recDraw(pool, { ...recOpts(chip), seed: hashStr(key), k: REC_SHOW, key }));
+      return recMemo.get(memo);
+    };
+    const wantRecs = () => {
+      if (S.kind !== "performer" || recs || recLoading) return;
+      recErr = "";
+      loadRecs(false).then((c) => { recs = c; }, (e) => { recErr = e.message || String(e); })
+        .then(() => { if (box.isConnected) { renderRecs(); if (S.pick === "random") renderSources(); } });
+    };
+    const renderRecs = () => {
+      const el = $("recs");
+      if (!el) return;
+      el.hidden = S.kind !== "performer";
+      if (el.hidden) return;
+      if (S.pick === "random") renderSources();   // its Recommended row follows the chip and the lists
+      const chips = REC_CHIPS.map(([k]) => `<button class="ld-chip${k === recChip ? " ld-on" : ""}" data-rchip="${k}">${recChipLabel(k)}</button>`).join("");
+      const list = recCards(recChip);
+      const body = recErr ? `<div class="ld-hint">${tc("算不出推荐：", "Couldn't work out recommendations:")} ${escapeHtml(recErr)} <button class="ld-link" data-a="recagain">${tc("再试一次", "Try again")}</button></div>`
+        : !recs ? loadingHtml(tc("正在挑选推荐演员…", "Working out who to suggest…"))
+        : !list.length ? `<div class="ld-hint">${tc(`目前没有符合「${escapeHtml(recChipLabel(recChip))}」的人选${rulesOf(S).fresh ? "（仅未看过的场景）" : ""}。`, `Nobody fits ${escapeHtml(recChipLabel(recChip))} right now${rulesOf(S).fresh ? " with unwatched scenes" : ""}.`)}</div>`
+        : `<div class="ld-reclist">${list.map((x, i) => `<button class="ld-reccard${target && target.kind === "performer" && target.id === String(x.id) ? " ld-sel" : ""}" data-rec="${i}" title="${escapeHtml(x.why)}">` +
+            `<span class="ld-av">${avatarHtml(x.name, x.image_path)}</span><span><b>${escapeHtml(x.name)}</b><small>${escapeHtml(x.why)}</small></span></button>`).join("")}</div>`;
+      el.innerHTML = `<div class="ld-rechead"><span class="ld-plabel">${tc("推荐", "Recommended")}</span><span class="ld-filters">${chips}</span></div>${body}` +
+        // 2.11: Shuffle draws again from the lists already worked out (no
+        // query); Update reads Stash again (the old Refresh)
+        (recs && !recErr ? `<div class="ld-hint ld-recfoot">${tc(`最近 7 天没锁过、至少 3 个场景${recs.rt ? "；已计入 Ratings Toolkit 的评分" : ""}。`, `Not locked to in the last 7 days, 3 scenes or more${recs.rt ? "; your Ratings Toolkit scores count" : ""}.`)} ` +
+          `<button class="ld-link" data-a="recshuffle" title="${tc("从同一批列表里另抽几张", "Draw other cards from the same lists")}">${tc("换一批", "Shuffle")}</button> · ` +
+          `<button class="ld-link" data-a="recagain" title="${tc("重新读取 Stash 并重算列表", "Read Stash again and work the lists out anew")}">${tc("更新", "Update")}</button>` +
+          `<span class="ld-recago">${tc("算出时间 " + escapeHtml(agoText(recs.at, Date.now())), `worked out ${escapeHtml(agoText(recs.at, Date.now()))}`)}</span></div>` : "");
+      // the cards shown count as shown once per draw (they weigh less for a few days unless picked)
+      if (list.length) {
+        const r = recSeenAdd(recStore, list.map((x) => x.id), recKey(recChip), Date.now());
+        if (r.changed) { recStore = r.store; recSeenSave(recStore); }
+      }
+      el.querySelector('[data-a="recshuffle"]')?.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        recStore = recShuffle(recStore, recChip, Date.now());
+        recSeenSave(recStore);
+        renderRecs();
+      });
+      el.querySelectorAll("[data-rchip]").forEach((b) => b.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        recChip = b.dataset.rchip;
+        setPref("recChip", recChip);
+        if (src && src.type === "rec") src = { type: "rec", chip: recChip };
+        renderRecs();
+        if (S.pick === "random") { renderSources(); render(); }
+      }));
+      el.querySelectorAll("[data-rec]").forEach((b) => b.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const x = list[+b.dataset.rec];
+        if (!x) return;
+        recStore = recSeenPick(recStore, x.id, Date.now());
+        recSeenSave(recStore);
+        S.pick = "choose";
+        pickTarget({ id: x.id, name: x.name, image_path: x.image_path, scene_count: x.scene_count, image_count: x.image_count });
+        renderRecs();
+      }));
+      el.querySelector('[data-a="recagain"]')?.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        recs = null; recErr = "";
+        renderRecs();
+        loadRecs(true).then((c) => { recs = c; }, (e) => { recErr = e.message || String(e); })
+          .then(() => { if (box.isConnected) { renderRecs(); if (S.pick === "random") renderSources(); } });
+      });
+    };
+
     const renderSources = () => {
       const k = S.kind;
       const row = (key, ico, name, meta, cls = "") =>
@@ -3400,6 +4855,11 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
         `<span class="ld-av">${ico}</span><span class="ld-rname">${escapeHtml(name)}</span>` +
         `<span class="ld-rmeta">${escapeHtml(meta)}</span><span class="ld-tick">✓</span></div>`;
       let html = row("fav", HEART, tc("收藏", "Favourites"), favN === null ? "…" : favN ? kp(k, favN) : `${tc("没有收藏的" + ((KIND_ZH[k] || {}).plural || k), `no favourite ${KINDS[k].plural}`)}`);
+      // 2.9: the active Recommended chip's list, its best REC_SPIN, by score
+      if (k === "performer") {
+        const n = Math.min(REC_SPIN, recFor(recChip).length);
+        html += row("rec", STAR, tc(`推荐 · ${recChipLabel(recChip)}`, `Recommended · ${recChipLabel(recChip)}`), recErr ? tc("不可用", "can't use") : !recs ? "…" : n ? tc(`前 ${n} 位演员`, `top ${plural(n, "performer", "performers")}`) : tc("暂无合适人选", "nobody fits"), recErr ? " ld-cant" : "");
+      }
       html += saved.map((f) => {
         const c = counts[`${k}:${f.id}:${imagesOk(S) ? 1 : 0}`];
         const meta = c === undefined ? "…" : c === null ? tc("不可用", "can't use") : kp(k, c);
@@ -3410,16 +4870,20 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
       $("srcs").querySelectorAll("[data-src]").forEach((el) => el.addEventListener("click", () => {
         const key = el.dataset.src;
         if (key === "fav") src = { type: "fav" };
+        else if (key === "rec") src = { type: "rec", chip: recChip };
         else { const f = saved.find((x) => `f:${x.id}` === key); if (f) src = { type: "filter", id: String(f.id), name: f.name }; }
         err("");
         renderSources();
         render();
       }));
     };
-    const srcKey = (s) => (s.type === "fav" ? "fav" : `f:${s.id}`);
+    const srcKey = (s) => (s.type === "fav" ? "fav" : s.type === "rec" ? "rec" : `f:${s.id}`);
     const loadSources = () => {
       const k = S.kind, mine = ++srcSeq;
       favN = null; saved = [];
+      if (src && src.type === "rec" && k !== "performer") src = null;
+      wantRecs();
+      renderRecs();
       renderSources();
       const img = imagesOk(S);
       favouritesOf(k, img).then((l) => { if (mine === srcSeq) { favN = l.length; renderSources(); } })
@@ -3440,7 +4904,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     // the chosen target, or tag combination, has images and no scenes
     const pickedImageOnly = () => S.pick === "choose" && !!target && target.kind === S.kind &&
       (target.tags ? !!tagCount && !tagCount.s && tagCount.i > 0 : imageOnly(target));
-    let lastImg = null;
+    let lastImg = null, lastFresh = rulesOf(S).fresh;
 
     // ── the rest of the setup, redrawn from S
     const render = () => {
@@ -3495,7 +4959,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
       });
       const who = S.pick === "choose"
         ? (target && target.kind === S.kind ? `<b>${escapeHtml(target.name)}</b>${S.kind === "performer" ? "" : ` (${label()})`}` : tc(`你挑选的${label()}`, `the ${label()} you pick`))
-        : `${tc("随机", "a random")} ${label()}${tc("，来自 ", " from ")}${src ? (src.type === "fav" ? tc("你的收藏", "your favourites") : `“${escapeHtml(src.name)}”`) : "…"}`;
+        : `${tc("随机", "a random")} ${label()}${tc("，来自 ", " from ")}${src ? (src.type === "fav" ? tc("你的收藏", "your favourites") : src.type === "rec" ? tc(`推荐（${escapeHtml(recChipLabel(src.chip))}）`, `Recommended (${escapeHtml(recChipLabel(src.chip))})`) : `“${escapeHtml(src.name)}”`) : "…"}`;
       // the run card: who, the deal, heat, what it is worth
       const tgt = S.pick === "choose" && target && target.kind === S.kind ? target : null;
       const way = briefing(S, "\u0000").deal.replace(/^Only \u0000, /, "").replace(/\.$/, "");
@@ -3508,11 +4972,19 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
         conditions().filter((c) => !io && S.conds[c.k] && condApplies(c, S.goal))
           .map((c) => `<span class="ld-pill ld-condpill">${COND_ICON[c.k]} ${escapeHtml(c.ranks[S.conds[c.k] - 1])}</span>`).join("");
       const best = topRuns.filter((x) => goalType(x) === S.goal).reduce((a, x) => Math.max(a, x.score || 0), 0);
-      $("formula").innerHTML = `${tc("计分：观看分钟数 × 10，每次跳过 −5（最多扣一半）", "Score: watched minutes × 10, −5 per skip (at most half)")}${S.goal === "edge" ? tc("，每次 O −100，加时分钟数 × 10", ", −100 per O, overtime minutes × 10") : ""}${tc("，出局 +100，", ", +100 for getting out, ")}` +
-        `${tc("再乘以热度加成 " + heatMult(heat) + "（热度 " + heat + "）。", "× " + heatMult(heat) + " for heat " + heat + ".")}` +
+      // 2.11: the novelty bonus this setup would carry (conditions not used
+      // in your last runs of this way out)
+      const nv = io || !histList ? { nov: 0, ks: [] } : novelty(S.conds, S.goal, histList);
+      $("formula").innerHTML = `${tc("计分：观看分钟数 × 10，每次跳过 −5（最多扣一半）", "Score: watched minutes × 10, −5 per skip (at most half)")}${S.goal === "edge" ? tc("，每次 O −100，加时分钟数 × 10", ", −100 per O, overtime minutes × 10") : ""}` +
+        tc(`，每张新图片 +1（最多 ${PICS_MAX}），出局 +100，`, `, +1 per new picture viewed (up to ${PICS_MAX}), +100 for getting out, `) +
+        tc(`再乘以热度加成 ${heatMult(heat)}（热度 ${heat}）`, `× ${heatMult(heat)} for heat ${heat}`) +
+        (nv.nov > 0 ? tc(`，新颖度再乘 ${Math.round((1 + nv.nov) * 100) / 100}。<br><span class="ld-novline">近期新增：${escapeHtml(novNames(nv.ks).join("、"))}，+${Math.round(nv.nov * 100)}%</span>`, `, × ${Math.round((1 + nv.nov) * 100) / 100} for novelty.<br><span class="ld-novline">New lately: ${escapeHtml(novNames(nv.ks).join(", "))}, +${Math.round(nv.nov * 100)}%</span>`)
+          : tc("。这一出口方式最近 5 局没用过的每个条件加 3%（最多 15%）。", ". Each condition not in your last 5 runs of this way out adds 3% (up to 15%).")) +
         (bestHeat || best ? `<br>${bestHeat ? tc(`出局时的最高热度：<b>${bestHeat}</b>`, `Highest heat you got out of: <b>${bestHeat}</b>`) : ""}` +
           `${bestHeat && best ? " · " : ""}${best ? tc(`最佳${goalInfo()[S.goal][0]}分数：<b>${best.toLocaleString()}</b>`, `best ${goalInfo()[S.goal][0]} score: <b>${best.toLocaleString()}</b>`) : ""}` : "");
       setPref("setup", S);
+      const fr = rulesOf(S).fresh;
+      if (fr !== lastFresh) { lastFresh = fr; renderRecs(); if (S.pick === "random") renderSources(); }
     };
 
     box.addEventListener("click", (ev) => {
@@ -3538,6 +5010,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
       } else if (el.dataset.p) {
         S.pick = el.dataset.p;
         if (S.pick === "choose") setTimeout(() => $("q").focus(), 0);
+        else renderSources();
       } else if (el.dataset.g) S.goal = el.dataset.g;
       else if (el.dataset.tb) S.timerBy = el.dataset.tb;
       else if (el.dataset.a === "clearheat") S.conds = {};
@@ -3584,6 +5057,18 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
       const btn = $("start");
       btn.disabled = true;
       try {
+        if (src.type === "rec") {
+          if (S.kind !== "performer") { err(tc("推荐只适用于演员。", "Recommended is for performers.")); return; }
+          if (!recs) recs = await loadRecs(false);
+          await cfgReady;
+          // 2.11: the wheel weighs like the cards and skips its last 5 picks
+          const list = recWheel(recFor(src.chip), recStore, { ...recOpts(src.chip), key: null });
+          if (!list.length) { err(tc(`目前没有符合「${recChipLabel(src.chip)}」的人选。`, `Nobody fits ${recChipLabel(src.chip)} right now.`)); return; }
+          setPref("last", { setup: { ...S }, src });
+          spin(list.map((x) => ({ ...x, kind: "performer" })), tc(`从推荐中随机（${recChipLabel(src.chip)}）`, `random from recommended (${recChipLabel(src.chip)})`), { ...S }, true,
+               (p) => recSeenSave(recSpinAdd(recSeenLoad(), p.id, Date.now())));
+          return;
+        }
         const f = src.type === "filter" ? saved.find((x) => String(x.id) === src.id) : null;
         if (src.type === "filter" && !f) { err(tc("那个已保存的筛选器不见了。", "That saved filter is gone.")); return; }
         const list = src.type === "fav" ? await favouritesOf(S.kind, imagesOk(S)) : await targetsFor(S.kind, f, imagesOk(S));
@@ -3774,7 +5259,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     const body = pageEl.querySelector('[data-a="pbody"]');
     if (pageTab === "new") {
       if (lock) renderLive(body);
-      else { const pf = pagePrefill; pagePrefill = null; openStart(pf, body); }
+      else { const pf = pagePrefill; pagePrefill = null; openStart(pf, body); syncSoon(); }   // 2.11: idle tabs read every minute; look now
     } else if (pageTab === "board") {
       body.innerHTML = loadingHtml(tc("正在读取你的排行榜…", "Reading your leaderboard…"));
       readConfig().then((d) => { if (body.isConnected) renderBoard(body, d); });
@@ -3784,29 +5269,90 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     }
   }
 
+  // 2.10: the Hall of fame (boardHtml, with the pure parts above the test
+  // hook). The way out, the period (All time first, the user's choice), Show
+  // more and the opened run last while the tab is open. Pictures the runs on
+  // screen lack (old runs, the most locked tile) are looked up in one query
+  // for all of them, cached for the session, and the board drawn again.
   function renderBoard(box, data) {
-    let goal = "all";
-    const now = Date.now();
-    const draw = () => {
-      const rows = boardRows((data.stats && data.stats.top) || [], goal);
-      box.innerHTML = `<div class="ld-board"><div class="ld-filters">` +
-        [["all", tc("全部", "All")], ["finish", tc("完成", "Finish")], ["timer", tc("计时", "Timer")], ["edge", tc("边缘", "Edge")]]
-          .map(([g, l]) => `<button class="ld-chip${g === goal ? " ld-on" : ""}" data-g="${g}">${l}</button>`).join("") + `</div>` +
-        (rows.length
-          ? `<div class="ld-brow ld-bhead"><span>#</span><span>${tc("对局", "Run")}</span><span>${tc("观看", "Watched")}</span><span>${tc("跳过", "Skips")}</span><span>${tc("热度", "Heat")}</span><span>${tc("分数", "Score")}</span></div>` +
-            rows.map((x, i) => `<div class="ld-brow"><span class="ld-rank r${i + 1}">${i + 1}</span>` +
-              `<span class="ld-brun"><span class="ld-av">${avatarHtml(x.name, x.image)}</span><span><b>${escapeHtml(x.name || "?")}</b>` +
-
-              `<small>${icon({ result: "done", goal: x.goal })} ${escapeHtml(goalLabel(x.goal))} · ${escapeHtml(fmtWhen(x.at || 0, now))}</small></span></span>` +
-              `<span class="ld-blue">${escapeHtml(fmtMinutes((x.watchedMs || 0) / 60000))}</span><span>${x.skipsUsed || 0}</span>` +
-              `<span class="ld-bheat">${typeof x.heat === "number" ? heatPill(x.heat) : ""}<span>${condIcons(x.conds, x.goal)}</span></span>` +
-              `<span class="ld-bscore">${Number(x.score).toLocaleString()}</span></div>`).join("")
-          : emptyHtml(goal === "all" ? tc("还没有计分的对局。", "No scored runs yet.") : tc(`还没有计分的${goalInfo()[goal][0]}对局。`, `No scored ${goalInfo()[goal][0]} runs yet.`),
-                      tc("从锁局里出局后就会显示在这里。", "Get out of a lockdown and it shows up here."))) + notReadHtml(data) +
-        `<div class="ld-foot">${tc("只有成功出局的对局才参与排名。2.1 之前的对局没有观看时长，也不计分。", "Only runs you got out of are ranked. Runs from before 2.1 have no watch time and aren't scored.")}</div></div>`;
-      box.querySelectorAll("[data-g]").forEach((b) => b.addEventListener("click", () => { goal = b.dataset.g; draw(); }));
+    const s = { goal: "all", period: "all", more: false, open: null };
+    const top = (data.stats && data.stats.top) || [], list = data.list || [];
+    const byId = new Map(list.filter((e) => e && e.id).map((e) => [String(e.id), e]));
+    const runs = boardRows(top, "all").map((x) => boardEntry(x, byId.get(String(x.id))));
+    // the most locked target's picture, when a run or the history has it
+    const most = mostLockedEntry(data.stats), mt = most ? keyTarget(most.key) : null;
+    if (mt && mt.id && !lbPics.has(picKey(mt.kind, mt.id))) {
+      const had = runs.concat(list).find((e) => e && e.image && (e.kind || "performer") === mt.kind && String(e.tid || e.pid) === mt.id);
+      if (had) lbPics.set(picKey(mt.kind, mt.id), had.image);
+    }
+    let asking = false;
+    const askPics = (v) => {
+      if (asking) return;
+      const items = v.ranked.map((r) => ({ kind: r.x.kind, id: r.x.tid, image: r.x.image }));
+      if (mt && mt.id) items.push({ kind: mt.kind, id: mt.id, image: lbPics.get(picKey(mt.kind, mt.id)) });
+      const need = portraitNeeds(items, lbPics), q = portraitQuery(need);
+      if (!q) return;
+      asking = true;
+      gql(q.query, q.variables).then((d) => { portraitFill(lbPics, need, d); })
+        .catch((e) => { log(`Leaderboard pictures not read: ${e.message}`, "error"); portraitFill(lbPics, need, null); })
+        .then(() => { asking = false; if (box.isConnected) draw(); });
     };
+    const draw = () => {
+      const now = Date.now();
+      box.innerHTML = boardHtml(top, list, data.stats, s, now, lbPics, notReadHtml(data));
+      wireDots(box);
+      askPics(boardView(top, { goal: s.goal, period: s.period, more: true, now, list }));
+    };
+    box.addEventListener("click", (ev) => {
+      const t = ev.target;
+      if (!t || !t.closest) return;
+      if (momentClick(ev)) return;
+      const g = t.closest("[data-g]");
+      if (g) { s.goal = g.dataset.g; s.open = null; s.more = false; draw(); return; }
+      const p = t.closest("[data-p]");
+      if (p) { s.period = p.dataset.p; s.open = null; s.more = false; draw(); return; }
+      if (t.closest('[data-a="lbmore"]')) { s.more = true; draw(); return; }
+      if (t.closest('[data-a="lbstart"]')) { pageTab = "new"; renderPage(); return; }
+      const a = t.closest("a[data-lbopen]");
+      if (a) {
+        if (ev.button || ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+        ev.preventDefault(); navigate(a.getAttribute("href")); return;
+      }
+      // Same setup again: History's Play again, from the board's run
+      const ag = t.closest("[data-again]");
+      if (ag) {
+        const x = runs.find((r) => String(r.id) === ag.dataset.again);
+        if (x) openStart({ setup: setupFromEntry(x),
+                           target: x.tid ? { kind: x.kind || "performer", id: String(x.tid), name: x.name, image_path: runPic(x),
+                                             ...(x.tags ? { tags: x.tags, mode: x.mode } : {}) } : null });
+        return;
+      }
+      const o = t.closest("[data-open]");
+      if (o) { s.open = s.open === o.dataset.open ? null : o.dataset.open; draw(); }
+    });
+    // a podium card is a button for the keyboard too
+    box.addEventListener("keydown", (ev) => {
+      const o = ev.target && ev.target.matches && ev.target.matches("article[data-open]") ? ev.target : null;
+      if (!o || (ev.key !== "Enter" && ev.key !== " ")) return;
+      ev.preventDefault();
+      s.open = s.open === o.dataset.open ? null : o.dataset.open;
+      draw();
+      const back = box.querySelector(`article[data-open="${CSS.escape(o.dataset.open)}"]`);
+      if (back) back.focus();
+    });
     draw();
+  }
+  // Phones: the podium is a swipe row; its dots follow the card in view.
+  function wireDots(box) {
+    const row = box.querySelector('[data-a="pod"]'), dots = box.querySelectorAll(".ld-lbdots i");
+    if (!row || !dots.length) return;
+    row.addEventListener("scroll", () => {
+      const mid = row.scrollLeft + row.clientWidth / 2;
+      const cards = [...row.children].sort((p, q) => p.offsetLeft - q.offsetLeft);
+      let best = 0, d = Infinity;
+      cards.forEach((c, i) => { const m = Math.abs(c.offsetLeft + c.offsetWidth / 2 - mid); if (m < d) { d = m; best = i; } });
+      dots.forEach((x, i) => x.classList.toggle("ld-on", i === best));
+    }, { passive: true });
   }
 
   // The run in progress, on the page's first tab while locked.
@@ -3822,6 +5368,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
         <div class="ld-tile"><b data-a="lvskips"></b><span>${tc("已用跳过", "skips used")}</span></div>
         <div class="ld-tile"><b class="ld-gold" data-a="lvscore"></b><span>${st ? tc("分数已入账", "score banked") : tc("现在出局可得的分数", "score if you got out now")}</span></div>
       </div>
+      <div class="ld-lvpicn" data-a="lvpicn"></div>
       <div class="ld-rcchips" data-a="lvrules"></div>
       <div data-a="lvmoments"></div>
       <div class="ld-lvrow"><button class="ld-start ld-lvgo" data-a="lvgo">${tc("回到", "Back to the")} ${lock.media === "images" ? tc("图片", "images") : tc("场景", "scenes")}</button>
@@ -3891,11 +5438,12 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     if (mb && mb.dataset.k !== mh) { mb.dataset.k = mh; mb.innerHTML = mh; }
     const pb = b.querySelector('[data-a="lvpics"]');
     if (pb && pb.hidden !== !picsReady(lock)) pb.hidden = !picsReady(lock);
-    set("lvdeal", typeof lock.heat === "number" ? `${goalLabel(lock.goal)} · heat ${lock.heat} · ×${heatMult(lock.heat)}`
+    set("lvdeal", typeof lock.heat === "number" ? `${goalLabel(lock.goal)} · ${tc("热度 " + lock.heat, "heat " + lock.heat)} · ×${heatMult(lock.heat)}`
                                                   : `${goalLabel(lock.goal)} · ${tc(DIFF_LABEL_ZH[lock.difficulty] || "经典", DIFF_LABEL[lock.difficulty] || "Classic")}`);
     set("lvlocked", fmtDuration(now - lock.startedAt));
     set("lvwatched", fmtDuration(lock.watchedMs || 0));
     set("lvskips", String(skipsUsed(lock)));
+    set("lvpicn", (lock.pics || []).length ? picsText(lock.pics.length) : "");
     set("lvscore", sc ? sc.total.toLocaleString() : "–");
     const chips = lock.conds
       ? (typeof lock.heat === "number" ? heatPill(lock.heat) : "") + conditions().filter((c) => lock.conds[c.k] && condApplies(c, goalType(lock)))
@@ -3907,8 +5455,10 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
 
   // ═══ Spin ══════════════════════════════════════════════════════════════════
 
-  function spin(list, how, setup) {
-    const pick = list[Math.floor(Math.random() * list.length)];   // decided now, shown last
+  function spin(list, how, setup, weighted, onPick) {
+    // decided now, shown last; Recommended weighs each by its score (2.9)
+    const pick = weighted ? weightedPick(list, Math.random()) : list[Math.floor(Math.random() * list.length)];
+    if (onPick) { try { onPick(pick); } catch (_) {} }
     const box = modal(`<div class="ld-spin"><img alt=""><div class="ld-name"></div><div class="ld-msg">${tc("正在转动…", "Spinning…")}</div></div>`, true);
     const img = box.querySelector("img"), name = box.querySelector(".ld-name");
     const delays = spinSchedule(Math.min(26, Math.max(8, list.length * 3)));
@@ -3976,7 +5526,17 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     // look (Finish over at once); without scenes nothing could ever count.
     try { baseO = await oRows(probe); }
     catch (e) { log(`${tc("O 基线读取失败：", "O baseline failed:")} ${e.message}`, "error"); ldToast(tc("无法从 Stash 读取 O 计数；没有锁定。请重试。", "Could not read the O counts from Stash; nothing was locked. Try again."), "error"); closeModal(); return; }
+    // 2.11: the novelty bonus, from the history as it is now (none when it
+    // cannot be read: nothing to compare with)
+    let nv = { nov: 0, ks: [] };
+    if (t.media !== "images") {
+      try { const cfg = await readConfig(); if (!cfg.failed) nv = novelty(S.conds, S.goal, cfg.list); } catch (_) {}
+    }
+    if (lock) { closeModal(); return; }  // another device's lock arrived meanwhile
     lock = newLock(t, under, S, how, baseO, Date.now(), undefined, groups);
+    if (nv.nov > 0) { lock.nov = nv.nov; lock.novK = nv.ks; }
+    // a lock to a performer clears their shown-card count (a pick, not a pass)
+    if (t.kind === "performer") recSeenSave(recSeenPick(recSeenLoad(), t.id, Date.now()));
     confirmedId = null;
     resetChecks();
     writeState(lock);
@@ -3993,6 +5553,8 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
   // cleared, in one write. Another device that already recorded it (same
   // id) is not counted twice; a newer lock started elsewhere is left alone.
   const endedIds = new Set();      // runs ended on this device, never adopted again
+  // 2.11: and the ones still waiting for their write, after a reload too
+  for (const p of pendingRead()) endedIds.add(p.id);
   // `note`: a line for the result card (overtime full, stopped, an O).
   // 2.6: a run past its Edge target always ends got out (endResult), and
   // the counted moments are checked first: a marker deleted since is dropped
@@ -4028,30 +5590,50 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     return Promise.race([read, slow]).catch((e) => { log(`${tc("瞬间未检查：", "Moments not checked:")} ${e.message}`, "error"); return null; });
   }
 
+  // 2.11 (review M4): the finished run is kept in localStorage before the
+  // write and dropped once it lands; a write that fails (Stash restarting,
+  // offline, a timeout) is tried again by the next syncs until it lands,
+  // never twice (endChange skips an id the history has). 2.10 cleared the
+  // lock first and lost score, streak and board place on a failed write.
   function recordEnd(done, found, result, now, note) {
-    updateConfig(({ list, stats, active }) => {
-      const M = active && active.id === done.id ? mergeLock(active, done) : done;
-      const L = M.moments ? { ...M, moments: keepMoments(M.moments, found) } : M;
-      const out = {};
-      if (!list.some((e) => e && e.id === done.id)) {
-        const entry = entryFromLock(L, endResult(L, result), now);
-        out.list = list.concat(entry);
-        out.stats = addToStats(stats, entry);
-      }
-      if (!active || active.id === done.id) out.active = null;
-      return out;
-    }, false, true).then((cfg) => {
+    const p = { id: done.id, done, found: found ? [...found.entries()] : null, result, now };
+    pendingWrite(pendingAdd(pendingRead(), p));
+    const placeEl = () => document.querySelector('.ld-modal [data-a="place"]');
+    writeEnd(p).then((cfg) => {
       const i = boardRows((cfg.stats && cfg.stats.top) || []).findIndex((x) => x.id === done.id);
-      const el = document.querySelector('.ld-modal [data-a="place"]');
-      if (el && i >= 0) el.textContent = `#${i + 1} ${tc("在你的排行榜上", "on your leaderboard")}`;
+      const el = placeEl();
+      if (el) el.textContent = i >= 0 ? tc(`#${i + 1} 在你的排行榜上`, `#${i + 1} on your leaderboard`) : "";
       if (pageTab !== "new") renderPage();
     }).catch((e) => {
+      const el = placeEl();
+      if (el) el.textContent = tc("尚未保存：锁局会先留着它，稍后再试", "Not saved yet: Lockdown keeps it and tries again");
+      ldToast(tc(`这一盘暂时没能保存（${e.message}）；已先留着，等 Stash 恢复后会再保存`, `The run could not be saved yet (${e.message}); it is kept and saved when Stash answers`), "error");
       // A history that cannot be read must not keep every device locked.
-      ldToast(`${tc("这一盘未能保存到你的历史：", "The run was not saved to your history:")} ${e.message}`, "error");
       updateConfig(({ active }) => (active && active.id === done.id ? { active: null } : {})).catch(() => {});
     });
     showResult(entryFromLock(done, result, now), done, now, note);
     renderPage();
+  }
+  const endWriting = new Set();      // run ids whose end write is out now
+  function writeEnd(p) {
+    const found = Array.isArray(p.found) ? new Map(p.found) : null;
+    endWriting.add(p.id);
+    return updateConfig((cur) => endChange(cur, p.done, found, p.result, p.now), false, true)
+      .then((cfg) => { pendingWrite(pendingDrop(pendingRead(), p.id)); return cfg; })
+      .finally(() => endWriting.delete(p.id));
+  }
+  // From the sync: every run still waiting, one after another; after a
+  // failure the next try waits longer (30 s, doubling, at most 10 min).
+  let pendBusy = false, pendFails = 0, pendNext = 0;
+  function retryPending() {
+    if (pendBusy || Date.now() < pendNext) return;
+    const list = pendingRead().filter((p) => !endWriting.has(p.id));
+    if (!list.length) return;
+    pendBusy = true;
+    list.slice().reverse().reduce((ch, p) => ch.then(() => writeEnd(p)), Promise.resolve())
+      .then(() => { pendFails = 0; pendNext = 0; ldToast(tc(`之前没保存成的 ${list.length} 盘已保存`, `Saved the finished ${list.length === 1 ? "run" : "runs"} that could not be saved before`), "done"); renderPage(); },
+            (e) => { pendFails++; pendNext = Date.now() + backoffMs(pendFails, 30000, 600000); log(`${tc("已结束的对局仍未保存：", "Finished run still not saved:")} ${e.message}`, "error"); })
+      .finally(() => { pendBusy = false; });
   }
 
   // The result card: how it ended, the score's breakdown, the moments.
@@ -4070,10 +5652,17 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
         ${sc.overtime ? `<div><span>${tc("加时", "Overtime")} ${escapeHtml(fmtDuration(entry.overtimeMs))} ${tc("× 10/分", "× 10/min")}</span><b class="ld-blue">+${sc.overtime}</b></div>` : ""}
         <div><span>${tc("跳过", "Skips")} ${entry.skipsUsed} × −5${entry.skipsUsed * 5 > -sc.skips ? tc("（最多扣一半）", " (capped at half)") : ""}</span><b class="ld-coral">${sc.skips}</b></div>
         ${g === "edge" ? `<div><span>${tc("失误", "Slips")} ${entry.slips || 0} × −100</span><b class="ld-coral">${sc.slips}</b></div>` : ""}
+        ${sc.pics ? `<div><span>${tc("图片 " + sc.pics, "Pictures " + sc.pics)}</span><b class="ld-blue">+${sc.pics}</b></div>` : ""}
         <div><span>${tc("已出局", "Got out")}</span><b>+${sc.out}</b></div>
         <div class="ld-mline"><span>${FLAME} ${tc("热度", "Heat")} ${sc.heat}</span><b>× ${sc.mult}</b></div>
+        ${sc.nov > 0 ? `<div class="ld-mline"><span>${tc("新颖度：" + (novNames(entry.novK).join("、") || "新条件"), `Novelty: ${escapeHtml(novNames(entry.novK).join(", ") || "new conditions")}`)}</span><b>× ${Math.round((1 + sc.nov) * 100) / 100}</b></div>` : ""}
         <div class="ld-total"><span>${tc("分数", "Score")}</span><b class="ld-gold">${sc.total.toLocaleString()}</b></div>
-        <div class="ld-place" data-a="place"></div></div>` : "";
+        <div class="ld-place" data-a="place">${tc("正在保存…", "Saving…")}</div></div>` : "";
+    // 2.11 (review 3.5): one change for the next run, with a button that
+    // opens New run set up with it (who is left to choose)
+    const sug = result === "done" ? suggestNext(entry, [entry].concat(lastList.filter((e) => e && e.id !== entry.id))) : null;
+    const sugHtml = sug ? `<div class="ld-suggest"><span>${FLAME} ${tc("下一局：", "Next:")} ${escapeHtml(sug.text)} <small>(${escapeHtml(sug.mult)})</small></span>` +
+      `<button class="ld-link" data-a="sugnext">${tc("按此设置", "Set it up")}</button></div>` : "";
     const over = g === "edge" && entry.overtimeMs > 0
       ? `<div class="ld-msg ld-otline">${tc("目标", "Target")} ${escapeHtml(fmtClock(gl.watchMs || 0))} &middot; ${tc("加时", "Overtime")} ${escapeHtml(fmtClock(entry.overtimeMs))} (+${overtimePts(Math.min(entry.overtimeMs, gl.watchMs || 0))})</div>` : "";
     const box = modal(`<div class="ld-spin ${result === "done" ? "ld-won" : ""}">
@@ -4083,8 +5672,15 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
         ${over}${note ? `<div class="ld-msg ld-note">${escapeHtml(note)}</div>` : ""}</div>
         ${momentsHtml(entry) ? `<div class="ld-resmoments">${momentsHtml(entry)}</div>` : ""}
         ${scoreHtml}
+        ${sugHtml}
         <button class="ld-close">${tc("关闭", "Close")}</button>`);
     box.querySelector(".ld-close").addEventListener("click", closeModal);
+    box.querySelector('[data-a="sugnext"]')?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      closeModal();
+      if (lock) return;
+      openStart({ setup: { ...setupFromEntry(entry), conds: sug.conds } });
+    });
     box.addEventListener("click", (ev) => momentClick(ev, closeModal));
   }
 
@@ -4120,24 +5716,47 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
 
   // `next`: the bar's Next scene button, which can cost a skip; a scene
   // ending or a bounce picks the next one for free.
+  // 2.8.2: the skip is taken only once another scene is found (a pick that
+  // came back empty cost one for nothing), and saved like a seek's; a second
+  // press while one is picking is ignored rather than charged twice.
+  let picking = false;
   async function goRandom(next) {
     if (!lock) return;
     if (lock.one && lock.one.id) { navigate(`/scenes/${lock.one.id}`); return; }
     if (lock.current && stayBlocks("")) { ldToast(tc("坚持到底：先看完这个场景", "Stay to the end: finish this scene first")); navigate(`/scenes/${lock.current.id}`); return; }
-    const cur = (/^\/scenes\/(\d+)/.exec(location.pathname) || [])[1];
-    if (next === true && cur) {
-      const d = nextSceneDecision(lock.scenes && lock.scenes[cur], skipBudget());
-      if (!d.allow) { ldToast(tc("这个场景没有跳过次数了：继续看，或让它放完", "No skips left on this scene: watch on, or let it end")); return; }
-      if (d.skip) {
-        lock.scenes = { ...(lock.scenes || {}), [cur]: d.rec };
-        writeState(lock);
-        ldToast(tc(`下一个场景：用掉了一次跳过${d.left === 0 ? "" : `（那个场景还剩 ${d.left} 次）`}`, `Next scene: used a skip${d.left === 0 ? "" : ` (${d.left} left on that scene)`}`));
+    const cur = sceneHere();
+    // 2.9.2 (user): Next scene is always free under Roulette, skips left or
+    // not; Stay to the end (above) is the rule that holds a scene, the skip
+    // budget is for seeking inside one
+    const pay = false;
+    if (pay && !nextSceneDecision(lock.scenes && lock.scenes[cur], skipBudget()).allow) { ldToast(nextSceneText("skips")); return; }
+    if (picking) return;
+    picking = true;
+    const L = lock;
+    let pick = null;
+    try { pick = await randomScene(L, cur); }
+    catch (e) { log(`Random scene failed: ${e.message}`, "error"); }
+    finally { picking = false; }
+    if (!lock || lock.id !== L.id) return;
+    if (next === true && sceneHere() !== cur) return;          // they went somewhere else meanwhile
+    if (pick && pick.id) {
+      if (pay) {
+        // decided again: a seek may have used the last skip while picking
+        const d = nextSceneDecision(lock.scenes && lock.scenes[cur], skipBudget());
+        if (!d.allow) { ldToast(nextSceneText("skips")); return; }
+        if (d.skip) {
+          lock.scenes = { ...(lock.scenes || {}), [cur]: d.rec };
+          dirty = true;
+          writeState(lock);
+          saveProgress(true);
+          ldToast(tc(`下一个场景：用掉了一次跳过${d.left === 0 ? "" : `（那个场景还剩 ${d.left} 次）`}`, `Next scene: used a skip${d.left === 0 ? "" : ` (${d.left} left on that scene)`}`));
+        }
       }
+      navigate(`/scenes/${pick.id}`);
+      return;
     }
-    try {
-      const id = await randomScene(lock, cur);
-      if (id) { navigate(`/scenes/${id}`); return; }
-    } catch (e) { log(`${tc("随机场景失败：", "Random scene failed:")} ${e.message}`, "error"); }
+    // only the open scene is left: stay on it and say so
+    if (pick && pick.only && cur) { ldToast(nextSceneText("none", lock.rules && lock.rules.fresh)); return; }
     navigate(`/${KINDS[lock.kind].path}/${lock.tid}/galleries`, true);
   }
 
@@ -4178,11 +5797,13 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
       `<span class="ld-who">${tc("已锁定到 ", "Locked to ")}<b>${escapeHtml(lock.name)}</b>` +
         `${lock.kind !== "performer" ? `<small>${kl(lock.kind)}</small>` : ""}</span>` +
       `<span class="ld-goal ${goalType(lock)}"></span>` +
-      `<span class="ld-time"></span><span class="ld-watch"></span><span class="ld-skips"></span>` +
+      `<span class="ld-time"></span><span class="ld-watch"></span><span class="ld-skips"></span><span class="ld-picn"></span>` +
       `<span class="ld-links">` +
         (hasPage ? `<a href="${PAGE_PATH}" data-a="link">${tc("对局", "Run")}</a>` : "") +
         (lock.media === "images" ? `<a href="${listUrl(lock)}" data-a="link">${tc("图片", "Images")}</a>`
-          : lock.rules && lock.rules.random ? `<button data-a="random" title="${tc("另一个随机场景", "Another random scene")}${skipBudget() !== null ? tc("\uff08会用掉一次跳过\uff09", " (uses a skip)") : ""}">${tc("下一个场景", "Next scene")}</button>`
+          // 2.9.1 (user): the bar's Next scene button is gone; the player's next
+          // button and Lockdown's control-bar button do it (2.9.0)
+          : lock.rules && lock.rules.random ? ""
           : `<a href="${listUrl(lock)}" data-a="link">${tc("场景", "Scenes")}</a>`) +
         `<a href="${lock.groups ? tagsListUrl(lock, "galleries") : `${base}/galleries`}" data-a="link" class="ld-more">${tc("画廊", "Galleries")}</a>` +
         (lock.media === "images" ? "" : `<a href="${lock.groups ? tagsListUrl(lock, "images") : `${base}/images`}" data-a="link" class="ld-more">${tc("图片", "Images")}</a>`) +
@@ -4202,7 +5823,6 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     bar.querySelectorAll('[data-a="link"]').forEach((a) => a.addEventListener("click", (ev) => {
       ev.preventDefault(); navigate(a.getAttribute("href"));
     }));
-    bar.querySelector('[data-a="random"]')?.addEventListener("click", () => goRandom(true));
     bar.querySelector('[data-a="pics"]')?.addEventListener("click", playPictures);
     const gu = bar.querySelector(".ld-giveup");
     if (gu) wireGiveUp(gu);
@@ -4323,6 +5943,9 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     if (time) time.textContent = g.type === "finish" ? fmtDuration(now - lock.startedAt) : "";
     const watch = bar.querySelector(".ld-watch");
     if (watch) watch.textContent = g.type === "edge" ? "" : `${tc("已观看 ", "watched ")}${fmtClock(lock.watchedMs || 0)}`;
+    // 2.9: new pictures viewed this run
+    const pn = bar.querySelector(".ld-picn"), np = (lock.pics || []).length;
+    if (pn && pn.textContent !== (np ? `${tc("图片 " + np, "Pictures " + np)}` : "")) { pn.textContent = np ? tc(`图片 ${np}`, `Pictures ${np}`) : ""; pn.title = np ? tc(`本次新看了 ${np} 张图片：热度前 +${np}`, `${np} new pictures viewed: +${np} before heat`) : ""; }
     if (pageEl) updateLive();
     const pr = document.getElementById("ld-over");
     if (pr) updateOver(pr, "pr");
@@ -4368,7 +5991,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
   // ── Enforcement ────────────────────────────────────────────────────────────
 
   const allowedCache = new Map();    // "lockid:scene:12" -> true/false
-  let checkSeq = 0;
+  let checkSeq = 0, checkFails = 0;
   let lastPath = null;
 
   async function enforce(force) {
@@ -4422,23 +6045,35 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     // Hide the page until we know, so a forbidden scene is never seen.
     document.body.classList.add("ld-checking");
     const seq = ++checkSeq, L = lock;
-    let ok = false;
+    let ok = false, failed = false;
     try { ok = (await itemsMatch([{ kind: r.check, id: r.id }], L))[0]; }
-    catch (e) { log(`${tc("检查失败（", "Check failed (")}${e.message}${tc("），按不允许处理", "), treating as not allowed")}`, "error"); }
+    catch (e) { failed = true; log(`${tc("检查失败（", "Check failed (")}${e.message}${tc("），稍后重试", "), trying again")}`, "error"); }
     if (seq !== checkSeq || location.pathname + location.search !== here) return;
     // `lock` is a new object after every sync, O poll and save: the same run
     // is the same id. A different run: check again, or the veil stays up
     // and nothing counts (review, 2.2).
     if (!lock || lock.id !== L.id) { lastPath = null; return; }
+    // 2.11 (review M2): could not check is not "no": the veil stays, nothing
+    // is cached or let go, and the check runs again (1, 2, 4, 8, 10 s)
+    const verdict = belongVerdict(ok, failed);
+    if (verdict.retry) {
+      checkFails++;
+      if (checkFails === 3) ldToast(tc("Stash 没有响应，正在重新检查", "Stash isn't answering; checking again"), "warn");
+      setTimeout(() => {
+        if (lock && lock.id === L.id && location.pathname + location.search === here) { lastPath = null; enforce(true); }
+      }, backoffMs(checkFails, 1000, 10000));
+      return;
+    }
+    checkFails = 0;
     allowedCache.set(key, ok);
     // the one scene was deleted or no longer belongs: pick another rather
-    // than be sent back to it for ever
-    if (!ok && r.check === "scene" && lock.current && lock.current.id === String(r.id) && !lock.current.done) {
+    // than be sent back to it for ever (a definite "no" only)
+    if (verdict.release && r.check === "scene" && lock.current && lock.current.id === String(r.id) && !lock.current.done) {
       lock.current = { ...lock.current, done: true };
       dirty = true; writeState(lock); saveProgress(true);
     }
-    if (!ok && r.check === "scene" && lock.one && lock.one.id === String(r.id)) {
-      lock.one = { ...lock.one, id: null };
+    if (verdict.release && r.check === "scene" && lock.one && lock.one.id === String(r.id)) {
+      lock.one = dropOne(lock.one);
       dirty = true; writeState(lock); saveProgress(true);
       ldToast(tc("本盘的场景没了：你接着播放的那个就是", "The run's scene is gone: the next one you play is the one"));
     }
@@ -4481,8 +6116,11 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     return el.classList.contains("queue-scene-details") ? (el.closest("li") || el) : el;
   }
 
+  // 2.11 (review L2): after a failed batch the next try waits (250 ms,
+  // doubling, at most 10 s) instead of going out again every tick and DOM change
+  let cardFails = 0, cardWait = 0;
   async function scanCards() {
-    if (!lock || cardBusy) return;
+    if (!lock || cardBusy || Date.now() < cardWait) return;
     const pending = [];
     for (const el of document.querySelectorAll(CARD_SEL)) {
       const card = cardOf(el);
@@ -4502,7 +6140,10 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
       const unique = [...new Map(pending.map((p) => [p.key, p.it])).entries()].slice(0, 120);
       const res = await itemsMatch(unique.map(([, it]) => it), L);
       if (lock && lock.id === L.id) unique.forEach(([key], i) => itemCache.set(key, !!res[i]));
+      cardFails = 0; cardWait = 0;
     } catch (e) {
+      cardFails++;
+      cardWait = Date.now() + backoffMs(cardFails, 250, 10000);
       log(`${tc("卡片检查失败：", "Card check failed:")} ${e.message}`, "error");     // they stay hidden
     } finally {
       cardBusy = false;
@@ -4526,7 +6167,63 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     lock.watchedMs = (lock.watchedMs || 0) + ms;
     dirty = true;
     writeState(lock);
+    // 2.9: and the picture it was, toward the pictures' points
+    if (ev.detail.imageId) notePic(ev.detail.imageId, ms);
   });
+
+  // ── 2.9: points for pictures ──────────────────────────────────────────────
+  // Time on each picture (Slideshow's announcements above; Stash's image page
+  // and lightbox, timed here while the tab is on screen) adds up per image in
+  // `picAcc` for this page; at PIC_MS a picture of the target that no earlier
+  // run counted joins `lock.pics` (merged across devices like the rest).
+  // Whether it belongs is the route check's or the cards' answer when they
+  // have one, else one batched itemsMatch.
+  let picAcc = {}, picRunId = null, picBusy = false, lastPicTrack = 0;
+  const picPending = new Set();
+  function picBelongs(id) {
+    const k = `${lock.id}:image:${id}`;
+    if (allowedCache.has(k)) return allowedCache.get(k);
+    if (itemCache.has(k)) return itemCache.get(k);
+    picPending.add(String(id));
+    checkPics();
+    return undefined;
+  }
+  async function checkPics() {
+    if (picBusy || !lock || !picPending.size) return;
+    picBusy = true;
+    const L = lock, ids = [...picPending].slice(0, 40);
+    ids.forEach((id) => picPending.delete(id));
+    try {
+      const res = await itemsMatch(ids.map((id) => ({ kind: "image", id })), L);
+      if (lock && lock.id === L.id) ids.forEach((id, i) => { itemCache.set(`${L.id}:image:${id}`, !!res[i]); notePic(id, 0); });
+    } catch (e) { log(`Picture check failed: ${e.message}`); }
+    finally { picBusy = false; if (picPending.size) setTimeout(checkPics, 1000); }
+  }
+  function notePic(id, ms) {
+    if (!lock) return;
+    if (picRunId !== lock.id) { picRunId = lock.id; picAcc = {}; }
+    const st = { acc: picAcc, run: lock.pics || [], earlier: picEarlier };
+    let r = picTime(st, id, ms, undefined);
+    if (r.why === "wait") r = picTime({ ...st, acc: r.acc }, id, 0, picBelongs(String(id)));
+    picAcc = r.acc;
+    if (r.why !== "counted") return;
+    lock.pics = r.run;
+    dirty = true;
+    writeState(lock);
+    if (lock.pics.length === PICS_MAX) ldToast(tc(`${PICS_MAX} 张图片：这是一盘能计入的上限`, `${PICS_MAX} pictures: the most a run counts`), true);
+  }
+  function trackPictures() {
+    const now = Date.now();
+    const dt = lastPicTrack ? Math.min(1000, now - lastPicTrack) : 0;
+    lastPicTrack = now;
+    if (!lock || document.visibilityState !== "visible" || document.body.classList.contains("ld-checking")) return;
+    // Slideshow open: it announces its own pictures
+    const ss = window.Slideshow;
+    if (ss && typeof ss.isOpen === "function" && ss.isOpen()) return;
+    const a = document.querySelector(".Lightbox .Lightbox-footer a.image-link");
+    const id = pictureHere(location.pathname, a ? a.getAttribute("href") : "", !!document.querySelector(".Lightbox"));
+    if (id && dt) notePic(id, dt);
+  }
 
   // The scene's record in this lock (furthest point watched, skips used).
   // Made the first time an allowed scene opens; "unwatched only" lets a
@@ -4542,14 +6239,40 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
   // The scene player's own video, not a card's hover preview.
   const isPlayer = (v) => v instanceof HTMLVideoElement && !!v.closest(".video-js") && !!sceneHere();
   const playerVideo = () => (sceneHere() ? document.querySelector(".video-js video") : null);
+  // The player's media is the open scene's, not the last one's still playing
+  // while Stash loads this one (mediaOwner, 2.8.2). Playback, seeks and
+  // "ended" count only then.
+  let media = null;
+  function noteMedia(v) {
+    if (v) media = mediaOwner(media, v.currentSrc || v.src || "", sceneHere());
+    return media;
+  }
+  const mediaHere = (v) => { const id = sceneHere(), m = noteMedia(v); return !!id && (!m || m.id === id); };
 
   // The sum of O counts over the target's scenes, polled: faster on a scene
   // page, where the O button is. An O pressed anywhere counts.
-  let oBusy = false, lastOCheck = 0;
+  // 2.11 (review M5c): on a scene page the open scene's own count is read
+  // every 2.5 s (one small query) and every O of the target only every 15 s,
+  // or at once when that count moved; elsewhere every 10 s; and only the
+  // polling tab reads them all (oCheckPlan).
+  let oBusy = false, lastOCheck = 0, lastOScene = 0;
   async function checkO() {
     if (!lock || oBusy || document.visibilityState !== "visible") return;
-    const onScene = !!sceneHere();
-    if (Date.now() - lastOCheck < (onScene ? 2500 : 10000)) return;
+    const sid = lock.media === "images" ? null : sceneHere();
+    const plan = oCheckPlan({ now: Date.now(), lastFull: lastOCheck, lastScene: lastOScene, own: pollOwnerNow(), onScene: !!sid,
+                              hasBase: !!lock.oBase, allowed: !!sid && allowedCache.get(`${lock.id}:scene:${sid}`) === true });
+    if (!plan) return;
+    if (plan === "scene") {
+      oBusy = true;
+      lastOScene = Date.now();
+      let moved = false;
+      try {
+        const d = await gql(`query ($id: ID!) { findScene(id: $id) { id o_counter } }`, { id: sid });
+        moved = !!lock && !!d && !!d.findScene && oSceneMoved(lock.oBase, sid, d.findScene.o_counter || 0);
+      } catch (e) { log(`O check (scene) failed: ${e.message}`); }
+      finally { oBusy = false; }
+      if (!moved) return;
+    }
     oBusy = true;
     lastOCheck = Date.now();
     const L = lock;
@@ -4623,7 +6346,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     if (!lock) return;
     const id = sceneHere(), v = id && playerVideo();
     if (drag && (!v || !scrubbing(v))) endDrag();
-    if (!v || document.body.classList.contains("ld-checking") || allowedCache.get(`${lock.id}:scene:${id}`) !== true) return;
+    if (!v || document.body.classList.contains("ld-checking") || allowedCache.get(`${lock.id}:scene:${id}`) !== true || !mediaHere(v)) return;
     observe(v, id);
     paintWatched(v, id);
     if (!v.paused && !v.ended && v.readyState >= 3 && document.visibilityState === "visible") {
@@ -4654,7 +6377,10 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
   //    start). Starting at 0:00 is left to Stash's own setting for it.
   let cur = null, snap = null, drag = null, lastInput = 0;
   for (const t of ["pointerdown", "keydown", "wheel", "touchstart"]) {
-    document.addEventListener(t, () => { lastInput = Date.now(); }, { capture: true, passive: true });
+    // not the bar (2.8.2): Next scene is a click, and the next scene's
+    // player placing itself right after it is not the user seeking
+    document.addEventListener(t, (ev) => { if (!(ev.target && ev.target.closest && ev.target.closest("#ld-bar, " + NEXT_SEL))) lastInput = Date.now(); },
+                              { capture: true, passive: true });
   }
   const byUser = () => Date.now() - lastInput < INPUT_MS;
   const scrubbing = (v) => { const p = v.closest(".video-js"); return !!(p && p.classList.contains("vjs-scrubbing")); };
@@ -4713,7 +6439,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     drag = null;
     if (!lock || !dr) return;
     const v = playerVideo();
-    if (!v || sceneHere() !== dr.id || scrubbing(v)) return;
+    if (!v || sceneHere() !== dr.id || scrubbing(v) || !mediaHere(v)) return;
     if (isSnap(v.currentTime)) return;
     judge(v, dr.id, dr.from, v.currentTime);
   }
@@ -4752,7 +6478,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     const v = ev.target;
     if (!lock || !isPlayer(v)) return;
     const id = sceneHere();
-    if (!id) return;
+    if (!id || !mediaHere(v)) return;
     const to = v.currentTime, now = Date.now();
     if (isSnap(to)) { snap = null; cur = { id, t: to }; return; }
     const from = cur && cur.id === id ? cur.t : null;
@@ -4773,7 +6499,7 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     const v = ev.target;
     if (!lock || !isPlayer(v)) return;
     const id = sceneHere();
-    if (!id || allowedCache.get(`${lock.id}:scene:${id}`) !== true) return;
+    if (!id || allowedCache.get(`${lock.id}:scene:${id}`) !== true || !mediaHere(v)) return;
     observe(v, id);
   }, true);
 
@@ -4824,12 +6550,25 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
   // its end before another opens. It becomes current once it plays, and is
   // done at its last seconds or its "ended".
   const stayOn = () => !!(lock && lock.rules && lock.rules.stay);
+  // 2.11 (review M3): done at the end only with the scene really watched
+  // (stayCovered); one drag to the last seconds no longer does it. Short
+  // of it, a toast says how much is left (seeking back to the start is
+  // always free, so it can be watched through).
+  let stayTold = 0;
+  function stayShort(c) {
+    if (Date.now() - stayTold < 15000) return;
+    stayTold = Date.now();
+    ldToast(tc(`坚持到底：这个场景还有 ${fmtMinutes(Math.max(1, Math.ceil(c.left / 60)))} 没看`, `Stay to the end: ${fmtMinutes(Math.max(1, Math.ceil(c.left / 60)))} of this scene not watched yet`));
+  }
   function trackStay(v, id, t) {
     if (!stayOn()) return;
     const c = lock.current;
     if (!c || c.done) { if (!c || c.id !== id || !c.done) { lock.current = { id, done: false }; dirty = true; } }
     const dur = durationOf(v);
-    if (lock.current && lock.current.id === id && !lock.current.done && isFinite(dur) && dur > 0 && t >= dur - 3) finishCurrent();
+    if (lock.current && lock.current.id === id && !lock.current.done && isFinite(dur) && dur > 0 && t >= dur - 3) {
+      const cov = stayCovered(rangesOf((lock.scenes || {})[id]), dur);
+      if (cov.done) finishCurrent(); else stayShort(cov);
+    }
   }
   function finishCurrent() {
     if (!lock || !lock.current || lock.current.done) return;
@@ -4869,20 +6608,70 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
   // A file that will not play: Stay to the end lets go of it, and One scene
   // takes the next one played, rather than leaving only Give up.
   document.addEventListener("error", (ev) => {
-    if (!lock || !(ev.target instanceof HTMLMediaElement) || !isPlayer(ev.target)) return;
+    if (!lock || !(ev.target instanceof HTMLMediaElement) || !isPlayer(ev.target) || !mediaHere(ev.target)) return;
     const id = sceneHere();
     if (!id) return;
     if (lock.current && lock.current.id === id && !lock.current.done) finishCurrent();
-    if (lock.one && lock.one.id === id) { lock.one = { ...lock.one, id: null }; dirty = true; writeState(lock); saveProgress(true); }
+    if (lock.one && lock.one.id === id) { lock.one = dropOne(lock.one); dirty = true; writeState(lock); saveProgress(true); }
   }, true);
 
   // Random scenes: when a scene ends, the next one is random too.
   document.addEventListener("ended", (ev) => {
-    if (!lock || !isPlayer(ev.target)) return;
-    if (oneOn() && lock.one.id && lock.one.id === sceneHere()) { loopOne(ev.target, lock.one.id); return; }
+    // the last scene's video ending while this one loads is not this one ending
+    // 2.9: stopped here (document capture runs before the player's own
+    // listeners), or Stash's continue-playlist would open the queue's next
+    // scene while the loop or the random pick happens
+    if (!lock || !isPlayer(ev.target) || !mediaHere(ev.target)) return;
+    if (oneOn() && lock.one.id && lock.one.id === sceneHere()) { ev.stopImmediatePropagation(); loopOne(ev.target, lock.one.id); return; }
+    if (lock.current && lock.current.id === sceneHere() && !lock.current.done && stayOn()) {
+      // 2.11: ended without enough of it watched: it stays the scene (no
+      // random next, no playlist next) until it has been
+      const dur = durationOf(ev.target);
+      const cov = isFinite(dur) && dur > 0 ? stayCovered(rangesOf((lock.scenes || {})[sceneHere()]), dur) : { done: true };
+      if (!cov.done) { ev.stopImmediatePropagation(); stayTold = 0; stayShort(cov); return; }
+    }
     if (lock.current && lock.current.id === sceneHere()) finishCurrent();
-    if (lock.rules && lock.rules.random) goRandom();
+    if (lock.rules && lock.rules.random) { ev.stopImmediatePropagation(); goRandom(); }
   }, true);
+
+  // ── 2.9: the player's own next controls under Roulette ─────────────────────
+  // (user: "skip to next video from the player doesn't work"). Stash's skip
+  // buttons (video.js, with a queue), the queue panel's buttons and
+  // Lockdown's own control-bar button all do Next scene (goRandom(true): the
+  // same skip rules as the bar's). Capture phase on the document, because
+  // video.js acts on its buttons itself; touchend is only stopped (video.js
+  // "tap"), the click that follows does the work.
+  function nextControl(ev) {
+    if (!lock || !lock.rules || !lock.rules.random || !sceneHere()) return;
+    const el = ev.target && ev.target.closest && ev.target.closest(NEXT_SEL);
+    if (!el) return;
+    ev.stopImmediatePropagation();
+    ev.preventDefault();
+    if (ev.type === "click") goRandom(true);
+  }
+  document.addEventListener("click", nextControl, true);
+  document.addEventListener("touchend", (ev) => {
+    if (lock && lock.rules && lock.rules.random && sceneHere() && ev.target && ev.target.closest && ev.target.closest(NEXT_SEL)) ev.stopImmediatePropagation();
+  }, true);
+  // Without a queue Stash shows no next button: Lockdown adds one to the
+  // control bar under Roulette (not with One scene's scene chosen).
+  const NEXT_ICON = '<svg viewBox="0 0 16 16" width="1.1em" height="1.1em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 3.5v9L10 8z"/><path d="M12.5 3.5v9"/></svg>';
+  function ensureVjsNext() {
+    const have = document.querySelector(".ld-vjsnext");
+    const player = sceneHere() ? document.querySelector(".video-js") : null;
+    const cbar = player && player.querySelector(".vjs-control-bar");
+    const want = !!(lock && lock.rules && lock.rules.random && cbar && !(lock.one && lock.one.id) && !player.classList.contains("vjs-skip-buttons-next"));
+    if (!want) { if (have) have.remove(); return; }
+    if (have && cbar.contains(have)) return;
+    if (have) have.remove();
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "vjs-control vjs-button ld-vjsnext";
+    b.title = tc(`下一个场景${skipBudget() !== null ? "（会消耗一次跳过）" : ""}`, `Next scene${skipBudget() !== null ? " (uses a skip)" : ""}`);
+    b.innerHTML = `${NEXT_ICON}<span class="vjs-control-text">${tc("下一个场景", "Next scene")}</span>`;
+    const play = cbar.querySelector(".vjs-play-control");
+    if (play) play.after(b); else cbar.prepend(b);
+  }
 
   // ── Sync with Stash (every device) ─────────────────────────────────────────
 
@@ -4916,39 +6705,60 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
 
   // What Stash holds against what this page has: a lock started elsewhere
   // is adopted, one ended elsewhere ends here, the same lock is merged.
-  let lastSync = 0, syncing = false;
+  // 2.11 (review M5d): which tab of this browser polls while locked
+  // (pollOwner). Without localStorage every tab polls, as before.
+  const TAB_ID = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  function pollOwnerNow() {
+    try {
+      const r = pollOwner(JSON.parse(localStorage.getItem(OWNER_KEY) || "null"), TAB_ID, document.visibilityState === "visible", Date.now());
+      if (r.write) localStorage.setItem(OWNER_KEY, JSON.stringify(r.write));
+      return r.own;
+    } catch (_) { return true; }
+  }
+
+  // What Stash holds against what this page has: a lock started elsewhere
+  // is adopted, one ended elsewhere ends here, the same lock is merged
+  // (syncDecision). 2.11: with Suite Data the read is `active` alone unless
+  // the history is needed (syncPlan); a finished run still waiting for its
+  // write is tried again here.
+  let lastSync = 0, syncing = false, lastFull = 0;
   async function sync(force) {
     if (syncing) return;
-    if (!force && (document.visibilityState !== "visible" ||
-                   Date.now() - lastSync < (lock ? SYNC_LOCKED_MS : SYNC_IDLE_MS))) return;
+    const iv = pollIntervals(!!lock, lock ? pollOwnerNow() : true, !!sceneHere());
+    if (!force && (document.visibilityState !== "visible" || Date.now() - lastSync < iv.sync)) return;
     syncing = true;
     lastSync = Date.now();
     try {
-      const cfg = await readConfig();
-      if (cfg.failed) return;
-      let remote = cfg.active;
+      retryPending();
+      let remote, list = null;
+      const light = Date.now() - lastFull < SYNC_FULL_MS ? await readActive() : null;
+      if (light && syncPlan(lock && lock.id, light.active, endedIds, Date.now() - lastFull) === "light") remote = light.active;
+      else {
+        const cfg = await readConfig();
+        if (cfg.failed) return;
+        lastFull = Date.now();
+        remote = cfg.active;
+        list = cfg.list;
+      }
+      const d = syncDecision(lock, remote, list, endedIds, confirmedId);
       // A run that already ended (in the history, or ended here moments ago
       // while this read was out) is not taken up again: a write that raced
-      // the end could leave it in `active` (review, 2.2). Clear it instead.
-      if (remote && (endedIds.has(remote.id) || cfg.list.some((e) => e && e.id === remote.id))) {
-        const ghost = remote.id;
-        remote = null;
-        if (!lock || lock.id !== ghost) updateConfig(({ active }) => (active && active.id === ghost ? { active: null } : {})).catch(() => {});
+      // the end could leave it in `active` (review, 2.2). Clear it instead,
+      // unless its own end write is still to land (that write clears it).
+      const ghost = d.clear;
+      if (ghost && !pendingRead().some((p) => p.id === ghost)) updateConfig(({ active }) => (active && active.id === ghost ? { active: null } : {})).catch(() => {});
+      if (d.act === "adopt") adopt(d.remote);
+      else if (d.act === "ended") endedElsewhere(d.entry && d.entry.result);
+      else if (d.act === "push") pushLock();
+      else if (d.act === "merge") {
+        confirmedId = lock.id;
+        lock = mergeLock(d.remote, lock);
+        writeState(lock);
       }
-      if (!lock) { if (remote) adopt(remote); return; }
-      if (!remote) {
-        // Gone from Stash: ended elsewhere if Stash had it, else not saved yet.
-        const entry = cfg.list.find((e) => e && e.id === lock.id);
-        if (confirmedId === lock.id || entry) endedElsewhere(entry && entry.result);
-        else pushLock();
-        return;
-      }
-      if (remote.id !== lock.id) { adopt(remote); return; }
-      confirmedId = lock.id;
-      lock = mergeLock(remote, lock);
-      writeState(lock);
     } finally { syncing = false; }
   }
+  // at once, but not twice within a few seconds (focus and visibility come together)
+  function syncSoon() { if (Date.now() - lastSync > 3000) sync(true); }
 
   // ── Nav button ─────────────────────────────────────────────────────────────
 
@@ -4987,11 +6797,22 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
   // listeners added after this one, and preventDefault tells those added
   // before (they check defaultPrevented). Keys typed into the dialog's boxes
   // are left to the boxes, which stop them themselves.
+  // 2.9: no dialog, under Roulette on a scene: Stash's queue keys ("p n",
+  // "p p", "p r") do Next scene instead; the second key is stopped here,
+  // before Stash's own shortcut handler sees it.
+  let lastKey = null;
   window.addEventListener("keydown", (ev) => {
     const back = document.querySelector(".ld-modal-back");
-    if (!back || ev.defaultPrevented) return;
     const t = ev.target;
     const typing = !!t && (t.isContentEditable || (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || "") && t.type !== "checkbox"));
+    if (!back) {
+      if (ev.defaultPrevented || typing || ev.ctrlKey || ev.metaKey || ev.altKey || !lock || !lock.rules || !lock.rules.random || !sceneHere()) return;
+      const now = Date.now();
+      if (queueKey(lastKey, ev.key, now)) { lastKey = null; ev.stopImmediatePropagation(); ev.preventDefault(); goRandom(true); return; }
+      lastKey = { key: ev.key, at: now };
+      return;
+    }
+    if (ev.defaultPrevented) return;
     const act = modalKey(ev, typing, back.dataset.sticky === "1");
     if (!act) return;
     ev.stopImmediatePropagation();
@@ -5013,15 +6834,21 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
   // than up to 250 ms later: a forbidden page should never flash up.
   for (const fn of ["pushState", "replaceState"]) {
     const orig = history[fn].bind(history);
-    history[fn] = (...a) => { const r = orig(...a); if (lock) enforce(false); return r; };
+    // the player's source is noted against the scene being left first
+    // (mediaOwner): the router changes the URL before the player changes
+    history[fn] = (...a) => { noteMedia(playerVideo()); const r = orig(...a); if (lock) enforce(false); return r; };
   }
   window.addEventListener("popstate", () => { if (lock) enforce(false); });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { lastMark = 0; sync(true); }
-    else if (lock) { writeState(lock); saveProgress(true); }
+    if (document.visibilityState === "visible") { lastMark = 0; lastOScene = 0; syncSoon(); }
+    else { pollOwnerNow(); if (lock) { writeState(lock); saveProgress(true); } }   // a hidden tab lets the polling go
   });
-  window.addEventListener("pagehide", () => { if (lock) { writeState(lock); saveProgress(true); } });
+  window.addEventListener("focus", syncSoon);
+  window.addEventListener("pagehide", () => {
+    try { const c = JSON.parse(localStorage.getItem(OWNER_KEY) || "null"); if (c && c.tab === TAB_ID) localStorage.removeItem(OWNER_KEY); } catch (_) {}
+    if (lock) { writeState(lock); saveProgress(true); }
+  });
 
   let queued = false;
   new MutationObserver(() => {
@@ -5037,6 +6864,8 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
     if (!lock) return;
     enforce(false);
     trackPlayback();
+    trackPictures();
+    ensureVjsNext();
     tick();
     checkO();
     checkMarkers();
