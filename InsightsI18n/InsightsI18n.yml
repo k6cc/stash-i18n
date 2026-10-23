@@ -1,6 +1,6 @@
 name: Insights I18n
-description: "Stash 统计页的数据仪表盘：你、操作、库、文件与画质、元数据健康、收藏六个标签页（与 Lockdown、Slideshow 有联动），装有 Movies Toolkit 时另有影片标签页。取代 O Stats 与 Stats Enhancer。中文/英文跟随 Stash 界面语言。"
-version: 2.12.0-1
+description: "Stash 统计页的数据仪表盘：你、操作、库、文件与画质、元数据健康、收藏六个标签页（与 Lockdown、Slideshow 有联动），装有 Movies Toolkit 时另有影片标签页；重复清理按 1080p 目标保留最佳副本，再合并标记、O 与播放记录。取代 O Stats 与 Stats Enhancer。中文/英文跟随 Stash 界面语言。"
+version: 2.13.0-1
 url: https://gitlab.com/allisless0/stash-plugins
 
 settings:

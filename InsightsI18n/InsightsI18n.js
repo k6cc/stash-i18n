@@ -22,7 +22,7 @@
   window.__InsightsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.12.0-1';
+  var PLUGIN_VERSION = '2.13.0-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -51,7 +51,7 @@
   console.log('[InsightsI18n] Insights I18n v' + PLUGIN_VERSION + ' loaded');
 
   const PLUGIN_ID = "InsightsI18n";
-  const DATA_KEYS = ["watch", "ostatsImported"];   // in Suite Data's store when it is installed
+  const DATA_KEYS = ["watch", "ostatsImported", "dupLog"];   // in Suite Data's store when it is installed
   const DEBUG = (() => { try { return localStorage.getItem("insightsI18nDebug") === "1"; } catch (_) { return false; } })();
   const log = (m, lvl = "log") => { if (DEBUG || lvl === "error") console[lvl](`[${PLUGIN_ID}]`, m); };
 
@@ -988,14 +988,109 @@
   // HEVC and AV1 are both the target: either is a copy worth keeping.
   const isEfficient = (vc) => { const n = codecName(vc); return n === "HEVC" || n === "AV1"; };
 
+  // ── 2.13: which copy of a duplicate to keep ────────────────────────────────
+  // User (2026-10-21): "If I add a new video duplicate but in 1080p H264 and
+  // the source is HEVC but 720p, the 1080p is still the better pick because
+  // it will eventually be transcoded" (everything goes to HEVC through
+  // Tdarr/FileFlows). "Better quality is better, and 1080p is the target."
+  // So the picture comes first and the codec only between copies of the same
+  // resolution. The order, each step only when the ones before tie:
+  //  1. resolution class (the shorter side, resBucket): higher wins. At or
+  //     above 1080p beats anything below whatever the codec; above 1080p
+  //     still wins over 1080p, with a note that it will be transcoded down.
+  //  2. same class: how much picture the bits hold. When both bitrates are
+  //     known and one is 1.5x the other or more, bits per pixel per second
+  //     weighed by the codec (CODEC_EFF) decide, if they differ by 10% or
+  //     more; otherwise the codec order (CODEC_RANK: AV1, HEVC, H264, VP9,
+  //     the rest; the user's tiers, so H264 stays over VP9 as since 2.6).
+  //  3. longer by more than 2 s (a cut or trimmed copy loses),
+  //  4. higher frame rate (counted up to 60),
+  //  5. already organized, then linked to a stash-box,
+  //  6. the older Stash entry (created_at, then the lower id): ids stay put.
+  // Each pick says why in words; `note` is extra (transcode, shorter).
+  const TARGET_RES = 1080;
+  const RES_LINES = { "8K": 4320, "5K+": 2880, "4K": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "below 480p": 360 };
+  // How much better than H264 a codec packs the same picture, roughly.
+  const CODEC_EFF = { AV1: 1.8, HEVC: 1.5, VP9: 1.5, H264: 1.0, VP8: 0.9 };
+  const resLines = (s) => RES_LINES[resBucket(s.w, s.h)] || 0;
+  const effOf = (vc) => CODEC_EFF[codecName(vc)] || 0.7;
+  // bits per pixel per second, codec-weighed; 0 when it cannot be worked out
+  const picQuality = (s) => (s.br && s.w && s.h ? (s.br * effOf(s.vc)) / (s.w * s.h * Math.min(Math.max(s.fps || 30, 1), 240)) : 0);
+  function mmss(sec) {
+    const t = Math.round(Math.abs(sec || 0)), m = Math.floor(t / 60), s = t % 60;
+    return m ? `${m}:${String(s).padStart(2, "0")}` : `${s} s`;
+  }
+  const mbps = (br) => `${(br / 1e6).toFixed(br >= 1e8 ? 0 : 1)} Mbps`;
+  const createdMs = (s) => { const t = s.created ? Date.parse(s.created) : NaN; return Number.isFinite(t) ? t : Infinity; };
+
+  // a and b: two copies (scan shape: w, h, vc, br, dur, fps, organized,
+  // linked, created, id). Returns { keep, drop, rule, why, note }.
+  function dupPick(a, b) {
+    const out = (keep, rule, why) => {
+      const drop = keep === a ? b : a;
+      const notes = [];
+      if (resLines(keep) > TARGET_RES) notes.push(tc(`之后会转码降到 ${TARGET_RES}p`, `will be transcoded down to ${TARGET_RES}p`));
+      if (rule !== "length" && keep.dur && drop.dur && drop.dur - keep.dur > 2) notes.push(tc(`比另一份短 ${mmss(drop.dur - keep.dur)}`, `it is ${mmss(drop.dur - keep.dur)} shorter than the other copy`));
+      return { keep, drop, rule, why, note: notes.join("; ") };
+    };
+    const ra = resLines(a), rb = resLines(b);
+    if (ra !== rb) {
+      const keep = ra > rb ? a : b, drop = keep === a ? b : a;
+      const K = resBucket(keep.w, keep.h), O = resBucket(drop.w, drop.h) || tc("未知尺寸", "an unknown size");
+      const kc = codecName(keep.vc), dc = codecName(drop.vc);
+      const worseCodec = (CODEC_RANK[kc] || 1) < (CODEC_RANK[dc] || 1);
+      let why;
+      if (resLines(keep) >= TARGET_RES && resLines(drop) < TARGET_RES) {
+        why = worseCodec ? tc(`${K} 优于 ${O}：保留 ${K} 这份，尽管它是 ${kc}，之后会转码`, `${K} beats ${O}: the ${K} copy is kept even though it's ${kc}; it will be transcoded`)
+          : tc(`${K} 优于 ${O}：${TARGET_RES}p 是目标`, `${K} beats ${O}: ${TARGET_RES}p is the target`);
+      } else if (resLines(drop) >= TARGET_RES) {
+        why = tc(`${K} 优于 ${O}：画质更好就是更好${worseCodec ? `，即便是 ${kc}` : ""}`, `${K} beats ${O}: better quality is better${worseCodec ? `, even in ${kc}` : ""}`);
+      } else {
+        why = tc(`${K} 优于 ${O}：两者都低于 ${TARGET_RES}p，保留更清晰的那份${worseCodec ? `，尽管它是 ${kc}` : ""}`, `${K} beats ${O}: both are below ${TARGET_RES}p, the sharper one is kept${worseCodec ? ` even though it's ${kc}` : ""}`);
+      }
+      return out(keep, "resolution", why);
+    }
+    const rawR = resBucket(a.w, a.h);
+    const both = rawR ? tc(`都是 ${rawR}`, `Both ${rawR}`) : tc("同尺寸", "Same size");
+    const ca = codecName(a.vc), cb = codecName(b.vc);
+    if (a.br && b.br && Math.max(a.br, b.br) / Math.min(a.br, b.br) >= 1.5) {
+      const qa = picQuality(a), qb = picQuality(b);
+      if (qa && qb && Math.max(qa, qb) / Math.min(qa, qb) >= 1.1) {
+        const keep = qa > qb ? a : b, drop = keep === a ? b : a;
+        return out(keep, "bitrate", tc(`${both}：${codecName(keep.vc)} 那份画面信息更多（${mbps(keep.br)} ${codecName(keep.vc)} 对 ${mbps(drop.br)} ${codecName(drop.vc)}，已按各编码的压缩效率折算）`, `${both}: the ${codecName(keep.vc)} copy holds more picture (${mbps(keep.br)} ${codecName(keep.vc)} against ${mbps(drop.br)} ${codecName(drop.vc)}, weighed by how well each codec packs)`));
+      }
+    }
+    const ka = CODEC_RANK[ca] || 1, kb = CODEC_RANK[cb] || 1;
+    if (ka !== kb) {
+      const keep = ka > kb ? a : b, drop = keep === a ? b : a;
+      return out(keep, "codec", tc(`${both}：同样码率下 ${codecName(keep.vc)} 比 ${codecName(drop.vc)} 保留的画面信息更多`, `${both}: ${codecName(keep.vc)} holds more picture than ${codecName(drop.vc)} at the same bitrate`));
+    }
+    if (a.dur && b.dur && Math.abs(a.dur - b.dur) > 2) {
+      const keep = a.dur > b.dur ? a : b, drop = keep === a ? b : a;
+      return out(keep, "length", tc(`画面相同；另一份短了 ${mmss(keep.dur - drop.dur)}（被剪过或裁过）`, `Same picture; the other copy is ${mmss(keep.dur - drop.dur)} shorter (cut or trimmed)`));
+    }
+    const fa = Math.min(a.fps || 0, 60), fb = Math.min(b.fps || 0, 60);
+    if (fa && fb && Math.abs(fa - fb) >= 1) {
+      const keep = fa > fb ? a : b, drop = keep === a ? b : a;
+      return out(keep, "fps", tc(`画面和时长相同；${Math.round(Math.min(keep.fps, 60))} fps 优于 ${Math.round(Math.min(drop.fps, 60))} fps`, `Same picture and length; ${Math.round(Math.min(keep.fps, 60))} fps beats ${Math.round(Math.min(drop.fps, 60))} fps`));
+    }
+    if (!!a.organized !== !!b.organized) return out(a.organized ? a : b, "organized", tc("文件质量相同；这份已经整理过", "Same file quality; this one is already organized"));
+    if (!!a.linked !== !!b.linked) return out(a.linked ? a : b, "linked", tc("文件质量相同；这份已关联 stash-box", "Same file quality; this one is linked to a stash-box"));
+    const ta = createdMs(a), tb = createdMs(b);
+    const older = ta !== tb ? (ta < tb ? a : b) : (Number(a.id) || 0) <= (Number(b.id) || 0) ? a : b;
+    return out(older, "older", tc("各方面都相同；保留 Stash 中较早的条目，让它的 id 不变", "Same in every way; the older Stash entry is kept so its id stays"));
+  }
+
   // Which copies of a duplicate group to keep and which to remove.
+  // mode "best" (default since 2.13): dupPick, the 1080p-target rules above;
+  //   a group whose kept copy is more than 10 s shorter than one removed
+  //   is left for a look (a cut copy might be the sharp one).
   // mode "hevc": keep the sharpest HEVC/AV1 copy; remove the others, but
   //   with `sharp` on, never one sharper than what is kept, and a group with
   //   no HEVC/AV1 copy at all is left for a look, nothing ticked.
-  // mode "best": keep the sharpest, then the better codec, then more history.
   // mode "smallest": keep the smallest file among the sharpest copies.
-  // Returns { keep, items: [{ s, remove, why }], review, reason }.
-  function dupChoose(group, mode = "hevc", opts = {}) {
+  // Returns { keep, items: [{ s, remove, why, note }], review, reason }.
+  function dupChoose(group, mode = "best", opts = {}) {
     const sharp = opts.sharp !== false;
     const hist = (s) => (s.o || 0) + (s.plays || 0);
     const byQuality = (a, b) => resRank(b) - resRank(a) || (CODEC_RANK[codecName(b.vc)] || 1) - (CODEC_RANK[codecName(a.vc)] || 1) ||
@@ -1005,7 +1100,19 @@
       const top = Math.max(...group.map(resRank));
       keep = group.filter((s) => resRank(s) === top).sort((a, b) => (a.fsize || 0) - (b.fsize || 0) || byQuality(a, b))[0];
     } else if (mode === "best") {
-      keep = group.slice().sort(byQuality)[0];
+      // a knockout in id order, so the same group always ends the same way
+      const ordered = group.slice().sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+      keep = ordered.slice(1).reduce((best, s) => dupPick(best, s).keep, ordered[0]);
+      const items = group.filter((s) => s !== keep).map((s) => {
+        const p = dupPick(keep, s);
+        if (keep.dur && s.dur && s.dur - keep.dur > 10) {
+          review = true;
+          reason = tc(`保留的 ${resBucket(keep.w, keep.h) || ""} 那份比另一份短了 ${mmss(s.dur - keep.dur)}，确认它没有被剪过`, `The kept ${resBucket(keep.w, keep.h) || ""} copy is ${mmss(s.dur - keep.dur)} shorter than another; check it is not cut`);
+          return { s, remove: false, why: p.why, note: p.note };
+        }
+        return { s, remove: true, why: p.why, note: p.note };
+      });
+      return { keep, items, review, reason };
     } else {
       const eff = group.filter((s) => isEfficient(s.vc)).sort(byQuality);
       if (!eff.length) {
@@ -1042,7 +1149,9 @@
     if (ok("details")) { const x = first((s) => s.details); if (x !== undefined) v.details = x; }
     if (ok("director")) { const x = first((s) => s.director); if (x !== undefined) v.director = x; }
     if (ok("date")) { const x = first((s) => s.date); if (x !== undefined) v.date = x; }
-    if (ok("rating100")) { const x = first((s) => s.rating100); if (x !== undefined) v.rating100 = x; }
+    // 2.13: the higher rating when both are rated (the kept one's alone was
+    // kept up to 2.12; the user wants the better score to survive)
+    if (ok("rating100")) { const r = all.map((s) => s.rating100).filter((x) => typeof x === "number"); if (r.length) v.rating100 = Math.max(...r); }
     if (ok("studio_id")) { const x = first((s) => s.studio && s.studio.id); if (x !== undefined) v.studio_id = String(x); }
     if (ok("organized")) v.organized = all.some((s) => s.organized);
     if (ok("tag_ids")) v.tag_ids = uniq(all.flatMap((s) => (s.tags || []).map((t) => t.id)));
@@ -1065,7 +1174,96 @@
       }
       v.stash_ids = [...seen.values()];
     }
+    // 2.13. sceneMerge moves the play and O history but not these two: the
+    // resume point is the kept one's unless it has none; time played adds up.
+    if (ok("resume_time")) { const x = first((s) => (s.resume_time > 0 ? s.resume_time : undefined)); if (x !== undefined) v.resume_time = x; }
+    if (ok("play_duration") && all.some((s) => s.play_duration > 0)) v.play_duration = all.reduce((n, s) => n + (s.play_duration > 0 ? s.play_duration : 0), 0);
+    // the kept file stays the one Stash plays (the copies' files come over first)
+    if (ok("primary_file_id") && keep.files && keep.files[0] && keep.files[0].id) v.primary_file_id = String(keep.files[0].id);
+    // custom fields: only keys the kept scene does not have, added (partial)
+    if (ok("custom_fields")) {
+      const own = keep.custom_fields && typeof keep.custom_fields === "object" ? keep.custom_fields : {};
+      const add = {};
+      for (const s of drops) for (const [k, x] of Object.entries(s.custom_fields && typeof s.custom_fields === "object" ? s.custom_fields : {})) {
+        if (!(k in own) && !(k in add) && x !== null && x !== undefined && x !== "") add[k] = x;
+      }
+      if (Object.keys(add).length) v.custom_fields = { partial: add };
+    }
     return v;
+  }
+
+  // 2.13: what a merge will do, worked out before it runs, so the user sees
+  // it ("Keeps A (1080p H264). Moves 3 markers, rating 4, 2 O's, 5 plays
+  // and 2 tags from B (720p HEVC), then deletes B's file."). keep and drops
+  // are Stash scenes (GraphQL shape: o_counter, play_count, scene_markers,
+  // tags, files { width height video_codec }...). `have` as mergeValues.
+  // Returns { values, moves: {...}, text, parts }.
+  function mergePlan(keep, drops, have, opts = {}) {
+    const values = mergeValues(keep, drops, have);
+    const ids = (s, k) => (s[k] || []).map((x) => String(x.id));
+    const extra = (k) => { const own = new Set(ids(keep, k)); return new Set(drops.flatMap((s) => ids(s, k)).filter((x) => !own.has(x))).size; };
+    const sum = (f) => drops.reduce((n, s) => n + (Number(f(s)) || 0), 0);
+    const empty = (x) => x === null || x === undefined || x === "";
+    const filled = ["title", "code", "details", "director", "date"].filter((f) => empty(keep[f]) && !empty(values[f]));
+    if (empty(keep.studio && keep.studio.id) && values.studio_id) filled.push("studio");
+    const ratings = drops.map((s) => s.rating100).filter((x) => typeof x === "number");
+    let rating = null;
+    if (ratings.length && typeof values.rating100 === "number" && values.rating100 !== keep.rating100) {
+      rating = { from: keep.rating100 ?? null, to: values.rating100,
+                 note: typeof keep.rating100 === "number" ? tc(`两份都有评分；保留较高的 ${stars(values.rating100)}`, `both were rated; the higher, ${stars(values.rating100)}, is kept`) : "" };
+    }
+    const moves = {
+      markers: sum((s) => (s.scene_markers || []).length), o: sum((s) => s.o_counter), plays: sum((s) => s.play_count),
+      tags: extra("tags"), performers: extra("performers"), galleries: extra("galleries"),
+      groups: (values.groups || []).length - (keep.groups || []).length,
+      stashIds: (values.stash_ids || []).length - (keep.stash_ids || []).length,
+      urls: (values.urls || []).length - (keep.urls || []).length,
+      organized: !keep.organized && !!values.organized, rating, filled,
+    };
+    const n = (x, zh, w, ws = `${w}s`) => tc(`${x} ${zh}`, `${x} ${x === 1 ? w : ws}`);
+    const FIELD_ZH = { title: "标题", code: "编号", details: "详情", director: "导演", date: "日期", studio: "工作室" };
+    const parts = [];
+    if (moves.markers) parts.push(n(moves.markers, "个标记", "marker"));
+    if (rating) parts.push(tc(`评分 ${stars(rating.to)}`, `rating ${stars(rating.to)}`));
+    if (moves.o && !opts.noO) parts.push(n(moves.o, "次 O", "O", "O's"));
+    if (moves.plays) parts.push(n(moves.plays, "次播放", "play"));
+    if (moves.tags) parts.push(n(moves.tags, "个标签", "tag"));
+    if (moves.performers) parts.push(n(moves.performers, "位演员", "performer"));
+    if (moves.galleries) parts.push(n(moves.galleries, "个图库", "gallery", "galleries"));
+    if (moves.groups > 0) parts.push(n(moves.groups, "个合集", "group"));
+    if (moves.stashIds > 0) parts.push(n(moves.stashIds, "条 stash-box 关联", "stash-box link"));
+    if (moves.urls > 0) parts.push(n(moves.urls, "个链接", "URL", "URLs"));
+    if (filled.length) parts.push(tc(`补全${filled.map((f) => FIELD_ZH[f]).join("、")}`, `the ${filled.join(", ")}`));
+    if (moves.organized) parts.push(tc("已整理标记", "the organized mark"));
+    const name = (s) => s.title || ((s.files || [])[0] || {}).basename || tc(`场景 ${s.id}`, `scene ${s.id}`);
+    const desc = (s) => { const f = (s.files || [])[0] || {}; return [resBucket(f.width, f.height), f.video_codec ? codecName(f.video_codec) : ""].filter(Boolean).join(" "); };
+    const label = (s) => `${name(s)}${desc(s) ? ` (${desc(s)})` : ""}`;
+    const list = (xs) => (xs.length < 2 ? xs.join("") : tc(`${xs.slice(0, -1).join("、")}和${xs[xs.length - 1]}`, `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`));
+    const from = list(drops.map(label));
+    const whose = drops.length === 1 ? tc(`${name(drops[0])} 的文件`, `${name(drops[0])}'s file`) : tc("它们各自的文件", "their files");
+    const text = tc(
+      `保留 ${label(keep)}。${parts.length ? `从 ${from} 转移 ${list(parts)}` : `没有可从 ${from} 转移的内容`}，然后删除 ${whose}。` +
+        (rating && rating.note ? ` 两份评分不同：${rating.note}。` : ""),
+      `Keeps ${label(keep)}. ${parts.length ? `Moves ${list(parts)} from ${from}` : `Nothing to move from ${from}`}, then deletes ${whose}.` +
+        (rating && rating.note ? ` The ratings differ: ${rating.note}.` : "")
+    );
+    return { values, moves, text, parts };
+  }
+  // rating100 as stars, the way Stash shows five: 80 is 4, 70 is 3.5
+  function stars(r) { const x = Math.round((r / 20) * 10) / 10; return String(x); }
+
+  // 2.13: one line of the merge history (Suite Data key dupLog), newest
+  // first, capped; whatever is stored and cannot be read is replaced only
+  // by refusing (rule 5: the write throws, nothing is lost).
+  const DUP_LOG_MAX = 200;
+  function parseDupLog(raw) {
+    if (raw === undefined || raw === null || raw === "") return [];
+    try { const v = typeof raw === "string" ? JSON.parse(raw) : raw; return Array.isArray(v) ? v : null; } catch (_) { return null; }
+  }
+  function withDupLog(mine, entries) {
+    const stored = parseDupLog(mine.dupLog);
+    if (stored === null) throw new Error(tc("无法读取已存储的合并历史，已保持原样", "the stored merge history could not be read; left as it was"));
+    return { ...mine, dupLog: JSON.stringify(entries.concat(stored).slice(0, DUP_LOG_MAX)) };
   }
 
   // Files not in HEVC or AV1 yet, with what they would take at this
@@ -1658,7 +1856,7 @@
       countryCode, codecName, containerName, resBucket, fpsBucket, shapeOf, percentile, fileStats, upgrades, spaceHogs,
       healthScore, gradeOf, rawAge, dateConflicts, sameNames, futureDates, growth, tagCounts, coTags, networks,
       pairs, newFaces, ageCounts, notable, nonstop,
-      isEfficient, dupChoose, mergeValues, notEfficient, isOrdinal, ordinalKey, strength, rankTraits, liftPos,
+      isEfficient, dupChoose, dupPick, mergePlan, parseDupLog, withDupLog, DUP_LOG_MAX, CODEC_EFF, picQuality, stars, mergeValues, notEfficient, isOrdinal, ordinalKey, strength, rankTraits, liftPos,
       sceneTotals, totalsMatch, activityDiff, mergeScenes, parseLockdown, lockdownModel,
       codecTier, isPoor, tierColor, TIER_COLOR, audioColor, RES_COLOR, CODEC_RANK, nextConfig, withWatch, moviesRenamed,
       mvUrl, toolkitTab, refreshStash,
@@ -1963,9 +2161,15 @@
 
   // Stash's own phash match, exact, run only when asked: it is the one
   // heavy query here. duration_diff is newer than findDuplicateScenes.
+  // 2.13: also what the keep rules and the merge preview need (frame rate,
+  // organized, stash-box links, created_at, the lists and markers), ids only.
+  const DUP_WANT = ["id", "title", "o_counter", "play_count", "paths { screenshot }", "rating100", "organized", "created_at",
+    "code", "details", "director", "date", "urls", "resume_time", "play_duration", "studio { id }", "tags { id }", "performers { id }",
+    "galleries { id }", "groups { group { id } scene_index }", "stash_ids { endpoint stash_id }", "scene_markers { id }"];
   async function loadDuplicates() {
-    const ff = pick(await fieldsOf("VideoFile"), ["id", "size", "width", "height", "video_codec", "bit_rate", "duration", "basename"]);
-    const q = (diff) => `query { findDuplicateScenes(distance: 0${diff ? ", duration_diff: 1" : ""}) { id title o_counter play_count paths { screenshot } files { ${ff} } } }`;
+    const ff = pick(await fieldsOf("VideoFile"), ["id", "size", "width", "height", "video_codec", "bit_rate", "duration", "frame_rate", "basename"]);
+    const sf = pick(await fieldsOf("Scene"), DUP_WANT) || "id title o_counter play_count paths { screenshot }";
+    const q = (diff) => `query { findDuplicateScenes(distance: 0${diff ? ", duration_diff: 1" : ""}) { ${sf} files { ${ff} } } }`;
     let d;
     try { d = await gql(q(true)); } catch (_) { d = await gql(q(false)); }
     return (d?.findDuplicateScenes || []).map((g) => g.map((s) => {
@@ -1973,7 +2177,8 @@
       return { id: String(s.id), title: s.title || f.basename || tc(`场景 ${s.id}`, `Scene ${s.id}`), o: s.o_counter || 0, plays: s.play_count || 0,
                shot: s.paths?.screenshot || null, fsize: (s.files || []).reduce((a, x) => a + (x.size || 0), 0),
                w: f.width || 0, h: f.height || 0, vc: f.video_codec || "", br: f.bit_rate || 0, dur: f.duration || 0,
-               fid: f.id ? String(f.id) : null, nfiles: (s.files || []).length };
+               fps: f.frame_rate || 0, organized: !!s.organized, linked: (s.stash_ids || []).length > 0, created: s.created_at || null,
+               fid: f.id ? String(f.id) : null, nfiles: (s.files || []).length, raw: s };
     }));
   }
 
@@ -1994,7 +2199,8 @@
 
   const MERGE_WANT = ["id", "title", "code", "details", "director", "date", "rating100", "organized", "urls", "studio { id }",
     "tags { id }", "performers { id }", "galleries { id }", "groups { group { id } scene_index }", "stash_ids { endpoint stash_id }",
-    "files { id }"];
+    "files { id basename width height video_codec }", "o_counter", "play_count", "resume_time", "play_duration", "custom_fields",
+    "o_history", "play_history", "scene_markers { id title seconds end_seconds primary_tag { id } tags { id } }"];
   // Everything a merge carries over, read fresh at the moment of the merge
   // (not from the scan, which may be minutes old).
   async function loadForMerge(ids) {
@@ -2022,11 +2228,69 @@
       return fileIds.length;
     }
     const have = await inputFieldsOf("SceneUpdateInput");
-    const values = mergeValues(k, ds, have.size ? have : null);
+    const plan = mergePlan(k, ds, have.size ? have : null, { noO: !!(app.model && app.model.noO) });
     await gql(`mutation ($i: SceneMergeInput!) { sceneMerge(input: $i) { id } }`,
-              { i: { source: ds.map((x) => String(x.id)), destination: String(k.id), values, play_history: true, o_history: true } });
+              { i: { source: ds.map((x) => String(x.id)), destination: String(k.id), values: plan.values, play_history: true, o_history: true } });
+    // 2.13: check what arrived before any file is deleted. Stash's merge
+    // moves markers and both histories itself (pkg/scene/merge.go); if one
+    // fell short, the missing markers are made again from what was read
+    // before the merge and the missing O's and plays added, so nothing the
+    // copies had is lost even on a Stash that merges differently.
+    const fixed = await settleMerge(k, ds);
     if (fileIds.length) await gql(`mutation ($ids: [ID!]!) { deleteFiles(ids: $ids) }`, { ids: fileIds });
+    await logMerge(k, ds, plan, fixed, fileIds.length);
     return fileIds.length;
+  }
+
+  async function settleMerge(k, ds) {
+    const sf = pick(await fieldsOf("Scene"), ["id", "o_counter", "play_count", "scene_markers { id title seconds end_seconds primary_tag { id } }"]);
+    const after = (await gql(`query ($id: ID!) { findScene(id: $id) { ${sf} } }`, { id: String(k.id) }))?.findScene;
+    if (!after) throw new Error(tc("合并后无法读取保留的场景，未删除任何文件", "the kept scene could not be read after the merge; no file was deleted"));
+    const fixed = { markers: 0, o: 0, plays: 0 };
+    const key = (m) => `${Math.round((m.seconds || 0) * 10)}|${(m.title || "").trim().toLowerCase()}|${m.primary_tag ? m.primary_tag.id : ""}`;
+    if (Array.isArray(after.scene_markers)) {
+      const there = new Map();
+      for (const m of after.scene_markers) there.set(key(m), (there.get(key(m)) || 0) + 1);
+      for (const m of k.scene_markers || []) { const c = there.get(key(m)); if (c) there.set(key(m), c - 1); }
+      for (const d of ds) for (const m of d.scene_markers || []) {
+        const c = there.get(key(m));
+        if (c) { there.set(key(m), c - 1); continue; }
+        if (!m.primary_tag) continue;   // Stash needs one; never seen without
+        const i = { scene_id: String(k.id), title: m.title || "", seconds: m.seconds || 0, primary_tag_id: String(m.primary_tag.id),
+                    tag_ids: (m.tags || []).map((t) => String(t.id)) };
+        if (m.end_seconds !== null && m.end_seconds !== undefined) i.end_seconds = m.end_seconds;
+        await gql(`mutation ($i: SceneMarkerCreateInput!) { sceneMarkerCreate(input: $i) { id } }`, { i });
+        fixed.markers += 1;
+      }
+    }
+    const want = (f) => [k].concat(ds).reduce((n, s) => n + (Number(s[f]) || 0), 0);
+    const short = (f) => (typeof after[f] === "number" ? Math.max(0, want(f) - after[f]) : 0);
+    const dates = (f, n) => ds.flatMap((s) => s[f] || []).sort().slice(-n);
+    const oShort = short("o_counter"), pShort = short("play_count");
+    if (oShort) {
+      const t = dates("o_history", oShort);
+      await gql(`mutation ($id: ID!, $t: [Timestamp!]) { sceneAddO(id: $id, times: $t) { count } }`, { id: String(k.id), t: t.length === oShort ? t : null });
+      fixed.o = oShort;
+    }
+    if (pShort) {
+      const t = dates("play_history", pShort);
+      await gql(`mutation ($id: ID!, $t: [Timestamp!]) { sceneAddPlay(id: $id, times: $t) { count } }`, { id: String(k.id), t: t.length === pShort ? t : null });
+      fixed.plays = pShort;
+    }
+    if (fixed.markers || fixed.o || fixed.plays) log(`Merge into ${k.id} topped up: ${JSON.stringify(fixed)}`);
+    return fixed;
+  }
+
+  // One entry per group in the merge history (Suite Data key dupLog), so
+  // the user can see later what moved where. Never fatal: the merge is done.
+  async function logMerge(k, ds, plan, fixed, files) {
+    const entry = { at: new Date().toISOString(), keep: { id: String(k.id), title: k.title || ((k.files || [])[0] || {}).basename || "" },
+      gone: ds.map((s) => ({ id: String(s.id), title: s.title || ((s.files || [])[0] || {}).basename || "", file: ((s.files || [])[0] || {}).basename || "" })),
+      text: plan.text, moves: plan.moves, fixed, files };
+    try {
+      const saved = await updateConfig((mine) => withDupLog(mine, [entry]));
+      if (saved) app.config = saved;
+    } catch (e) { log(`Merge history not saved: ${e.message}`, "error"); }
   }
 
   // After a write that changes what Stash shows, Stash's own pages refetch
@@ -2870,7 +3134,7 @@
 .ins-progress { padding: 50px 0; text-align: center; color: var(--tx2); }
 .ins-progress .bar { width: 260px; max-width: 80%; height: 6px; margin: 14px auto 0; background: var(--bg2); border-radius: 3px; overflow: hidden;
   box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); }
-.ins-upd.busy { color: var(--cy); }
+.ins-upd.busy { color: var(--sx-cy-tx); }
 .ins-upd.busy::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--cy);
   vertical-align: 1px; animation: insPulse 1s ease-in-out infinite alternate; }
 @keyframes insPulse { from { opacity: .25; } to { opacity: 1; } }
@@ -2909,7 +3173,7 @@
 .ins-tile .l .ins-ic { color: var(--c); }
 .ins-tile .v { font-size: 25px; font-weight: 700; line-height: 1.2; margin: 4px 0 2px; color: var(--hi); font-variant-numeric: tabular-nums; }
 .ins-tile .s { color: var(--tx1b); font-size: 12px; }
-.ins-tile .s .warn { color: var(--ye); }
+.ins-tile .s .warn { color: var(--sx-ye-tx); }
 .ins-tile.click { cursor: pointer; } .ins-tile.click:hover { border-top-color: var(--tx3); }
 
 .ins-well { background: var(--bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); border-radius: 10px; padding: 10px 12px;
@@ -2932,7 +3196,7 @@
 .ins-bar.hi i { background: var(--sx-ma-l); background: color-mix(in srgb, var(--c, var(--acc)) 55%, var(--sx-paper)); }
 .ins-bar.click { cursor: pointer; } .ins-bar.click:hover i { filter: brightness(1.22); }
 .ins-bar em { font-style: normal; font-size: 10.5px; color: var(--tx1b); margin-bottom: 3px; white-space: nowrap; font-variant-numeric: tabular-nums; line-height: 1; }
-.ins-bar.zero em { color: var(--tx3); }
+.ins-bar.zero em { color: var(--tx2); }
 .ins-bar.future i { background: transparent; } .ins-bar.future em { visibility: hidden; }
 .ins-xl { display: flex; gap: 3px; margin-top: 5px; }
 .ins-xl span { flex: 1; min-width: 0; text-align: center; font-size: 10.5px; color: var(--tx2); white-space: nowrap; overflow: hidden; text-overflow: clip; }
@@ -2966,7 +3230,7 @@
 .ins-strip { display: flex; flex-wrap: wrap; gap: 8px 26px; margin-bottom: 14px; padding: 12px 16px; }
 .ins-strip span { color: var(--tx2b); margin-right: 6px; letter-spacing: .06em; font-size: 11px; }
 .ins-strip b { color: var(--hi); font-weight: 500; }
-.ins-strip .warn b { color: var(--ye); }
+.ins-strip .warn b { color: var(--sx-ye-tx); }
 .ins-li { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 8px; margin: 0 -8px;
   border-radius: 7px; min-height: 40px; }
 .ins-li + .ins-li { border-top: 1px solid var(--ins-div2); }
@@ -3047,7 +3311,7 @@
 .ins-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 6px; font-size: 12px; background: var(--bg2);
   border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); color: var(--tx1b); cursor: pointer; }
 .ins-pill:hover { color: var(--hi); }
-.ins-go { color: var(--bl); font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.ins-go { color: var(--sx-bl-tx); font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .ins-go .ins-ic { width: 13px; height: 13px; }
 .ins-go:hover { color: var(--sx-bl-tx); }
 .ins-cc { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 18px; padding: 0 4px; border-radius: 3px;
@@ -3075,7 +3339,7 @@
 .ins-lr { display: grid; grid-template-columns: 26px minmax(110px, 210px) minmax(140px, 1fr) 170px 52px; gap: 12px; align-items: center;
   min-height: 32px; padding: 2px 8px; border-radius: 7px; font-size: 13px; }
 .ins-lr.click { cursor: pointer; } .ins-lr.click:hover { background: rgba(255,255,255,.04); }
-.ins-lr .rk { text-align: right; color: var(--tx3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ins-lr .rk { text-align: right; color: var(--tx2); font-size: 11px; font-variant-numeric: tabular-nums; }
 .ins-lr .l { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; white-space: nowrap; }
 .ins-lr .l span { overflow: hidden; text-overflow: ellipsis; }
 .ins-lr .nums { color: var(--tx2); font-size: 12px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -3116,11 +3380,17 @@
 .ins-dups { max-height: 560px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ui3) transparent; }
 .ins-dg { padding: 6px 0; } .ins-dg + .ins-dg { border-top: 1px solid var(--ins-div1); }
 .ins-dg.review { background: color-mix(in srgb, var(--ye) 6%, transparent); border-radius: 8px; padding: 6px 6px; }
-.ins-dg .why { color: var(--ye); font-size: 12px; display: flex; align-items: center; gap: 6px; margin: 0 0 4px 30px; }
+.ins-dg .why { color: var(--sx-ye-tx); font-size: 12px; display: flex; align-items: center; gap: 6px; margin: 0 0 4px 30px; }
 .ins-cp { display: grid; grid-template-columns: 20px 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 34px; font-size: 12.5px; }
 .ins-cp .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ins-cp .m { color: var(--tx2); }
 .ins-cp .v { text-align: right; color: var(--tx2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 2.13: why this copy goes, and what the merge moves (aligned under the title) */
+.ins-dg .pick, .ins-dg .plan { color: var(--tx2); font-size: 12px; margin: 1px 0 3px 88px; overflow-wrap: anywhere; }
+.ins-dg .pick em { color: var(--tx3); font-style: normal; }
+.ins-dg .plan { color: var(--tx); margin-top: 4px; }
+.ins-dlog { margin-top: 10px; } .ins-dlog > div { font-size: 12px; color: var(--tx2); padding: 4px 0; } .ins-dlog > div + div { border-top: 1px solid var(--ins-div1); }
+@media (max-width: 576px) { .ins-dg .pick, .ins-dg .plan { margin-left: 30px; } }
 .ins-k { display: inline-block; min-width: 54px; text-align: center; font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 1px 6px; border-radius: 6px; margin-right: 8px; }
 .ins-k.keep { background: var(--ins-up-bg); color: var(--up); } .ins-k.del { background: var(--ins-down-bg); color: var(--down); } .ins-k.look { background: var(--ins-warn-bg); color: var(--ye); }
 .ins-bx { width: 16px; height: 16px; border-radius: 5px; border: 1px solid var(--tx3); background: var(--bg2); cursor: pointer; padding: 0; position: relative;
@@ -3144,11 +3414,11 @@
 .ins-mvh i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .ins-mvh b { color: var(--hi); font-weight: 600; }
 .ins-mvh .ins-go { margin-left: auto; }
-.ins-miss { color: var(--ye); }
+.ins-miss { color: var(--sx-ye-tx); }
 @media (max-width: 900px) { .ins-ww { grid-template-columns: minmax(0, 1fr); } .ins-side { position: static; flex-direction: row; flex-wrap: wrap; gap: 4px; }
   .ins-side .h { width: 100%; } .ins-lr { grid-template-columns: 22px minmax(90px, 140px) minmax(80px, 1fr) 48px; } .ins-lr .nums { display: none; }
   .ins-sr { grid-template-columns: minmax(90px, 150px) minmax(0, 1fr) 70px; } .ins-sr .p, .ins-sr .n { display: none; } }
-.ins-foot { color: var(--tx3); font-size: 11px; text-align: center; padding: 4px 0 8px; }
+.ins-foot { color: var(--tx2); font-size: 11px; text-align: center; padding: 4px 0 8px; }
 #ins-tip { position: fixed; z-index: 2000; pointer-events: none; background: var(--sx-bg2); border: 1px solid var(--sx-ui3); color: var(--sx-hi);
   border-radius: 8px; padding: 7px 10px; font-size: 12px; line-height: 1.5; max-width: 320px; box-shadow: 0 10px 28px rgba(0,0,0,calc(.6*var(--sx-k)));
   display: none; white-space: pre-line; }
@@ -3178,13 +3448,13 @@
 .ins-hqh { color: var(--hi); font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
 .ins-hqr { display: grid; grid-template-columns: 150px minmax(0, 1fr) 160px; gap: 10px; align-items: center; font-size: 12px; color: var(--tx2); padding: 3px 0; }
 .ins-hqr b { color: var(--tx); font-weight: 500; }
-.ins-hqr.running span:first-of-type { color: var(--cy); } .ins-hqr.done span { color: var(--up); } .ins-hqr.error span, .ins-hqr.lost span { color: var(--down); }
+.ins-hqr.running span:first-of-type { color: var(--sx-cy-tx); } .ins-hqr.done span { color: var(--up); } .ins-hqr.error span, .ins-hqr.lost span { color: var(--down); }
 .ins-hubgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
 .ins-hk { padding: 10px 12px 8px; display: flex; flex-direction: column; min-width: 0; }
 .ins-hk.loading { opacity: .75; }
 .ins-hkh { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
 .ins-hkh b { color: var(--hi); font-size: 14px; font-weight: 600; }
-.ins-hkw { color: var(--tx2); font-size: 12px; flex: 1; min-width: 0; } .ins-hkw.busy { color: var(--cy); }
+.ins-hkw { color: var(--tx2); font-size: 12px; flex: 1; min-width: 0; } .ins-hkw.busy { color: var(--sx-cy-tx); }
 .ins-hkbar { display: block; height: 6px; border-radius: 3px; background: var(--ui); box-shadow: inset 0 1px 2px rgba(0,0,0,calc(.6*var(--sx-k))); overflow: hidden; margin: 0 0 8px; }
 .ins-hqr .ins-hkbar { margin: 0; }
 .ins-hkbar i { display: block; height: 100%; background: var(--cy); border-radius: 3px; box-shadow: inset 0 1px 0 rgba(255,255,255,.2); transition: width .3s; }
@@ -3223,10 +3493,10 @@
 .ins-hchk { display: inline-flex; font-style: normal; } .ins-hchk .ins-ic { width: 13px; height: 13px; }
 .ins-hchip.on .ins-hchk { color: var(--c); }
 .ins-hchip.busy { cursor: default; border-style: dashed; border-color: var(--ui3); }
-.ins-hchip em { font-style: normal; font-size: 11px; color: var(--cy); }
+.ins-hchip em { font-style: normal; font-size: 11px; color: var(--sx-cy-tx); }
 .ins-hchip:disabled:not(.busy) { opacity: .6; cursor: default; }
 .ins-hpq { display: inline-flex; gap: 4px; margin-left: 4px; }
-.ins-hlink { background: none; border: 0; color: var(--bl); font-size: 12px; padding: 8px 6px; cursor: pointer; border-radius: 6px; }
+.ins-hlink { background: none; border: 0; color: var(--sx-bl-tx); font-size: 12px; padding: 8px 6px; cursor: pointer; border-radius: 6px; }
 .ins-hlink:hover:not(:disabled) { color: var(--sx-bl-tx); } .ins-hlink:disabled { opacity: .5; cursor: default; }
 .ins-hpn { margin: 2px 0 12px; }
 @media (max-width: 576px) {
@@ -3426,7 +3696,7 @@
   // Actions state: the last duplicate scan and what the user ticked. A
   // refresh starts it over (the scan would describe the old library).
   function freshActs() {
-    return { dups: null, state: "idle", err: "", mode: "hevc", merge: true, sharp: true, ticks: new Map(), armed: false,
+    return { dups: null, state: "idle", err: "", mode: "best", merge: true, showLog: false, sharp: true, ticks: new Map(), armed: false,
              run: null, showAll: false, scanned: 0, msg: "", tagMsg: "", phashMsg: "" };
   }
 
@@ -4282,9 +4552,28 @@
         if (on) { files += 1; bytes += it.s.fsize || 0; any = true; }
       }
       if (p.review) review += 1; else if (any) ready += 1;
+      // 2.13: what removing the ticked copies will do, in words
+      const on = p.items.filter((i) => i.on);
+      p.plan = null;
+      if (on.length && a.merge && p.keep.raw && on.every((i) => i.s.raw)) {
+        try { p.plan = mergePlan(p.keep.raw, on.map((i) => i.s.raw), null, { noO: !!(app.model && app.model.noO) }).text; } catch (e) { log(`Merge preview failed: ${e.message}`); }
+      } else if (on.length && !a.merge) {
+        p.plan = tc(`保留 ${p.keep.title}。删除 ${on.length === 1 ? `${on[0].s.title} 及其文件` : `${on.length} 份副本及其文件`}；不转移任何内容。`, `Keeps ${p.keep.title}. Deletes ${on.length === 1 ? `${on[0].s.title} and its file` : `${on.length} copies and their files`}; nothing moves over.`);
+      }
     }
     plans.sort((x, y) => (x.review ? 1 : 0) - (y.review ? 1 : 0) || y.items.reduce((n, i) => n + (i.on ? i.s.fsize : 0), 0) - x.items.reduce((n, i) => n + (i.on ? i.s.fsize : 0), 0));
     return { plans, files, bytes, ready, review };
+  }
+
+  // 2.13: the merge history (Suite Data key dupLog): what each removal
+  // moved where. Closed by default; the newest 30 when open.
+  function dupLogHtml() {
+    const all = parseDupLog(app.config && app.config.dupLog) || [];
+    if (!all.length) return "";
+    const a = app.acts;
+    const when = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? ago(t) : ""; };
+    return `<div class="ins-dlog"><button class="ins-chip" data-set="acts.showLog=${a.showLog ? "false" : "true"}">${a.showLog ? tc("隐藏", "hide") : tc("显示", "show")}${tc("合并历史（", " the merge history (")}${fmtN(all.length)}${tc("）", ")")}</button>
+      ${a.showLog ? all.slice(0, 30).map((e) => `<div><b style="color:var(--tx)">${esc(when(e.at))}</b> · <span class="ins-go" data-go="/scenes/${esc(e.keep && e.keep.id)}">${tc("场景", "scene")} ${esc(e.keep && e.keep.id)}</span> · ${esc(e.text || "")}${e.fixed && (e.fixed.markers || e.fixed.o || e.fixed.plays) ? ` <em>${tc("（Insights 补上了 Stash 合并时遗漏的 ", "(Insights added ")}${esc([e.fixed.markers ? tc(`${e.fixed.markers} 个标记`, `${e.fixed.markers} markers`) : "", e.fixed.o ? tc(`${e.fixed.o} 次 O`, `${e.fixed.o} O's`) : "", e.fixed.plays ? tc(`${e.fixed.plays} 次播放`, `${e.fixed.plays} plays`) : ""].filter(Boolean).join(tc("、", ", ")))}${tc("）", ")")}</em>` : ""}</div>`).join("") : ""}</div>`;
   }
 
   function renderActions(el) {
@@ -4310,7 +4599,7 @@
     else if (a.state === "error" && !a.dups) dupBody = `<div class="ins-error">${tc(`Stash 无法执行匹配：${esc(a.err)}`, `Stash could not run the match: ${esc(a.err)}`)}</div>`;
     else if (!a.dups) dupBody = `<div style="text-align:center;padding:16px 0 8px"><div style="color:var(--tx2);margin-bottom:12px">${tc("用 Stash 的 phash 匹配找出完全相同的副本，再为每一组挑出要保留的那份。", "Finds exact copies with Stash's phash match, then picks the copy to keep in each group.")}</div>
       <button class="ins-btn big" data-act="dups">${ic("search")} ${tc("查找重复项", "Find duplicates")}</button>
-      ${fs.noPhash ? `<div class="ins-note">${tc(`有 ${plural(fs.noPhash, "file")} 还没有 phash，无法匹配；请先在下面生成。`, `${plural(fs.noPhash, "file")} have no phash yet and cannot be matched; generate them below first.`)}</div>` : ""}</div>`;
+      ${fs.noPhash ? `<div class="ins-note">${tc(`有 ${plural(fs.noPhash, "file")} 还没有 phash，无法匹配；请先在下面生成。`, `${plural(fs.noPhash, "file")} have no phash yet and cannot be matched; generate them below first.`)}</div>` : ""}</div>${dupLogHtml()}`;
     else {
       const run = a.run;
       // only a cleanup in progress locks the controls; a finished one does not
@@ -4320,17 +4609,18 @@
       const item = (it, keep) => `<div class="ins-cp">${keep ? "<span></span>" : `<button class="ins-bx${it.on ? " on" : ""}" data-act="dtick" data-id="${esc(it.s.id)}" ${busy ? "disabled" : ""} aria-label="${tc("移除这份副本", "Remove this copy")}"></button>`}
         ${thumb(it.s)}<span class="t"><span class="ins-k ${keep ? "keep" : it.on ? "del" : "look"}">${keep ? tc("保留", "KEEP") : it.on ? tc("删除", "REMOVE") : tc("查看", "LOOK")}</span>
         <span class="ins-go" data-go="/scenes/${esc(it.s.id)}" style="color:var(--tx)">${esc(it.s.title)}</span>
-        <span class="m"> · ${esc(codecName(it.s.vc))} ${esc(resOf(it.s))} · ${fmtBytes(it.s.fsize)}${it.s.o && !m.noO ? ` · ${os(it.s.o)}` : ""}${!keep && it.why ? ` · ${esc(it.why)}` : ""}${!keep && it.on && a.merge && (it.s.o || it.s.plays) ? tc(" · 历史会移过来", " · history moves over") : ""}</span></span>
-        <span class="v">${keep ? tc(`场景 ${esc(it.s.id)}`, `scene ${esc(it.s.id)}`) : it.on ? `<b style="color:var(--down)">${fmtBytes(it.s.fsize)}</b>` : tc("保留", "kept")}</span></div>`;
+        <span class="m"> · ${esc(codecName(it.s.vc))} ${esc(resOf(it.s))} · ${fmtBytes(it.s.fsize)}${it.s.o && !m.noO ? ` · ${os(it.s.o)}` : ""}</span></span>
+        <span class="v">${keep ? tc(`场景 ${esc(it.s.id)}`, `scene ${esc(it.s.id)}`) : it.on ? `<b style="color:var(--down)">${fmtBytes(it.s.fsize)}</b>` : tc("保留", "kept")}</span></div>
+        ${!keep && it.why ? `<div class="pick">${esc(it.why)}${it.note ? ` <em>· ${esc(it.note)}</em>` : ""}</div>` : ""}`;
       const shown = D.plans.slice(0, a.showAll ? 400 : 25);
-      dupBody = `<div class="ins-opts"><span>${tc("保留", "Keep")}</span><span class="ins-seg">${seg("hevc", tc("HEVC 或 AV1", "HEVC or AV1"))}${seg("best", tc("画质最佳", "Best quality"))}${seg("smallest", tc("最小", "Smallest"))}</span>
-          ${tog("merge", m.noO ? tc("先把播放、标签和演员移到保留的场景", "Move plays, tags and performers to the kept scene first") : tc("先把 O、播放、标签和演员移到保留的场景", "Move O's, plays, tags and performers to the kept scene first"))}
+      dupBody = `<div class="ins-opts"><span>${tc("保留", "Keep")}</span><span class="ins-seg">${seg("best", tc("最佳（以 1080p 为目标）", "Best, 1080p target"))}${seg("hevc", tc("HEVC 或 AV1", "HEVC or AV1"))}${seg("smallest", tc("最小", "Smallest"))}</span>
+          ${tog("merge", m.noO ? tc("先把标记、播放、评分、标签和演员移到保留的场景", "Move markers, plays, rating, tags and performers to the kept scene first") : tc("先把标记、O、播放、评分、标签和演员移到保留的场景", "Move markers, O's, plays, rating, tags and performers to the kept scene first"))}
           ${a.mode === "hevc" ? tog("sharp", tc("仅当 HEVC/AV1 副本至少一样清晰", "Only if the HEVC/AV1 copy is at least as sharp")) : ""}</div>
         <div class="ins-con ins-sum"><span><em>${tc("分组", "GROUPS")}</em><b>${fmtN(D.plans.length)}</b></span><span><em>${tc("可清理", "READY")}</em><b style="color:var(--up)">${fmtN(D.ready)}</b></span>
           <span><em>${tc("待移除", "TO REMOVE")}</em><b style="color:var(--down)">${plural(D.files, "file")} · ${fmtBytes(D.bytes)}</b></span><span><em>${tc("需查看", "NEEDS A LOOK")}</em><b style="color:var(--ye)">${fmtN(D.review)}</b></span>
           <span style="margin-left:auto"><button class="ins-chip" data-act="dups" ${busy ? "disabled" : ""}>${tc("重新扫描", "scan again")}</button></span></div>
         ${D.plans.length ? `<div class="ins-well ins-dups">${shown.map((p) => `<div class="ins-dg${p.review ? " review" : ""}">${p.review ? `<div class="why">${ic("alert")} ${esc(p.reason)}</div>` : ""}
-          ${item({ s: p.keep }, true)}${p.items.map((it) => item(it, false)).join("")}</div>`).join("")}</div>
+          ${item({ s: p.keep }, true)}${p.items.map((it) => item(it, false)).join("")}${p.plan ? `<div class="plan">${esc(p.plan)}</div>` : ""}</div>`).join("")}</div>
           ${D.plans.length > shown.length ? `<div class="ins-note"><button class="ins-chip" data-set="acts.showAll=true">${tc(`显示全部 ${plural(D.plans.length, "group")}`, `show all ${fmtN(D.plans.length)} groups`)}</button></div>` : ""}`
           : `<div class="ins-empty">${ic("check")} ${tc("有 phash 的文件里没有完全重复的。", "No exact duplicates among files that have a phash.")}</div>`}
         ${run ? `<div class="ins-run"><div class="bar"><i style="width:${(run.done / Math.max(1, run.total) * 100).toFixed(1)}%"></i></div>
@@ -4340,8 +4630,8 @@
         <div class="ins-btns">
           <button class="ins-btn" data-act="dtag" ${!D.files || busy ? "disabled" : ""}>${ic("tag")} ${tc(`把 ${plural(D.files, "copy", "copies")} 标记为删除`, `Tag ${plural(D.files, "copy", "copies")} for delete`)}</button>
           <button class="ins-btn danger${a.armed ? " armed" : ""}" data-act="dremove" ${!D.files || busy ? "disabled" : ""}>${ic("alert")}
-            ${a.armed ? tc(`真的要从磁盘移除 ${plural(D.files, "file")}（${fmtBytes(D.bytes)}）吗？再点一次`, `Really remove ${plural(D.files, "file")} (${fmtBytes(D.bytes)}) from disk? Click again`) : tc(`移除 ${plural(D.files, "file")} · ${fmtBytes(D.bytes)}…`, `Remove ${plural(D.files, "file")} · ${fmtBytes(D.bytes)}…`)}</button></div>
-        <div class="ins-note" style="text-align:right">${tc(`打标签是安全的，用的是 Quick Tools 的删除标签。移除会把副本文件从磁盘删除${a.merge ? `；它们的 ${m.noO ? "" : "O、"}播放、标记、标签和演员会先移到保留的场景上` : ""}。自扫描后发生过改动的组不会被处理。`, `Tagging is safe and uses Quick Tools' delete tag. Removing deletes the copies' files from disk${a.merge ? `; their ${m.noO ? "" : "O's, "}plays, markers, tags and performers move to the kept scene first` : ""}. Nothing happens to a group that changed since the scan.`)}</div>`;
+            ${a.armed ? tc(`真的要从磁盘移除 ${plural(D.files, "file")}（${fmtBytes(D.bytes)}）吗？无法撤销。再点一次`, `Really remove ${plural(D.files, "file")} (${fmtBytes(D.bytes)}) from disk? It cannot be undone. Click again`) : tc(`移除 ${plural(D.files, "file")} · ${fmtBytes(D.bytes)}…`, `Remove ${plural(D.files, "file")} · ${fmtBytes(D.bytes)}…`)}</button></div>
+        <div class="ins-note" style="text-align:right">${tc(`打标签是安全的，用的是 Quick Tools 的删除标签。移除会把副本文件从磁盘删除${a.merge ? `；它们的标记、${m.noO ? "" : "O、"}播放、评分、标签、演员等会先移到保留的场景上（每组会说明移什么），下方的合并历史会留下记录` : ""}。删掉的文件无法恢复。自扫描后发生过改动的组不会被处理。`, `Tagging is safe and uses Quick Tools' delete tag. Removing deletes the copies' files from disk${a.merge ? `; their markers, ${m.noO ? "" : "O's, "}plays, rating, tags, performers and the rest move to the kept scene first (each group says what), and the merge history below keeps a record` : ""}. A deleted file cannot be brought back. Nothing happens to a group that changed since the scan.`)}</div>${dupLogHtml()}`;
     }
 
     const wins = H.wins.slice(0, 3);
@@ -4385,7 +4675,7 @@
           (!wins.length && !P2.open.length && !fs.noPhash ? `<div class="ins-empty">${ic("check")} ${tc("没有要修的。", "Nothing to fix.")}</div>` : "") +
           (P2.clear.length ? `<div class="ins-note" style="color:var(--gr)">${tc(`全部正常：${P2.clear.map((x) => esc(x.title.toLowerCase())).join("、")}。`, `All clear: ${P2.clear.map((x) => esc(x.title.toLowerCase())).join(", ")}.`)}</div>` : ""))}
       </div>
-      ${dataLine()}`;
+      ${dataLine()}${tasksLine()}`;
     a._noPhashIds = noPhashIds;
     a._noteff = ne;
     hubEnsure();
@@ -4410,6 +4700,13 @@
     if (mode === "store") return `<div class="ins-note ins-data">${ic("box")} ${tc(`插件数据由 Suite Data 保管，Stash 的设置页碰不到。<span class="ins-go" data-go="/suitedata">你的数据：备份、导出、导入${ic("arrow")}</span>`, `Plugin data is kept by Suite Data, out of reach of Stash's Settings page. <span class="ins-go" data-go="/suitedata">Your data: backups, export, import${ic("arrow")}</span>`)}</div>`;
     if (mode === "mirror" && sdNote) return `<div class="ins-note ins-data" style="color:var(--ye)">${ic("alert")} ${esc(sdNote)}</div>`;
     return `<div class="ins-note ins-data">${ic("box")} ${tc("插件数据（待办、历史、观看时长）存放在各插件的设置里，Stash 设置页上的改动可能会把它回滚。Suite Data 插件把它保管好并做好备份。", "Plugin data (to-dos, history, watch time) is kept in each plugin's settings, where a change on Stash's Settings page can roll it back. The Suite Data plugin keeps it safe and backs it up.")}</div>`;
+  }
+
+  // 2.12.2: one line to Tasks Toolkit when it is installed (it sets
+  // window.TasksToolkit): Stash's jobs, routines and their history live there
+  function tasksLine() {
+    if (!window.TasksToolkit) return "";
+    return `<div class="ins-note ins-data">${ic("clock")} ${tc("Stash 自带的任务、定时例程以及每个任务的运行历史都在 Tasks Toolkit 里。", "Stash's own jobs, routines on a timer and the history of every job are in Tasks Toolkit.")} <span class="ins-go" data-go="/taskstoolkit">${tc("任务", "Tasks")}${ic("arrow")}</span></div>`;
   }
 
   // ── 2.8: Library to-do ────────────────────────────────────────────────────
@@ -5139,6 +5436,8 @@
       if (grp === "you" && key === "wgender") setPref("wgender", val);
       // a different rule makes a different selection: hand ticks start over
       if (grp === "acts" && (key === "mode" || key === "sharp")) { app.acts.ticks = new Map(); app.acts.armed = false; }
+      // a changed merge switch changes what the armed second click would do
+      if (grp === "acts" && key === "merge") app.acts.armed = false;
       if (grp === "col" && key === "gender") setPref("gender", val);
       if (grp === "lib" && key === "timeline") app.lib.year = null;
       if (grp === "mv" && key === "rank") { setPref("mrank", val); app.mv.more = false; }
