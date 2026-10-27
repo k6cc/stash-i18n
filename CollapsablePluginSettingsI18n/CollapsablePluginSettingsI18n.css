@@ -23,14 +23,11 @@
   display: none !important;
 }
 
-/* Toolbar right-aligned next to the "Plugins" heading (position set by JS).
-   The z-index stays low so the bands pinned to the top of the viewport paint
-   over the toolbar when the page scrolls it underneath them: Stash's top
-   navigation bar (fixed, 1030) and the tasks page job queue (sticky, 2). */
+/* Toolbar right-aligned next to the "Plugins" heading (position set by JS) */
 .csp-toolbar {
   display: none;
-  position: absolute;
-  z-index: 1;
+  position: fixed; /* viewport coordinates, set by JS */
+  z-index: 1000; /* below the navigation bar (1030) and modals */
   gap: 0.5rem;
 }
 
@@ -40,6 +37,28 @@
 
 .csp-search {
   width: 14rem;
+}
+
+/* Narrow screens (phones): the full toolbar (search + count + sort + two
+   buttons) is wider than the viewport, so let it wrap and shrink the search
+   box instead of extending past the right screen edge. */
+@media (max-width: 767.98px) {
+  .csp-toolbar {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    max-width: 100vw;
+  }
+
+  .csp-search {
+    width: auto;
+    flex: 1 1 6rem;
+    min-width: 5rem;
+  }
+
+  .csp-sort {
+    max-width: 8rem;
+  }
 }
 
 .csp-count {

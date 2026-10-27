@@ -15,7 +15,7 @@
   window.__CollapsablePluginSettingsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '0.10.4-1';
+  var PLUGIN_VERSION = '0.10.7-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -597,10 +597,7 @@
   }
 
   // The toolbar stays outside the React tree and is placed by coordinates,
-  // right-aligned at the height of the heading. It keeps a low z-index so the
-  // bands that stay pinned to the top of the viewport - Stash's top navigation
-  // bar (fixed, 1030) and the job queue on the tasks page (sticky, 2) - paint
-  // over it when the page scrolls the heading underneath them.
+  // right-aligned at the height of the heading.
   function positionToolbar(sc) {
     if (!toolbar || toolbar.style.display === "none") return;
     const heading = sc.heading;
@@ -620,11 +617,42 @@
       right = sc.pane.getBoundingClientRect().right - padRight;
     }
 
+    // The toolbar is position: fixed, so viewport coordinates are used (no scroll offset).
+    // This also works when Stash scrolls an inner container instead of the window.
+    // On narrow screens the toolbar may be wider than the pane: clamp against the viewport
+    // so it never extends past the right screen edge.
     const width = toolbar.offsetWidth;
-    const topPx = Math.round(top + window.scrollY) + "px";
-    const leftPx = Math.round(Math.max(0, right - width + window.scrollX)) + "px";
+    const topPx = Math.round(top) + "px";
+    const leftPx = Math.round(Math.max(0, Math.min(right - width, window.innerWidth - width))) + "px";
     if (toolbar.style.top !== topPx) toolbar.style.top = topPx;
     if (toolbar.style.left !== leftPx) toolbar.style.left = leftPx;
+
+    // Hide the toolbar while its heading is scrolled out of view, so it never floats over the
+    // navigation bar or other content.
+    const hidden = top < headerBottom() || top + toolbar.offsetHeight > window.innerHeight;
+    const visibility = hidden ? "hidden" : "";
+    if (toolbar.style.visibility !== visibility) toolbar.style.visibility = visibility;
+  }
+
+  // Lower edge of everything that is stuck to the top of the viewport: the fixed navigation bar
+  // and sticky panels below it, for example the "Current tasks" (job queue) panel of the Tasks
+  // tab. Content that is only sticky but not stuck yet does not count. 0 if there is nothing.
+  function headerBottom() {
+    const stuck = [];
+    document
+      .querySelectorAll(".fixed-top, .sticky-top, nav.navbar, #tasks-panel .tasks-panel-queue")
+      .forEach((el) => {
+        const pos = getComputedStyle(el).position;
+        if (pos !== "fixed" && pos !== "sticky") return;
+        const r = el.getBoundingClientRect();
+        if (r.height > 0 && r.bottom < window.innerHeight * 0.8) stuck.push(r);
+      });
+    stuck.sort((x, y) => x.top - y.top);
+    let bottom = 0;
+    stuck.forEach((r) => {
+      if (r.top <= bottom + 2) bottom = Math.max(bottom, r.bottom); // stacked directly below
+    });
+    return bottom;
   }
 
   // The heading moves when sections above it (e.g. "Generate") are collapsed or
@@ -645,10 +673,10 @@
   }
 
   // Dialogues are appended to <body> (outside the React root) as full-screen
-  // overlays. Some of them live in a lower stacking context than the toolbar
-  // (e.g. Ascension's .hon-modal uses z-index 1000, the toolbar uses 1030), so
-  // the toolbar would float above the dialogue. It therefore steps aside while
-  // such an overlay is open.
+  // overlays. Some of them do not outrank the toolbar (e.g. Ascension's
+  // .hon-modal also uses z-index 1000, and the toolbar is appended to <body>
+  // later, so it wins the tie), so the toolbar would float above the dialogue.
+  // It therefore steps aside while such an overlay is open.
   function overlayOpen() {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -713,19 +741,41 @@
     refreshLabels();
   }
 
-  // React renders dynamically -> watch the DOM.
-  // The page mutates continuously (other plugins re-render all the time), so a
-  // plain debounce would be reset over and over and could never fire - which
-  // left the toolbar and the collapsing dead for the whole session. The next
-  // run is therefore only scheduled once and is guaranteed to happen.
+  // React renders dynamically -> observe the DOM.
+  // The next run is scheduled only once per interval (throttle, not debounce): if other
+  // plugins keep touching the DOM, a debounce that restarts on every mutation would never fire.
   let timer = null;
-  const observer = new MutationObserver(() => {
+  let running = false;
+  let rerun = false;
+
+  async function runSafe() {
+    if (running) {
+      rerun = true; // changes arrived while running -> run once more afterwards
+      return;
+    }
+    running = true;
+    try {
+      await run();
+    } catch (err) {
+      console.warn("[CollapsablePluginSettingsI18n] Update failed:", err);
+    } finally {
+      running = false;
+      if (rerun) {
+        rerun = false;
+        schedule();
+      }
+    }
+  }
+
+  function schedule(delay) {
     if (timer !== null) return;
     timer = setTimeout(() => {
       timer = null;
-      run();
-    }, 100);
-  });
+      runSafe();
+    }, delay == null ? 100 : delay);
+  }
+
+  const observer = new MutationObserver(() => schedule());
   observer.observe(document.body, {
     childList: true,
     subtree: true,
@@ -734,7 +784,7 @@
   });
 
   if (window.PluginApi && PluginApi.Event) {
-    PluginApi.Event.addEventListener("stash:location", () => setTimeout(run, 50));
+    PluginApi.Event.addEventListener("stash:location", () => schedule(50));
   }
 
   // The settings of this plugin are edited on the same page. After a change they
@@ -745,7 +795,7 @@
     settingsTimers = [1200, 3500].map((ms) =>
       setTimeout(async () => {
         await loadSettings();
-        run();
+        runSafe();
       }, ms)
     );
   }
@@ -761,9 +811,10 @@
   );
 
   window.addEventListener("resize", () => kick());
+  document.addEventListener("scroll", () => kick(150), { capture: true, passive: true });
   document.addEventListener("click", () => kick(), true);
   document.addEventListener("transitionend", () => kick(300), true);
   document.addEventListener("animationend", () => kick(300), true);
 
-  run();
+  runSafe();
 })();
