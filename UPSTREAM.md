@@ -18,7 +18,7 @@ git fetch upstream-sanjiswe-plugins
 |---|---|---|---|---|---|
 | oStatsI18n | [sanjiswe/plugins](https://github.com/sanjiswe/plugins) | `plugins/ostats` | AGPL-3.0 | `d802350` | 2026-10-30 |
 | LockdownI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Lockdown` | MIT | `8d5b6d1` | 2026-10-23 |
-| InsightsI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Insights` | MIT | `8d5b6d1` | 2026-10-23 |
+| InsightsI18n | [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) | `plugins/Insights` | MIT | `c660e7d` | 2026-10-30 |
 | AscensionI18n | [Servbot91/Sakotos-Stash-Repo](https://github.com/Servbot91/Sakotos-Stash-Repo) | `plugins/Ascension/plugins/Ascension/Release` | GPL-3.0 | `07ef96d` | 2026-10-17 |
 | XenithI18n | [gq1869/stashapp-xenith](https://github.com/gq1869/stashapp-xenith) | `.` | GPL-3.0 | `d7d06dc` | 2026-10-18 |
 | CollapsablePluginSettingsI18n | [Jacksyy420/Stash-Plugins](https://github.com/Jacksyy420/Stash-Plugins) | `Plugins/collapsible-plugin-settings` | 上游未提供 LICENSE | `8e41d79` | 2026-10-27 |

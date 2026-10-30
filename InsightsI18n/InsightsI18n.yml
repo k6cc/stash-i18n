@@ -1,6 +1,6 @@
 name: Insights I18n
 description: "Stash 统计页的数据仪表盘：你、操作、库、文件与画质、元数据健康、收藏六个标签页（与 Lockdown、Slideshow 有联动），装有 Movies Toolkit 时另有影片标签页；重复清理按 1080p 目标保留最佳副本，再合并标记、O 与播放记录。取代 O Stats 与 Stats Enhancer。中文/英文跟随 Stash 界面语言。"
-version: 2.13.0-1
+version: 2.14.1-1
 url: https://gitlab.com/allisless0/stash-plugins
 
 settings:
@@ -15,6 +15,10 @@ settings:
   imagePerformers:
     displayName: 只统计有图片的演员
     description: "关闭（默认）：收藏页的「谁在里面」（性别分布与国家）只统计有场景的演员。开启：只出现在图片或图库中的演员也计入其中，演员磁贴会显示其数量，「一无所有」的检查则不再把他们算进去。下次打开统计页时生效。"
+    type: BOOLEAN
+  hideStashBox:
+    displayName: 隐藏 stash-box 信息
+    description: "关闭（默认）：Insights 显示与 StashDB 或其他 stash-box 相关的内容——元数据健康里的 StashDB 关联行（以及它的评级与最易补全项），还有操作标签页上各 toolkit 关于 stash-box 的待办行。开启：这些都不显示，便于只在本地查看自己的数据；其余不变。下次打开统计页时生效。"
     type: BOOLEAN
   hideMovies:
     displayName: 隐藏影片标签页

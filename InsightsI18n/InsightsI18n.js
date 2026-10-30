@@ -22,7 +22,7 @@
   window.__InsightsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.13.0-1';
+  var PLUGIN_VERSION = '2.14.1-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -51,7 +51,7 @@
   console.log('[InsightsI18n] Insights I18n v' + PLUGIN_VERSION + ' loaded');
 
   const PLUGIN_ID = "InsightsI18n";
-  const DATA_KEYS = ["watch", "ostatsImported", "dupLog"];   // in Suite Data's store when it is installed
+  const DATA_KEYS = ["watch", "ostatsImported", "dupLog", "prefs"];   // in Suite Data's store when it is installed
   const DEBUG = (() => { try { return localStorage.getItem("insightsI18nDebug") === "1"; } catch (_) { return false; } })();
   const log = (m, lvl = "log") => { if (DEBUG || lvl === "error") console[lvl](`[${PLUGIN_ID}]`, m); };
 
@@ -452,11 +452,25 @@
 
   // ── Library ───────────────────────────────────────────────────────────────
 
+  // 2.13.1 (a forum report: "Longest" 26 h, from DVD VOB files): ffprobe reads some MPEG program streams'
+  // length wrongly. A duration over 6 hours, or over 4 hours in a VOB / MPEG-PS file, is not a scene's:
+  // left out of Longest, the totals, the averages, the median and the per-hour figures, and counted in a
+  // note instead (the scene itself stays everywhere else).
+  const ODD_DUR = 6 * 3600, ODD_DUR_PS = 4 * 3600;
+  const PS_FMT = /^(vob|mpeg|mpg|mpegps|mpeg-ps|m2p|ps|dvd)$/i;
+  function oddDur(s) {
+    const d = +(s && s.dur) || 0;
+    if (!(d > 0)) return false;
+    return d > ODD_DUR || (d > ODD_DUR_PS && PS_FMT.test(String(s.fmt || "")));
+  }
+  const durOf = (s) => (oddDur(s) ? 0 : +s.dur || 0);
+
   function library(scenes) {
-    const t = { scenes: scenes.length, size: 0, secs: 0, rated: 0, organized: 0, played: 0, withO: 0 };
+    const t = { scenes: scenes.length, size: 0, secs: 0, rated: 0, organized: 0, played: 0, withO: 0, odd: 0 };
     const released = new Map(), added = new Map();
     for (const s of scenes) {
-      t.size += s.size || 0; t.secs += s.dur || 0;
+      if (oddDur(s)) t.odd += 1;
+      t.size += s.size || 0; t.secs += durOf(s);
       if (s.rating !== null && s.rating !== undefined) t.rated += 1;
       if (s.organized) t.organized += 1;
       if (s.plays > 0) t.played += 1;
@@ -570,6 +584,14 @@
     const out = { ...(stored || {}) };
     for (const [k, v] of Object.entries(pending || {})) out[k] = Math.round((out[k] || 0) + v);
     return out;
+  }
+
+  // Stash's interface language (Settings > Interface > Language, "en-GB") as a locale, or "" (2.13.1)
+  const uiLang = { v: "" };
+  function uiLangOf(v) {
+    const t = String(v == null ? "" : v).trim().replace(/_/g, "-");
+    if (!t) return "";
+    try { return Intl.getCanonicalLocales(t)[0] || ""; } catch (_) { return ""; }
   }
 
   // ── Countries ─────────────────────────────────────────────────────────────
@@ -698,7 +720,7 @@
       if (key === null || key === undefined) return;
       let r = m.get(key);
       if (!r) m.set(key, (r = { key, n: 0, size: 0, secs: 0, short: 0, raw: raw || "" }));
-      r.n += 1; r.size += s.fsize || 0; r.secs += s.dur || 0; r.short += Math.min(s.w || s.h, s.h || s.w) || 0;
+      r.n += 1; r.size += s.fsize || 0; r.secs += durOf(s); r.short += Math.min(s.w || s.h, s.h || s.w) || 0;
     };
     const brs = new Map(), eff = new Map();
     for (const s of scenes) {
@@ -706,7 +728,7 @@
       if (!s.nfiles) { st.noFile += 1; continue; }
       if (s.nfiles > 1) st.multi += 1;
       if (s.phash === false) st.noPhash += 1;
-      st.secs += s.dur || 0;
+      st.secs += durOf(s);
       const vc = codecName(s.vc), res = resBucket(s.w, s.h), br = bitrateOf(s);
       add(st.vcodec, vc, s, s.vc); add(st.acodec, codecName(s.ac, true), s, s.ac); add(st.container, s.fmt || "unknown", s);
       add(st.res, res, s); add(st.fps, fpsBucket(s.fps), s); add(st.shape, shapeOf(s.w, s.h), s);
@@ -907,12 +929,17 @@
 
   // Performers who share scenes. Scenes with more than six performers are
   // left out: one big cast would otherwise make dozens of "pairs".
-  function pairs(scenes) {
-    const m = new Map();
+  // 2.14.0 (a forum request): `o.mf` (the performers by id) counts only the
+  // pairs of one female and one male performer; the cast-size rule still
+  // counts everyone in the scene.
+  function pairs(scenes, o) {
+    const m = new Map(), by = o && o.mf;
+    const g = (id) => { const p = by && by.get(id); return p ? p.gender || "" : ""; };
     for (const s of scenes) {
       const p = [...new Set(s.perf || [])].sort();
       if (p.length < 2 || p.length > 6) continue;
       for (let i = 0; i < p.length; i++) for (let j = i + 1; j < p.length; j++) {
+        if (by && [g(p[i]), g(p[j])].sort().join() !== "FEMALE,MALE") continue;
         const k = `${p[i]}|${p[j]}`;
         m.set(k, (m.get(k) || 0) + 1);
       }
@@ -957,7 +984,7 @@
     const topPerf = [...perfN.entries()].sort((a, b) => b[1] - a[1])[0];
     const topStudio = [...studioN.values()].sort((a, b) => b.n - a.n)[0];
     return {
-      longest: best((s) => s.dur || 0, (s) => s.dur > 0),
+      longest: best((s) => s.dur || 0, (s) => s.dur > 0 && !oddDur(s)),
       // 2.11: 10 s and up; DVD rips have menu VOBs a fraction of a second
       // long, which showed as "0s" (forum, sashi)
       shortest: best((s) => -(s.dur || 0), (s) => s.dur >= 10),
@@ -1325,7 +1352,7 @@
     if (opts.sort === "size") ordered = shown.slice().sort((a, b) => b.scenes - a.scenes);
     else if (isOrdinal(dimId) && opts.sort !== "pull") ordered = shown.slice().sort((a, b) => ordinalKey(dimId, a.value) - ordinalKey(dimId, b.value));
     else ordered = byScore;
-    return { rows: ordered, hidden: rows.length - shown.length, minScenes };
+    return { rows: ordered, hidden: rows.length - shown.length, small: rows.filter((r) => r.small).length, minScenes };
   }
 
   // Position on a log scale centred on 1x: 1/4x is -1, 4x is +1.
@@ -1393,12 +1420,16 @@
       if (ok && typeof e.heat === "number" && e.heat > bestHeat) bestHeat = e.heat;
       if (ok && e.score > 0 && (!best || e.score > best.score)) best = e;
       const kind = e.kind || "performer", id = String(e.tid || e.pid || "");
-      // several tags (Lockdown 2.2) are their own target; the link goes to the first
-      const key = e.tags && e.tags.length > 1 ? `${kind}:${e.tags.map((x) => x.id).join(e.mode === "or" ? "|" : "+")}` : `${kind}:${id}`;
+      // several tags (Lockdown 2.2) are their own target; the link goes to the first.
+      // A duo (Lockdown 2.14) too, the same pair either way round, and it is
+      // not either performer's own run (the user's choice)
+      const duo = kind === "performer" && Array.isArray(e.duo) && e.duo.length > 1;
+      const key = e.tags && e.tags.length > 1 ? `${kind}:${e.tags.map((x) => x.id).join(e.mode === "or" ? "|" : "+")}`
+        : duo ? `${kind}:${e.duo.map((x) => String(x.id)).sort((a, b) => Number(a) - Number(b)).join("&")}` : `${kind}:${id}`;
       const t = targets.get(key) || { kind, id, name: e.name || "?", image: e.image || "", runs: 0, done: 0, ms: 0, watched: 0 };
       t.runs += 1; if (ok) t.done += 1; t.ms += ms; t.watched += w;
       targets.set(key, t);
-      if (kind === "performer" && id) {
+      if (kind === "performer" && id && !duo) {
         const x = perf.get(id) || { runs: 0, ms: 0, watched: 0 };
         x.runs += 1; x.ms += ms; x.watched += w;
         perf.set(id, x);
@@ -1431,7 +1462,7 @@
   const isOn = (v) => v === true || v === "true";
   function parseSettings(cfg) {
     const c = cfg && typeof cfg === "object" ? cfg : {};
-    return { showNative: isOn(c.showStashNumbers), hideO: isOn(c.hideO), imagePerformers: isOn(c.imagePerformers) };
+    return { showNative: isOn(c.showStashNumbers), hideO: isOn(c.hideO), imagePerformers: isOn(c.imagePerformers), hideBox: isOn(c.hideStashBox) };
   }
 
   // The You tab's choices as [value, label, when]: "o" only while O's show,
@@ -1776,10 +1807,13 @@
   // known tone, ready first, then needing a look, then information; quick
   // actions first within a tone, then by count. `fix` counts what can be
   // done (ready and look), `oneClick` what a quick action does.
-  function hubNorm(sum) {
+  // `o.noBox` (2.13.1, "Hide stash-box information"): the toolkits' rows about stash-boxes (to link, may be
+  // on, linked ones to fill from, found by fingerprint...) left out of the list and its totals
+  const BOX_ROW = /\b(stash-?box|StashDB|ThePornDB|FansDB|PMVStash|linked|fingerprint)\b|\bmay be on\b/i;
+  function hubNorm(sum, o) {
     const s = sum && typeof sum === "object" ? sum : {};
     const items = (Array.isArray(s.items) ? s.items : [])
-      .filter((x) => x && x.key != null && Number(x.count) > 0)
+      .filter((x) => x && x.key != null && Number(x.count) > 0 && !(o && o.noBox && BOX_ROW.test(String(x.label || ""))))
       .map((x) => {
         const a = x.action && typeof x.action === "object" ? x.action : null;
         const action = a && a.kind === "run" ? { kind: "run", label: String(a.label || tc("执行", "Do it")), confirm: String(a.confirm || "") }
@@ -1845,7 +1879,7 @@
   }
 
   if (window.__INSIGHTS_I18N_TEST__) {
-    window.__InsightsI18nTest = { suiteData, DATA_KEYS, slideshowInstalled, parseSlideshow, picturesModel, moviesInstalled, parseMovieSetting, moviesShown, chapterCount, isFullMovieFile, numberedScene, indexGaps,
+    window.__InsightsI18nTest = { suiteData, DATA_KEYS, oddDur, durOf, ODD_DUR, ODD_DUR_PS, uiLangOf, uiLang, regionName, prefsMerge, slideshowInstalled, parseSlideshow, picturesModel, moviesInstalled, parseMovieSetting, moviesShown, chapterCount, isFullMovieFile, numberedScene, indexGaps,
       compactGroup, movieModel, MOVIE_CHOICES, rankMovies, movieYears, FULL_MOVIE_SEC,
       parseSettings, CHOICES, choices, choice, performerReach, collectPlays, activity,
       dayKey, parseDay, daysBetween, weekStart, toMs, fmtDur, fmtBytes, collectOs, countByDay,
@@ -2684,7 +2718,11 @@
   // dashboard reads) comes over the config's copies.
   async function readPlugins() {
     let p;
-    try { p = (await gql(`query { configuration { plugins } }`))?.configuration?.plugins || {}; }
+    try {
+      const d = (await gql(`query { configuration { plugins interface { language } } }`))?.configuration;
+      p = d?.plugins || {};
+      uiLang.v = uiLangOf(d?.interface?.language) || uiLang.v;
+    }
     catch (_) { return null; }
     const [mine, ld, ss] = await Promise.all([SD.read(p[PLUGIN_ID] || {}),
       p.Lockdown ? SD.overlay("Lockdown", p.Lockdown) : null, p.Slideshow ? SD.overlay("Slideshow", p.Slideshow) : null]);
@@ -2974,7 +3012,57 @@
       return (scope || ":root") + " {\n  " + lines.join("\n  ") + "\n}";
     }
 
-    const T = { t: Object.assign({}, FLEX), mode: "flexoki", FLEX, HUES, STASH, parse, hex, over, mix, lum, contrast, fit, derive, tokensCss };
+    // See-through panels (2026-10-25, a forum request: a theme with a slideshow
+    // of background pictures, covered by the plugins' solid panels). One
+    // switch for the whole suite, read from the page: <html data-sx-glass>
+    // (Suite Data's setting "See-through panels" sets it) or, without it, the
+    // CSS property --sx-glass on <html> (a theme or Stash's Custom CSS:
+    // `:root { --sx-glass: 1; }`). Off, absent or 0: nothing changes. On: the
+    // surfaces (bg, bg2, slab, ui, raise) are the same colours at that
+    // opacity, so the page shows through every panel without a plugin doing
+    // anything; text is lifted until it reads 4.5:1 on a panel laid over a
+    // mid-grey picture, with a soft shadow for brighter ones; anything with a
+    // floating role (dialog, tooltip, menu, listbox, status, alert) or a
+    // navigation role (a bar that sticks over the content as it scrolls) keeps
+    // solid surfaces, so a popup never shows the page through it.
+    //   value: on / 1 / true (GLASS_A), an opacity (0.6 or 60%), off / 0
+    const GLASS_A = 0.65, GLASS_KEYS = ["bg", "bg2", "slab", "ui", "raise"];
+    const GLASS_TEXT = ["tx", "tx1b", "tx2", "grey", "hi"].concat(Object.keys(HUES).map((h) => h + "-tx"));
+    const GLASS_SOLID = '[role="dialog"], [role="alertdialog"], [role="tooltip"], [role="menu"], [role="listbox"], [role="status"], [role="alert"], [role="navigation"]';
+    function glassAlpha(v) {
+      const s = String(v == null ? "" : v).trim().toLowerCase().replace(/^["']|["']$/g, "");
+      if (!s || /^(0|off|no|none|false)$/.test(s)) return 0;
+      if (/^(1|on|yes|true)$/.test(s)) return GLASS_A;
+      let n = parseFloat(s);
+      if (!isFinite(n) || n <= 0) return 0;
+      if (/%$/.test(s) || n > 1) n /= 100;
+      return Math.round(Math.min(0.95, Math.max(0.35, n)) * 100) / 100;
+    }
+    // the tokens see-through at opacity a: surfaces as rgba, text fitted against them over mid-grey
+    function glassTokens(t, mode, a) {
+      const g = Object.assign({}, t), dark = mode !== "light";
+      const behind = (k) => hex(over(parse(t[k]).slice(0, 3).concat(a), "#808080"));
+      const against = [behind("bg"), behind("ui")];
+      GLASS_TEXT.forEach((k) => { if (t[k]) g[k] = fit(t[k], against, 4.5, dark); });
+      GLASS_KEYS.forEach((k) => { const c = parse(t[k]); if (c) g[k] = "rgba(" + c.slice(0, 3).map(clamp).join(", ") + ", " + a + ")"; });
+      return g;
+    }
+    function glassCss(t, mode, scope, a) {
+      const sc = scope || ":root", is = ":is(" + sc + ")", fl = ":is(" + GLASS_SOLID + ")";
+      const shadow = mode === "light" ? "0 0 2px rgba(255,255,255,0.7)" : "0 1px 2px rgba(0,0,0,0.55)";
+      const see = tokensCss(glassTokens(t, mode, a), mode, sc).replace(/\n\}$/, "\n  --sx-glass: " + a + ";\n  text-shadow: " + shadow + ";\n}");
+      const solid = tokensCss(t, mode, is + fl + ", " + is + " " + fl + ", " + fl + " " + is).replace(/\n\}$/, "\n  text-shadow: none;\n}");
+      return see + "\n" + solid;
+    }
+    // the switch as the page has it now (0 when off)
+    function glassOf() {
+      try {
+        const h = document.documentElement, at = h.getAttribute ? h.getAttribute("data-sx-glass") : null;
+        return glassAlpha(at != null && at !== "" ? at : getComputedStyle(h).getPropertyValue("--sx-glass"));
+      } catch (_) { return 0; }
+    }
+
+    const T = { t: Object.assign({}, FLEX), mode: "flexoki", glass: 0, FLEX, HUES, STASH, parse, hex, over, mix, lum, contrast, fit, derive, tokensCss, glassAlpha, glassTokens, glassCss, GLASS_A };
     const subs = [];
     let el = null, timer = 0, started = false, css = "";
     T.on = (fn) => { subs.push(fn); return T; };
@@ -3027,8 +3115,9 @@
       timer = 0;
       let r;
       try { r = compute(); } catch (e) { return; }
-      const next = tokensCss(r.t, r.mode, o.scope) + (o.extra ? "\n" + o.extra({ t: r.t, mode: r.mode, mix, fit, contrast }) : "");
-      T.t = r.t; T.mode = r.mode;
+      const g = glassOf();
+      const next = (g ? glassCss(r.t, r.mode, o.scope, g) : tokensCss(r.t, r.mode, o.scope)) + (o.extra ? "\n" + o.extra({ t: r.t, mode: r.mode, mix, fit, contrast }) : "");
+      T.t = r.t; T.mode = r.mode; T.glass = g;
       if (next === css && el && el.isConnected) return;
       css = next;
       if (!el || !el.isConnected) {
@@ -3058,7 +3147,7 @@
           }
         });
         mo.observe(document.head, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "media", "href", "rel"] });
-        mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-bs-theme", "data-fx-accent"] });
+        mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-bs-theme", "data-fx-accent", "data-sx-glass"] });
         if (document.body) mo.observe(document.body, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-bs-theme"] });
         document.querySelectorAll('link[rel~="stylesheet"]').forEach((n) => { if (!n.sheet) watchLink(n); });
         const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
@@ -3156,6 +3245,7 @@
   border: 1px solid color-mix(in srgb, var(--c, var(--acc)) 30%, transparent); box-shadow: inset 0 1px 0 rgba(255,255,255,.07); }
 .ins-sub { color: var(--tx2); font-size: 12px; margin: 0 0 12px 38px; line-height: 1.45; }
 .ins-note { color: var(--tx2); font-size: 12px; margin-top: 10px; line-height: 1.5; }
+.ins-oddnote { display: flex; gap: 6px; align-items: flex-start; margin: 0 0 14px; } .ins-oddnote > .ins-ic { width: 14px; height: 14px; color: var(--ye); margin-top: 2px; }
 .ins-empty { color: var(--tx2); padding: 10px 0; }
 
 .ins-hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 22px; align-items: center; padding: 20px 22px; }
@@ -3563,8 +3653,11 @@
     ? `${fmtN(n)} ${UNIT_ZH[w] || UNIT_ZH[ws] || w}`
     : `${fmtN(n)} ${n === 1 ? w : ws}`);
 
+  // 2.13.1 (a forum report: country names in German, the browser's language, on a Stash set to English):
+  // in the language Stash's own interface is set to (uiLang, read with the plugin settings), the
+  // browser's until that is in or when Stash has none
   function regionName(code) {
-    try { return /^[A-Z]{2}$/.test(code) ? new Intl.DisplayNames(undefined, { type: "region" }).of(code) || code : code; }
+    try { return /^[A-Z]{2}$/.test(code) ? new Intl.DisplayNames(uiLang.v ? [uiLang.v, "en"] : undefined, { type: "region" }).of(code) || code : code; }
     catch (_) { return code; }
   }
   // Stash ships the flag-icons stylesheet (it shows flags on performer
@@ -3651,8 +3744,46 @@
   // ═══ App ═══════════════════════════════════════════════════════════════════
 
   const PREF_KEY = "insightsI18nPrefs";
-  const prefs = () => { try { return JSON.parse(localStorage.getItem(PREF_KEY) || "{}"); } catch (_) { return {}; } };
-  const setPref = (k, v) => { try { localStorage.setItem(PREF_KEY, JSON.stringify({ ...prefs(), [k]: v })); } catch (_) {} };
+  // 2.13.1 (sashi: "show them" still collapsed after a reload): the choices were kept only in this
+  // browser's storage, inside a catch that swallowed a refused write (the site's storage full, e.g.
+  // by the O Stats caches Insights replaced, or storage turned off), so a reload drew the old state;
+  // in the page, `app.you` held it, which is why it looked fixed. Now: this page's choices in memory
+  // (PREF_MEM, over what the browser has), the browser's storage as before, and the ones worth keeping
+  // (PREF_SERVER) also in Insights' own data (`prefs`, Suite Data's store or the plugin config),
+  // read back on load (prefsFromServer) where the browser kept nothing.
+  const PREF_SERVER = ["small", "wgender", "dim", "gender", "mrank", "pairs"];
+  const PREF_MEM = {};
+  const prefsLocal = () => { try { const v = JSON.parse(localStorage.getItem(PREF_KEY) || "{}"); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch (_) { return {}; } };
+  const prefs = () => ({ ...prefsLocal(), ...PREF_MEM });
+  function prefsMerge(local, server, keys) {
+    const out = { ...(local || {}) };
+    if (server && typeof server === "object" && !Array.isArray(server)) for (const k of keys || PREF_SERVER) if (!(k in out) && k in server) out[k] = server[k];
+    return out;
+  }
+  let prefT = 0;
+  const setPref = (k, v) => {
+    PREF_MEM[k] = v;
+    try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs())); } catch (_) {}
+    if (!PREF_SERVER.includes(k)) return;
+    // one write for a burst of clicks
+    clearTimeout(prefT);
+    prefT = setTimeout(() => {
+      const keep = {};
+      for (const x of PREF_SERVER) if (x in PREF_MEM) keep[x] = PREF_MEM[x];
+      updateConfig((mine) => { let cur = {}; try { cur = JSON.parse(mine.prefs || "{}") || {}; } catch (_) { cur = {}; } return { ...mine, prefs: JSON.stringify({ ...cur, ...keep }) }; }).catch(() => {});
+    }, 1500);
+  };
+  // the kept choices from Insights' data where this browser has none (first load of the page)
+  function prefsFromServer(raw) {
+    let sv = null;
+    try { sv = raw ? JSON.parse(raw) : null; } catch (_) { sv = null; }
+    if (!sv) return;
+    const local = prefsLocal(), merged = prefsMerge({ ...local, ...PREF_MEM }, sv);
+    for (const k of PREF_SERVER) if (!(k in local) && !(k in PREF_MEM) && k in merged) PREF_MEM[k] = merged[k];
+    const p = prefs();
+    app.you.small = !!p.small; app.you.wgender = p.wgender || "ALL"; app.you.dim = p.dim || app.you.dim;
+    app.col.gender = p.gender || app.col.gender; app.mv.rank = p.mrank || app.mv.rank; app.col.pairs = p.pairs === "mf" ? "mf" : app.col.pairs;
+  }
 
   const TABS = [["you", "You", "user", "ma", "你"], ["actions", "Actions", "check", "re", "操作"], ["library", "Library", "film", "or", "库"], ["files", "Files and quality", "chip", "cy", "文件与画质"],
                 ["health", "Metadata health", "pulse", "ye", "元数据健康"], ["collection", "Collection", "layers", "gr", "收藏"], ["movies", "Movies", "movie", "pu", "影片"]];
@@ -3690,7 +3821,8 @@
     acts: freshActs(),
     // Library to-do (2.8): the toolkits' cards, by id, and a running "Scan all"
     hub: { at: 0, loading: false, cards: new Map(), present: null, queue: null, armed: "" },
-    col: { tag: null, gender: prefs().gender || "FEMALE", studios: "networks" },
+    // 2.14.0: pairs "all" or "mf" (one female and one male), kept as the other choices are
+    col: { tag: null, gender: prefs().gender || "FEMALE", studios: "networks", pairs: prefs().pairs === "mf" ? "mf" : "all" },
   };
 
   // Actions state: the last duplicate scan and what the user ticked. A
@@ -4272,7 +4404,7 @@
     el.innerHTML = `
       <section class="ins-card ins-hero" style="--c:var(--or)">
         <div><div class="k">${ic("film")}${tc("你的媒体库", "YOUR LIBRARY")}</div><div class="big">${plural(L.scenes, "scene")}</div>
-          <div class="s">${tc(`<b>${fmtDur(L.secs)}</b> 的视频：连续不停播放的话是 <b>${nonstop(L.secs)}</b>。<b>${fmtBytes(L.size)}</b> 在磁盘上${imgSize ? `，另有 ${fmtBytes(imgSize)} 的图片` : ""}：够装满 <b>${(total / 4e12).toFixed(1)}</b> 块四 TB 硬盘。${L.scenes ? `平均每个场景时长 ${fmtDur(L.secs / L.scenes)}，占用 ${fmtBytes(L.size / L.scenes)}。` : ""}`, `<b>${fmtDur(L.secs)}</b> of video: <b>${nonstop(L.secs)}</b> if you watched it nonstop. <b>${fmtBytes(L.size)}</b> on disk${imgSize ? `, plus ${fmtBytes(imgSize)} of images` : ""}: enough to fill <b>${(total / 4e12).toFixed(1)}</b> four-terabyte drives. ${L.scenes ? `The average scene runs ${fmtDur(L.secs / L.scenes)} and takes ${fmtBytes(L.size / L.scenes)}.` : ""}`)}</div>
+          <div class="s">${tc(`<b>${fmtDur(L.secs)}</b> 的视频：连续不停播放的话是 <b>${nonstop(L.secs)}</b>。<b>${fmtBytes(L.size)}</b> 在磁盘上${imgSize ? `，另有 ${fmtBytes(imgSize)} 的图片` : ""}：够装满 <b>${(total / 4e12).toFixed(1)}</b> 块四 TB 硬盘。${L.scenes ? `平均每个场景时长 ${fmtDur(L.secs / Math.max(1, L.scenes - (L.odd || 0)))}，占用 ${fmtBytes(L.size / L.scenes)}。` : ""}`, `<b>${fmtDur(L.secs)}</b> of video: <b>${nonstop(L.secs)}</b> if you watched it nonstop. <b>${fmtBytes(L.size)}</b> on disk${imgSize ? `, plus ${fmtBytes(imgSize)} of images` : ""}: enough to fill <b>${(total / 4e12).toFixed(1)}</b> four-terabyte drives. ${L.scenes ? `The average scene runs ${fmtDur(L.secs / Math.max(1, L.scenes - (L.odd || 0)))} and takes ${fmtBytes(L.size / L.scenes)}.` : ""}`)}</div>
           <div class="ins-legend2">${resSegs.map((x) => `<span data-tip="${esc(x.label)}: ${fmtBytes(x.size)} (${pct(x.size / Math.max(1, total))})"><i style="background:${x.color}"></i>${esc(x.label)} <b style="color:var(--hi);font-weight:600">${fmtBytes(x.size)}</b></span>`).join("")}</div></div>
         ${ring(resSegs.map((x) => ({ f: x.size / Math.max(1, total), color: x.color })), fmtBytes(total).split(" ")[0], tc(`${fmtBytes(total).split(" ")[1]} 合计`, `${fmtBytes(total).split(" ")[1]} in all`), 150)}
       </section>
@@ -4295,12 +4427,14 @@
         ${nb.performer ? nbCard("user", "ma", tc("场景最多", "Most scenes"), plural(nb.performer.n, "scene"), nb.performer.p.name, `/performers/${nb.performer.p.id}`) : ""}
         ${nb.studio ? nbCard("studio", "or", tc("最忙的工作室", "Busiest studio"), plural(nb.studio.n, "scene"), nb.studio.name, `/studios/${nb.studio.id}`) : ""}
       </div>
+      ${L.odd ? `<div class="ins-note ins-oddnote">${ic("alert")}<span>${tc(`${plural(L.odd, "scene")}的时长异常（超过 6 小时，或 DVD 的 VOB 超过 4 小时：ffprobe 会误读部分文件），已从「最长」、总计与平均值中排除。`, `${plural(L.odd, "scene")} with an odd length (over 6 hours, or a DVD's VOB over 4 hours: ffprobe misreads some) left out of
+        Longest, the totals and the averages.`)} <span class="ins-go" data-go="${esc(S([{ type: "duration", modifier: "GREATER_THAN", value: { value: ODD_DUR_PS } }], "duration"))}">${tc("列出最长的", "List the longest")}${ic("arrow")}</span></span></div>` : ""}
       ${card({ title: l.year === null ? (l.timeline === "added" ? tc("按年份看加入 Stash", "Added to Stash, by year") : tc("按年份看发行", "Released, by year")) : tc(`${l.year} 年，按月`, `${l.year}, by month`), icon: "calendar", c: "or",
         right: `${chipFor("lib", "timeline", "released", tc("发行", "Released"), "or")}${chipFor("lib", "timeline", "added", tc("加入 Stash", "Added to Stash"), "or")}${l.year !== null ? ` <button class="ins-chip" data-set="lib.year=null">${tc("← 全部年份", "← all years")}</button>` : ""}`,
         sub: tc(`${l.year === null ? "点击某年查看它的各月。" : "点击某月列出那些场景。"}${undatedN ? ` ${plural(undatedN, "scene")}因为没有发行日期而没有显示。` : ""}`, `${l.year === null ? "Click a year to see its months." : "Click a month to list those scenes."}${undatedN ? ` ${plural(undatedN, "scene")} without a release date are not shown.` : ""}`) },
         bars.length ? barChart(bars, { c: l.timeline === "added" ? "cy" : "or" }) : `<div class="ins-empty">${tc("还没有日期。", "No dates yet.")}</div>`)}
       <div class="ins-grid">
-        ${card({ title: tc("时长", "Lengths"), icon: "clock", c: "pu", sub: tc(`中位数 ${fmtDur(percentile(m.scenes.map((s) => s.dur).filter(Boolean).sort((a, b) => a - b), 0.5))} · 点击可列出`, `Median ${fmtDur(percentile(m.scenes.map((s) => s.dur).filter(Boolean).sort((a, b) => a - b), 0.5))} · click to list`) },
+        ${card({ title: tc("时长", "Lengths"), icon: "clock", c: "pu", sub: tc(`中位数 ${fmtDur(percentile(m.scenes.map(durOf).filter(Boolean).sort((a, b) => a - b), 0.5))} · 点击可列出`, `Median ${fmtDur(percentile(m.scenes.map(durOf).filter(Boolean).sort((a, b) => a - b), 0.5))} · click to list`) },
           rows(lens.map((x) => ({ ...x, text: `${fmtN(x.value)} <small>${pct(share(x.value))}</small>`, color: "var(--pu)" })), { max: lenMax, lw: "minmax(110px,130px)", vw: "96px" }))}
         ${card({ title: tc("状态", "State"), icon: "check", c: "gr", sub: tc("占场景的比例 · 点击可列出", "Share of scenes · click to list") }, rows(stateRows, { max: L.scenes, lw: "minmax(110px,130px)", vw: "110px" }))}
       </div>
@@ -4451,10 +4585,12 @@
       <div class="ins-ww">
         <nav class="ins-side">${side(tc("演员", "PERFORMER"), PERFORMER_TRAITS)}${side(tc("场景", "SCENE"), SCENE_TRAITS)}</nav>
         <div class="ins-wbody">
+          ${!dim.scene ? genderChips(m, "you", "wgender", worksGender(m), "gr", tc("演员性别", "Scenes with")) : ""}
           <div class="ins-lr ins-axis"><span></span><span class="l">${esc(dimLabel(dim))}${sort === "order" ? tc(" · 按顺序", " · in order") : sort === "size" ? tc(" · 最大在前", " · biggest first") : tc(" · 最强在前", " · strongest first")}</span>
             <div class="ax"><span>¼×</span><span>1×</span><span>4×</span></div><span class="nums">${tc(`你的 ${what} · 库`, `your ${what} · library`)}</span><span>lift</span></div>
           <div class="ins-well" style="--c:var(--${color})">${rowsHtml || `<div class="ins-empty">${tc(`暂时没有可供对比的${esc(dimLabel(dim))}${R.hidden ? "；所有分组都太小" : ""}。`, `Nothing to compare yet for ${esc(dim.label.toLowerCase())}${R.hidden ? "; the groups are all small" : ""}.`)}</div>`}</div>
-          <div class="ins-note">${R.hidden ? tc(`已隐藏 ${plural(R.hidden, "small group")}（少于 ${fmtN(R.minScenes)} 个场景，或播放太少不足以判断）。<button class="ins-chip" data-set="you.small=${y.small ? "false" : "true"}">${y.small ? "隐藏" : "显示"}</button>`, `${plural(R.hidden, "small group")} hidden (under ${fmtN(R.minScenes)} scenes, or too little played to say). <button class="ins-chip" data-set="you.small=${y.small ? "false" : "true"}">${y.small ? "hide" : "show"} them</button>`) : ""}</div>
+          <div class="ins-note">${R.hidden ? tc(`已隐藏 ${plural(R.hidden, "small group")}（少于 ${fmtN(R.minScenes)} 个场景，或播放太少不足以判断）。<button class="ins-chip" data-set="you.small=true">显示</button>`, `${plural(R.hidden, "small group")} hidden (under ${fmtN(R.minScenes)} scenes, or too little played to say). <button class="ins-chip" data-set="you.small=true">show them</button>`)
+            : y.small && R.small ? tc(`已显示 ${plural(R.small, "small group")}（少于 ${fmtN(R.minScenes)} 个场景，或播放太少不足以判断）。<button class="ins-chip" data-set="you.small=false">隐藏</button>`, `${plural(R.small, "small group")} shown (under ${fmtN(R.minScenes)} scenes, or too little played to say). <button class="ins-chip" data-set="you.small=false">hide them</button>`) : ""}</div>
         </div>
       </div>`);
   }
@@ -4582,7 +4718,7 @@
     const up = m.get("upgrades", () => upgrades(m.scenes, m.noO));
     const hog = m.get("hogs", () => spaceHogs(m.scenes, fs));
     const ne = m.get("noteff", () => notEfficient(m.scenes, fs));
-    const H = m.get("health", () => healthModel(m));
+    const H = m.get(`health:${!!app.set.hideBox}`, () => healthModel(m, !!app.set.hideBox));
     const P2 = problemChecks(m);
     const D = dupState();
     const noPhashIds = m.scenes.filter((s) => s.phash === false).map((s) => s.id);
@@ -4754,7 +4890,7 @@
     c.loading = true; drawHub();
     try {
       const was = c.job;
-      c.sum = hubNorm(await conn.summary({ refresh: !!refresh }));
+      c.sum = hubNorm(await conn.summary({ refresh: !!refresh }), { noBox: !!app.set.hideBox });
       // A job the toolkit found gone (Stash restarted, or it was stopped in
       // Stash's task list) stays in its config unfinished, so a fresh read
       // shows it running again until the toolkit has polled it three times.
@@ -5005,11 +5141,13 @@
   const COUNT_ZH = { scenes: "个", performers: "位", studios: "个" };
   const healthLabel = (p) => (isZh() && HEALTH_ZH[p.key]) || p.label;
 
-  function healthModel(m) {
+  // `noBox` (2.13.1, the setting "Hide stash-box information"): the StashDB link rows left out, and so out
+  // of the grade and the quickest wins
+  function healthModel(m, noBox) {
     const totals = { scenes: m.scenes.length, performers: m.performers.length, studios: m.studios.length };
     const parts = {};
     for (const g of Object.keys(HEALTH)) {
-      parts[g] = HEALTH[g].map(([key, label, ck, weight]) => {
+      parts[g] = HEALTH[g].filter(([key]) => !(noBox && key === "stash_id")).map(([key, label, ck, weight]) => {
         const missing = m.counts[ck];
         return { g, key, label, weight, missing: missing ?? null, total: totals[g] };
       }).filter((p) => p.missing !== null && p.total);
@@ -5044,7 +5182,7 @@
 
   function renderHealth(el) {
     const m = app.model;
-    const H = m.get("health", () => healthModel(m));
+    const H = m.get(`health:${!!app.set.hideBox}`, () => healthModel(m, !!app.set.hideBox));
     const block = (g) => {
       const list = H.parts[g];
       if (!list.length) return `<div class="ins-empty">${tc("Stash 没有报告这些计数。", "Stash did not report these counts.")}</div>`;
@@ -5116,7 +5254,9 @@
     const g = m.get("growth", () => growth(m.scenes, m.now));
     const tags = m.get("tags", () => tagCounts(m.scenes));
     const net = m.get("networks", () => networks(m.studios, m.scenes));
-    const pr = m.get("pairs", () => pairs(m.scenes).slice(0, 12));
+    // 2.14.0: "Female + male" counts only the pairs of one female and one male performer (shown when the library has both)
+    const gl = libGenders(m), mfOk = gl.some((x) => x.k === "FEMALE") && gl.some((x) => x.k === "MALE"), mf = mfOk && cs.pairs === "mf";
+    const pr = m.get(`pairs:${mf}`, () => pairs(m.scenes, mf ? { mf: m.perfById } : null).slice(0, 12));
     const faces = m.get("faces", () => newFaces(m.scenes));
     const ages = m.get("ages", () => ageCounts(m.scenes, m.perfById));
     const N = m.scenes.length;
@@ -5201,12 +5341,13 @@
           <div class="ins-note">${tc(`${plural(cRows.length, "country", "countries")} · ${plural(noCountry, "performer")}没有填写`, `${plural(cRows.length, "country", "countries")} · ${plural(noCountry, "performer")} without one`)}</div>`)}
       </div>
       <div class="ins-grid">
-        ${card({ title: tc("搭档", "Pairs"), icon: "link", c: "ma", sub: tc("同场次数最多的演员。点一下可列出他们。", "Performers who share the most scenes. Click to list them.") },
+        ${card({ title: tc("搭档", "Pairs"), icon: "link", c: "ma", sub: mf ? tc("同场次数最多的一女一男演员。点一下可列出他们。", "One female and one male performer who share the most scenes. Click to list them.") : tc("同场次数最多的演员。点一下可列出他们。", "Performers who share the most scenes. Click to list them."),
+          right: mfOk ? `${chipFor("col", "pairs", "all", tc("全部", "Everyone"), "ma")}${chipFor("col", "pairs", "mf", tc("女 + 男", "Female + male"), "ma")}` : "" },
           pr.length ? pr.map((x) => { const a = m.perfById.get(x.a) || { id: x.a, name: tc(`演员 ${x.a}`, `Performer ${x.a}`) }, b = m.perfById.get(x.b) || { id: x.b, name: tc(`演员 ${x.b}`, `Performer ${x.b}`) };
             return `<div class="ins-li click" style="grid-template-columns:54px minmax(0,1fr) auto" data-go="${esc(S([{ type: "performers", modifier: "INCLUDES_ALL", value: { items: [{ id: a.id, label: a.name }, { id: b.id, label: b.name }], excluded: [], depth: 0 } }]))}">
               <span style="display:flex">${avatar(a, "sm")}<span style="margin-left:-6px">${avatar(b, "sm")}</span></span>
               <div class="n">${esc(a.name)} <span style="color:var(--tx2)">${tc("和", "and")}</span> ${esc(b.name)}</div><div class="v" style="color:var(--hi);font-weight:700">${plural(x.n, "scene")}</div></div>`; }).join("")
-            : `<div class="ins-empty">${tc("还没有两位演员同场过。", "No two performers share a scene yet.")}</div>`)}
+            : `<div class="ins-empty">${mf ? tc("还没有一女一男两位演员同场过。", "No female and male performer share a scene yet.") : tc("还没有两位演员同场过。", "No two performers share a scene yet.")}</div>`)}
         ${card({ title: tc("年龄与新面孔", "Ages and new faces"), icon: "user", c: "pu", sub: tc("每位演员在场景拍摄当天的年龄。点一个年龄可列出那些场景。", "Age of each performer on the scene's date. Click an age to list those scenes.") },
           barChart(ageBars, { c: "pu", height: 90 }) +
           `<div class="ins-sub" style="margin:14px 0 8px">${tc("每位演员在这里首次出镜的年份", "The year each performer's first scene here came out")}</div>` +
@@ -5439,6 +5580,7 @@
       // a changed merge switch changes what the armed second click would do
       if (grp === "acts" && key === "merge") app.acts.armed = false;
       if (grp === "col" && key === "gender") setPref("gender", val);
+      if (grp === "col" && key === "pairs") setPref("pairs", val);
       if (grp === "lib" && key === "timeline") app.lib.year = null;
       if (grp === "mv" && key === "rank") { setPref("mrank", val); app.mv.more = false; }
       render();
@@ -5541,6 +5683,7 @@
       const [plugins, installed] = await Promise.all([readPlugins(), readInstalled()]);
       applySettings(plugins ? plugins[PLUGIN_ID] || {} : null, true, installed, plugins);
       app.config = (plugins && plugins[PLUGIN_ID]) || {};
+      prefsFromServer(app.config.prefs);
       app.watch = parseWatch(app.config.watch) || {};
       app.lockdown = parseLockdown(plugins && plugins.Lockdown);
       app.slideshow = plugins ? parseSlideshow(plugins[SLIDESHOW_ID]) : app.slideshow;
@@ -5656,7 +5799,7 @@
                    moviesName: installed && all ? moviesRenamed(installed, all) : !!prev.moviesName };
     app.set = next;
     try {
-      localStorage.setItem(SET_KEY, JSON.stringify({ showStashNumbers: next.showNative, hideO: next.hideO, imagePerformers: next.imagePerformers,
+      localStorage.setItem(SET_KEY, JSON.stringify({ showStashNumbers: next.showNative, hideO: next.hideO, imagePerformers: next.imagePerformers, hideStashBox: next.hideBox,
                                                      hideMovies: next.hideMovies, moviesToolkit: next.movies, moviesName: next.moviesName,
                                                      slideshow: next.slideshow }));
     } catch (_) {}
@@ -5664,7 +5807,7 @@
     const mvChanged = moviesShown(prev) !== moviesShown(next);
     if (mvChanged && moviesShown(next)) syncMovies();
     if (!quiet && app.data && (prev.hideO !== next.hideO || prev.imagePerformers !== next.imagePerformers)) { setData(app.data); render(); }
-    else if (!quiet && (mvChanged || prev.moviesName !== next.moviesName) && app.model) render();
+    else if (!quiet && (mvChanged || prev.moviesName !== next.moviesName || !!prev.hideBox !== !!next.hideBox) && app.model) render();
   }
   async function checkSettings() {
     const [plugins, installed] = await Promise.all([readPlugins(), readInstalled()]);

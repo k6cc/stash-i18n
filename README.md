@@ -10,7 +10,7 @@ Stash 第三方插件汉化集（i18n）——只做**界面文案本地化**，
 |------|------|---------|------|
 | [oStatsI18n](./oStatsI18n/) | 2.2.0-2 | [O Stats](https://discourse.stashapp.cc/t/o-stats/4766/7)（sanjiswe） | 统计页 O 统计与观看时长追踪（含今日与本周、全部时间与纪录分区、O 日历与观看日历热力图、图片 O 时间、表现最佳排名、当日回顾时间线），UI 文案跟随 Stash 界面语言（中文/英文） |
 | [LockdownI18n](./LockdownI18n/) | 2.11.0-1 | [Lockdown](https://gitlab.com/allisless0/stash-plugins)（allisless0） | 把 Stash 锁在演员/工作室/标签上直到脱身的「锁定游戏」（锁局），UI 文案跟随 Stash 界面语言（中文/英文） |
-| [InsightsI18n](./InsightsI18n/) | 2.13.0-1 | [Insights](https://gitlab.com/allisless0/stash-plugins)（allisless0） | 统计页数据仪表盘：你/操作/库/文件与画质/元数据健康/收藏（装有 Movies Toolkit 时另有影片），UI 文案跟随 Stash 界面语言（中文/英文） |
+| [InsightsI18n](./InsightsI18n/) | 2.14.1-1 | [Insights](https://gitlab.com/allisless0/stash-plugins)（allisless0） | 统计页数据仪表盘：你/操作/库/文件与画质/元数据健康/收藏（装有 Movies Toolkit 时另有影片），UI 文案跟随 Stash 界面语言（中文/英文） |
 | [AscensionI18n](./AscensionI18n/) | 1.4.1-4 | [Ascension](https://github.com/Servbot91/Sakotos-Stash-Repo)（Servbot91） | 演员与场景的评级/分档系统（对决）：基于 Elo 引擎实时对战评分并给出 S~F 分档，含对决、排位、冠军、场景四种模式，UI 文案跟随 Stash 界面语言（中文/英文） |
 | [XenithI18n](./XenithI18n/) | 3.2.1 | [Xenith](https://github.com/gq1869/stashapp-xenith)（gq1869） | 演员与场景的 Elo 对决评分与排行榜（争锋）：含对决、车轮战、挑战冠军三种模式，UI 文案跟随 Stash 界面语言（中文/英文） |
 | [CollapsablePluginSettingsI18n](./CollapsablePluginSettingsI18n/) | 0.10.7-1 | [Collapsable Plugin Settings](https://github.com/Jacksyy420/Stash-Plugins)（Jacksyy420） | 让「设置 → 插件」与「设置 → 任务 → 插件任务」的插件分组可折叠、可搜索、可排序，并可用滑块代替启用/禁用按钮，UI 文案跟随 Stash 界面语言（中文/英文） |
