@@ -52,12 +52,14 @@ Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻�
 | InsightsI18n | `InsightsI18n.js` 顶部 `PLUGIN_VERSION` |
 | AscensionI18n | `AscensionI18n.js` 顶部 `PLUGIN_VERSION` |
 | CollapsablePluginSettingsI18n | `CollapsablePluginSettingsI18n.js` 顶部 `PLUGIN_VERSION` |
+| OCheevsI18n | `OCheevsI18n.js` 顶部 `PLUGIN_VERSION` |
+| TasksToolkitI18n | **两处必须一起改**：`TasksToolkitI18n.js` 顶部 `PLUGIN_VERSION` 与后端 `TasksToolkitI18n.py` 的 `PLUGIN_VERSION`（后端用它判断「插件文件被换掉/版本不一致」） |
 | XenithI18n | 版本在 `src/i18n.js` 的 `PLUGIN_VERSION`（**`package.json` 的 `version` 不参与打包，改它无效**）；压缩后常量被改名，bundle 首行形如 `` var e=`3.2.1` `` 的模板字面量——搜 `X.Y.Z` 字面量核对 |
 
 ### 流程
 
 1. 更新上表所有位置
-2. 校验：`git grep -nE "[0-9]\.[0-9]+\.[0-9]+"` 逐项核对（压缩 bundle 的插件改用 Grep 工具在磁盘上搜字面量——未跟踪的新文件不在 `git grep` 范围内）
+2. 校验：`git grep -nE "[0-9]\.[0-9]+\.[0-9]+"` 逐项核对（压缩 bundle 的插件改用 Grep 工具在磁盘上搜字面量——未跟踪的新文件不在 `git grep` 范围内）；改动较大的插件直接跑 `python scripts/sync-verify.py <插件ID>`（一次核对 `node --check`、版本四处一致、身份隔离与 i18n 残留）
 3. commit 风格：`fix(插件名): 描述, vX.Y.Z` / `feat(插件名): ...` / `docs(插件名): ...` / `chore: ...`
 4. tag 命名：`<插件ID>-v<版本号>`（如 `AscensionI18n-v1.4.1-1`，白名单 `*-v*.*.*` 已兼容该后缀）；多插件联动发版时每个插件各打一个 tag
 5. `git push; git push --tags`（分号分隔，勿用 `&&`）
@@ -95,7 +97,10 @@ Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻�
 | `upstream_watch.py` | 检测各插件上游是否有新提交（供 workflow 与本地使用） |
 | `check_i18n.py` | 复核漏译：剔除 `tc()` 包装与日志调用后，列出仍像界面文案的英文候选 |
 | `scan_src_i18n.py` | 扫「构建源仓库」上游的 `src/`（用法见上节第 6 条） |
-| `i18n-playbook.md` | 汉化手册：目录结构、脚手架、冻结表、校验清单、构建源仓库上游流程 |
+| `sync-threeway.py` | 大版本同步的三方合并（base=记账基线 / ours=本地汉化 / theirs=上游新版），冲突默认取上游，产出 `conflicts.txt` |
+| `sync-regions.py` | 按 `// ═══`、`// ──` 段头切分（每段一份完整副本 + `manifest.json`）与回拼，供分区并行翻译 |
+| `sync-verify.py` | 一次自检：`node --check`、版本四处一致、身份隔离残留、`check_i18n` 残留统计 |
+| `i18n-playbook.md` | 汉化手册：目录结构、脚手架、冻结表、校验清单、构建源仓库上游流程、大版本同步（第 11 节） |
 | `<插件>.patch` | 各「构建源仓库」上游的汉化 patch，如 `xenith-i18n.patch` |
 
 > **Windows 上必须用 `pwsh -NoProfile -File <脚本>` 运行本仓库的 `.ps1`**：`.ps1` 是无 BOM 的 UTF-8，Windows PowerShell 5.1 会按 ANSI 解码，脚本里的中文注释直接引发 `ParserError`（`Unexpected token`）；`pwsh`（PowerShell 7）默认按 UTF-8 读取，正常。
@@ -105,6 +110,7 @@ Stash 的 Groups 用官方中文「合集」；国家名复用 Stash 现有翻�
 1. `pwsh -NoProfile -File scripts/upstream-diff.ps1 -Fetch` 拉取上游（按记账表里的仓库地址自动解析/新增 remote）
 2. `pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin <插件ID>` 看该插件自基线以来的上游提交与完整 diff
 3. 套用上游改动：以「上游基线版本 = base、本地汉化版 = ours、上游新版 = theirs」做三方合并（`git merge-file`）最省事，冲突处保留本地 `tc()` 包裹与中文文案；上游原生新增的用户可见文案需补 `tc(zh, en)`，合并后用 `python scripts/check_i18n.py <插件ID>` 复核有无漏译
+   - **增量超过约 1000 行或上游做了界面重设计时**（如 LockdownI18n 2.11.0 → 2.20.0，`+4054/−373`），改用 `scripts/sync-threeway.py`：冲突**整段取上游**（保留新功能结构、冲突区再补译文），非冲突区仍自动保留本地 `tc()`；再按 `scripts/sync-regions.py` 分区并行翻译、回拼。完整命令流与坑见 [scripts/i18n-playbook.md](./scripts/i18n-playbook.md) 第 11 节
 4. 上游新增/变更的 yml 段（如 `settings:`）照抄，`displayName` / `description` 走中文；上游删除的功能（如某开关）跟随删除，不自行保留
 5. 插件目录内附上游 LICENSE，插件 `README.md` 注明派生关系
 6. `pwsh -NoProfile -File scripts/upstream-diff.ps1 -Plugin <插件ID> -Record` 把基线推进到上游 HEAD
