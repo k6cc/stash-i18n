@@ -101,3 +101,63 @@ Windows：PowerShell 用 `;` 分隔命令（不用 `&&`）；含中文的 commit
 
 已验证：Xenith 的 `scripts/xenith-i18n.patch` 从上游 `d7d06dc` 干净 clone 直接 `git apply` 后构建，
 所得 `xenith.js`/`xenith.css` 与已发布产物逐字节一致（sha256 相同）。
+
+## 11. 大版本跳跃同步（三方合并 + 分区并行翻译）
+
+判据：`upstream-diff.ps1 -Plugin <插件ID>` 的 diffstat 超过约 1000 行，或上游做了界面重设计
+（例：LockdownI18n 2.11.0 → 2.20.0，`+4054/−373`，6820 → 10178 行）。此时不要「拿上游新版从头译」，
+用三方合并把本地译文保留下来。
+
+### 11.1 三方合并
+
+```powershell
+pwsh -NoProfile -File scripts\upstream-diff.ps1 -Fetch
+python scripts\sync-threeway.py <插件ID> --theirs <上游HEAD sha>
+```
+
+产物在 `%TEMP%\stash-i18n-sync\<插件ID>\`：`base.js`/`theirs.js`/`ours.js`/`merged.js`/
+`merged_conflicted.js`/`conflicts.txt`。共同祖先默认取 UPSTREAM.md 记账基线。
+
+- 冲突**默认整段取上游（theirs）**：保留新功能结构，冲突区随后补译文
+- 非冲突区会自动保留本地的 `tc()` 与函数式表——这是三方合并相对「重译」的唯一价值，别放弃
+- 需要对照时看 `merged_conflicted.js`；`--markers` 可保留冲突标记不自动取 theirs
+
+### 11.2 冻结表改造
+
+把模块级 `const X = [...]` 改成 `const x = () => ([...])`，调用点全部改为 `x()`。两个必踩的坑：
+
+1. 全局 token 替换会改坏**对象键**和**定义行**（`const goalInfo() = {`、导出对象里的 `CONDITIONS` 作键）→ 替换后立刻 `node --check`，再逐处核对定义行与导出对象
+2. 冲突取 theirs 后 `tc(` 常只剩一个参数（中文侧整段被上游替换）→ 手动补中文参数并配平括号
+
+### 11.3 分区并行翻译
+
+```powershell
+python scripts\sync-regions.py split <工作目录>\merged.js --outdir <工作目录> --max-lines 1500
+```
+
+按 `// ═══ …`、`// ── …` 段头把文件切成约 1500 行一段，每段一份**完整副本**（`m_A.js`…）+ `manifest.json`。
+把每个副本交给一个子代理，只改自己副本的区段——越界编辑在回拼时会被忽略，天然免疫。
+
+- 子代理提示词要写明：起止**段头注释原文**、只改两个段头之间、`node --check` 自查、术语表、不译清单
+- 代理并发上限 5；区段过大再对半拆（改 `--max-lines` 重切最省事，别手工改 manifest）
+
+### 11.4 回拼与自检
+
+```powershell
+python scripts\sync-regions.py splice --dir <工作目录>
+python scripts\sync-verify.py <插件ID>
+python scripts\sync-verify.py <插件ID> --js <工作目录>\merged.js   # 落盘前先校验产物
+```
+
+回拼按**段头锚点**定位（不用行号，行号必然漂移）。段头行本身绝不可编辑，否则脚本中止且不写盘——这是有意的保护。
+`sync-verify.py` 一次跑完：`node --check`、版本四处一致、身份隔离（原版 ID/守卫残留）、`check_i18n` 残留统计。
+
+### 11.5 人工扫的坑（实战记录）
+
+- `plural()` 的中文量词表 `UNIT_ZH` 要补新单位（`card`、`performer` …），否则中文界面漏出 `2 card`、`前 8 performer 位`
+- 中文侧模板里直接写英文 chip 名（`Neglected`/`Backlog`）→ 换成译名
+- 引擎侧键名（`Spacebar`、`Configuration`）与 `DIFF_LABEL`/`LB_GOALS`/`REC_CHIPS` 这类「英中对照表」的另一半属**有意保留**，逐条写进汇报
+- 测完浏览器用「页面文本扫描」代替逐页肉眼：遍历文本节点，挑出**含拉丁字母且无中日韩字符**的串（顺手把 `title`/`aria-label`/`placeholder` 一起扫）
+- 临时工作目录（三方合并产物、区段副本、映射脚本）用完即删，不进仓库
+
+收尾照第 9 节发版；`UPSTREAM.md` 基线用 `-Record` 推进。
