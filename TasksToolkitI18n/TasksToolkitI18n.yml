@@ -1,0 +1,33 @@
+name: Tasks Toolkit I18n
+description: "把 Stash 自己的任务（扫描、生成、识别、自动打标签、备份）与各工具包的只读扫描集中到一处：Autopilot 自动巡检按固定顺序、一次一项地跑完媒体库维护；任务目录只收安全步骤，按固定顺序安全排队；定时例程可按天、按周或按月执行；调度器守护进程让安排在 Stash 内运行的例程无需打开浏览器也能按时执行；另含任务查看与最近 200 条历史。中文/英文跟随 Stash 界面语言。"
+version: 0.6.4-1
+url: https://gitlab.com/allisless0/stash-plugins
+
+# The server script (written by the page, run by Unraid User Scripts or
+# cron) reports its start, each step and its end through the `note`
+# operation; the page reads it back with `notes`. 0.2.0: `autotag_paths`,
+# `autotag_run` and `autotag_done` (Auto tag on what is new; 0.3.0: only the
+# names found in the new paths, never a library folder). 0.4.0: `scheduler`,
+# `scheduler_status`, `scheduler_stop`: the routines set to run in Stash
+# run from a daemon in the Stash container (MAINTENANCE §4.28 "0.4.0").
+# 0.6.0: `autopilot`, `autopilot_status`, `autopilot_set`: Autopilot's
+# switch, in _server/autopilot.json; the scheduler runs its task tree.
+# Standard library only.
+exec:
+  - python
+  - "{pluginDir}/TasksToolkitI18n.py"
+interface: raw
+
+ui:
+  javascript:
+    - TasksToolkitI18n.js
+
+tasks:
+  - name: Start scheduler
+    description: "启动 Tasks Toolkit 的调度器，由它按各自的时间运行安排在 Stash 内执行的例程（打开任意 Stash 页面也会启动；已在运行时立即响应）"
+    defaultArgs:
+      mode: scheduler
+  - name: Stop scheduler
+    description: "停止 Tasks Toolkit 的调度器（下次打开 Stash 页面会重新启动它）"
+    defaultArgs:
+      mode: scheduler_stop

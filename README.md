@@ -15,6 +15,7 @@ Stash 第三方插件汉化集（i18n）——只做**界面文案本地化**，
 | [XenithI18n](./XenithI18n/) | 3.2.1 | [Xenith](https://github.com/gq1869/stashapp-xenith)（gq1869） | 演员与场景的 Elo 对决评分与排行榜（争锋）：含对决、车轮战、挑战冠军三种模式，UI 文案跟随 Stash 界面语言（中文/英文） |
 | [CollapsablePluginSettingsI18n](./CollapsablePluginSettingsI18n/) | 0.10.7-1 | [Collapsable Plugin Settings](https://github.com/Jacksyy420/Stash-Plugins)（Jacksyy420） | 让「设置 → 插件」与「设置 → 任务 → 插件任务」的插件分组可折叠、可搜索、可排序，并可用滑块代替启用/禁用按钮，UI 文案跟随 Stash 界面语言（中文/英文） |
 | [OCheevsI18n](./OCheevsI18n/) | 0.3.0-1 | [O Cheevs](https://discourse.stashapp.cc/t/o-cheevs/19027)（sanjiswe） | 成就系统：按首次启用时的 Stash 总数起算，追踪观看时长 / O 数 / 观看视频数三类成就，分普通至传说五档，达成弹提示，含独立成就页面与顶栏奖杯入口，进度存盘于插件目录，UI 文案跟随 Stash 界面语言（中文/英文） |
+| [TasksToolkitI18n](./TasksToolkitI18n/) | 0.6.4-1 | [Tasks Toolkit](https://discourse.stashapp.cc/t/tasks-toolkit/19700)（allisless0） | 把 Stash 自己的任务（扫描、生成、识别、自动打标签、备份）与各工具包的只读扫描集中到一处：Autopilot 自动巡检、固定顺序的安全队列、定时例程与调度器守护进程、任务查看与最近 200 条历史，UI 文案跟随 Stash 界面语言（中文/英文） |
 
 ## 安装
 
