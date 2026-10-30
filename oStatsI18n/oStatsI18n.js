@@ -4,7 +4,7 @@
   if (window.__oStatsI18nLoaded) return
   window.__oStatsI18nLoaded = true
 
-  var PLUGIN_VERSION = '2.2.0-1'
+  var PLUGIN_VERSION = '2.2.0-2'
   var PLUGIN_ID = 'oStatsI18n'
   console.log('[oStatsI18n] O Stats I18n v' + PLUGIN_VERSION + ' loaded')
 
@@ -121,7 +121,9 @@
   // keep them in page order; the number is stripped off here.
   async function getPluginSettings() {
     try {
-      const data = await callGQL({ query: 'query { configuration { plugins } }' })
+      const data = await callGQL({
+        query: 'query { configuration { plugins } }',
+      })
       const saved = data.configuration?.plugins?.oStatsI18n || {}
       const settings = {}
       Object.keys(saved).forEach((key) => {
@@ -137,11 +139,12 @@
   // ===== LAYOUT CHOICES =====
   // Toggles on the page itself (side by side, list expanded) are remembered
   // in this browser rather than saved as plugin settings.
-  function loadLayoutChoice(key) {
+  function loadLayoutChoice(key, fallback = false) {
     try {
-      return localStorage.getItem(key) === '1'
+      const saved = localStorage.getItem(key)
+      return saved === null ? fallback : saved === '1'
     } catch (e) {
-      return false
+      return fallback
     }
   }
 
@@ -182,7 +185,17 @@
       o_history: Array.isArray(scene.o_history) ? scene.o_history : [],
       play_duration: scene.play_duration || 0,
       last_played_at: scene.last_played_at || null,
+      play_count: scene.play_count || 0,
       play_history: [],
+      performers: (scene.performers || []).map(({ id, name, image_path }) => ({
+        id,
+        name,
+        image_path,
+      })),
+      tags: (scene.tags || []).map(({ id, name }) => ({ id, name })),
+      studio: scene.studio
+        ? { id: scene.studio.id, name: scene.studio.name }
+        : null,
       files: [{ basename: scene.files?.[0]?.basename || '' }],
       paths: { screenshot: scene.paths?.screenshot || '' },
     }
@@ -200,6 +213,10 @@
             o_history
             play_duration
             last_played_at
+            play_count
+            performers { id name image_path }
+            tags { id name }
+            studio { id name }
             files { basename }
             paths { screenshot }
           }
@@ -433,7 +450,8 @@
 
   setInterval(saveWatchTime, SAVE_INTERVAL_MS)
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') saveWatchTime({ keepalive: true })
+    if (document.visibilityState === 'hidden')
+      saveWatchTime({ keepalive: true })
   })
   window.addEventListener('pagehide', () => saveWatchTime({ keepalive: true }))
 
@@ -444,7 +462,11 @@
   // button works the same on the image page, in the lightbox or anywhere
   // else. Each change is saved once Stash confirms it.
   const IMAGE_O_MUTATION = /\bimage(Increment|Decrement|Reset)O\b/
-  const IMAGE_O_ACTIONS = { Increment: 'add', Decrement: 'remove', Reset: 'reset' }
+  const IMAGE_O_ACTIONS = {
+    Increment: 'add',
+    Decrement: 'remove',
+    Reset: 'reset',
+  }
   const IMAGE_O_RETRY_MS = 5000
 
   // Changes are saved one at a time in click order, so a quick add then
@@ -465,7 +487,10 @@
         sendImageOs()
       },
       drop(reason) {
-        console.warn(`[OStats] Image ${imageId}: ${action} O not saved:`, reason)
+        console.warn(
+          `[OStats] Image ${imageId}: ${action} O not saved:`,
+          reason,
+        )
         const index = pendingImageOs.indexOf(change)
         if (index !== -1) pendingImageOs.splice(index, 1)
         sendImageOs()
@@ -481,7 +506,9 @@
         const { confirmed, ...change } = pendingImageOs[0]
         const count = await runPluginOperation({ mode: 'image_o', ...change })
         pendingImageOs.shift()
-        debugLog(`Image ${change.image_id}: ${change.action} O (${count} saved)`)
+        debugLog(
+          `Image ${change.image_id}: ${change.action} O (${count} saved)`,
+        )
       }
     } catch (err) {
       console.error('[OStats] Failed to save image O, retrying:', err)
@@ -557,7 +584,6 @@
     }
     return { watchTime: {}, imageOHistory: {} }
   }
-
 
   // ===== UI BUILDING BLOCKS =====
   // Styles live in oStatsI18n.css; elements only get classes here.
@@ -851,6 +877,41 @@
     })
   }
 
+  // average watch time per O today. Image O's have no watch time, so only
+  // scene O's count.
+  function createAvgMinPerOToday(row, watchTimeData, oHistoryCache) {
+    const today = getTodayDate()
+    const os = oHistoryCache.sceneDayTotals[today] || 0
+    const seconds = getWatchSeconds(watchTimeData[today])
+    createStatCard(row, {
+      icon: '⏱️',
+      value: os > 0 ? formatDuration(seconds / os) : '–',
+      label: tc('今日平均分钟/O', 'Avg min/O Today'),
+      accent: 'var(--os-pink)',
+    })
+  }
+
+  // Scenes watched this week: played this week (their latest play is) or
+  // with an O this week, counted once each
+  function countVideosThisWeek(scenes, oHistoryCache, daysSoFar) {
+    const monday = daysSoFar[0]
+    const sceneIds = new Set()
+    scenes.forEach((scene) => {
+      if (
+        scene.last_played_at &&
+        getLocalDateString(new Date(scene.last_played_at)) >= monday
+      ) {
+        sceneIds.add(scene.id)
+      }
+    })
+    daysSoFar.forEach((day) => {
+      ;(oHistoryCache.dayMap.get(day) || []).forEach((event) => {
+        sceneIds.add(event.scene.id)
+      })
+    })
+    return sceneIds.size
+  }
+
   // record session - day with longest watch time
   async function createWatchTimeToday(row, watchTimeData) {
     let maxDuration = 0
@@ -868,7 +929,7 @@
     const subEl = createStatCard(row, {
       icon: '⌛',
       value: formatDuration(maxDuration),
-      label: tc('单日最长时长', 'Most Time Spent in One Day'),
+      label: tc('单日最长时长', 'Most Time Spent Watching in One Day'),
       accent: 'var(--os-green)',
     })
     if (maxDay && maxDuration > 0) {
@@ -1354,7 +1415,10 @@
     scenes.forEach((scene) => {
       const time = oHistoryCache.lastO.get(scene.id)
       if (!time) return
-      if (foundTime === null || (pickNewest ? time > foundTime : time < foundTime)) {
+      if (
+        foundTime === null ||
+        (pickNewest ? time > foundTime : time < foundTime)
+      ) {
         found = scene
         foundTime = time
       }
@@ -1406,6 +1470,498 @@
       tc('最 O 图片', "Image with Most O's"),
       'var(--os-orange)',
     )
+  }
+
+  // ===== THIS WEEK =====
+  // The weekly part of the Today & Weekly cards: this week from Monday up
+  // to today, next to the same days of last week and of a usual week, with
+  // the week day by day (this week's bars in front of last week's
+  // outlines). createWeekTrends works the weeks out once; addTo adds a
+  // stat's weekly part to the bottom of a card.
+  function createWeekTrends(oHistoryCache, watchTimeData) {
+    const watchTotals = {}
+    Object.keys(watchTimeData).forEach((day) => {
+      watchTotals[day] = getWatchSeconds(watchTimeData[day])
+    })
+    const oTotals = oHistoryCache.dayTotals
+    const sceneOTotals = oHistoryCache.sceneDayTotals
+    const sum = (totals, days) =>
+      days.reduce((total, day) => total + (totals[day] || 0), 0)
+
+    // Monday first; elapsed counts the days so far, today included
+    const now = new Date()
+    const elapsed = ((now.getDay() + 6) % 7) + 1
+    function weekOf(weeksBack) {
+      const days = []
+      for (let i = 0; i < 7; i++) {
+        days.push(
+          getLocalDateString(
+            new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate() - (elapsed - 1) - weeksBack * 7 + i,
+            ),
+          ),
+        )
+      }
+      return days
+    }
+    const thisWeek = weekOf(0)
+    const lastWeek = weekOf(1)
+    const soFar = (week) => week.slice(0, elapsed)
+
+    // A usual week: the same days of every earlier week since the stat's
+    // data starts. Only whole weeks count, so the week tracking began in
+    // doesn't pull the average down; nor do weeks before watch time was
+    // tracked, though O's often go back further.
+    const firstActive = (totals) =>
+      Object.keys(totals)
+        .filter((day) => totals[day] > 0)
+        .sort()[0]
+    function earlierSince(firstDay) {
+      const weekList = []
+      for (let back = 1; firstDay && weekOf(back)[0] >= firstDay; back++) {
+        weekList.push(soFar(weekOf(back)))
+      }
+      return { days: weekList.flat(), weeks: weekList.length, weekList }
+    }
+    const sinceO = earlierSince(firstActive(oTotals))
+    const sinceWatch = earlierSince(firstActive(watchTotals))
+
+    const weekdayName = (day) =>
+      isZh()
+        ? `周${'日一二三四五六'[parseLocalDate(day).getDay()]}`
+        : parseLocalDate(day).toLocaleDateString('en-US', { weekday: 'short' })
+    const weekdayInitial = (day) =>
+      isZh()
+        ? '日一二三四五六'[parseLocalDate(day).getDay()]
+        : weekdayName(day).charAt(0)
+    const formatCount = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1))
+
+    // Totals add up over the days; ratios (min/O) are worked out over all
+    // of them at once, so a usual week's is the ratio of the totals. Counts
+    // of different things (videos) are counted week by week, so one
+    // watched in two weeks counts in both.
+    const metrics = {
+      os: {
+        earlier: sinceO,
+        measure: (days) => sum(oTotals, days),
+        format: formatCount,
+        weekText: () => tc('（本周）', ' this week'),
+      },
+      watch: {
+        earlier: sinceWatch,
+        measure: (days) => sum(watchTotals, days),
+        format: formatDuration,
+        weekText: () => tc('（本周）', ' this week'),
+      },
+      oDays: {
+        earlier: sinceO,
+        measure: (days) => days.filter((day) => (oTotals[day] || 0) > 0).length,
+        format: formatCount,
+        weekText: (value) =>
+          tc(
+            ` 天有 O（本周）`,
+            ` day${value === 1 ? '' : 's'} with an O this week`,
+          ),
+      },
+      // Image O's have no watch time, so only scene O's count
+      avgMinPerO: {
+        earlier: sinceWatch,
+        isRatio: true,
+        measure: (days) => {
+          const os = sum(sceneOTotals, days)
+          return os > 0 ? sum(watchTotals, days) / os : null
+        },
+        format: formatDuration,
+        weekText: () => tc('（本周）', ' this week'),
+      },
+    }
+
+    // The weekly part of a card: a line on top, then (from addTo) the days
+    // and the comparisons
+    function startWeekPart(card, value, text) {
+      const part = createEl('div', 'os-week')
+      const total = createEl('div', 'os-week-total')
+      total.appendChild(createEl('strong', '', value))
+      total.append(text)
+      part.appendChild(total)
+      card.appendChild(part)
+      return part
+    }
+
+    function addTo(card, key) {
+      const metric = metrics[key]
+      const current = metric.measure(soFar(thisWeek))
+      const last = metric.measure(soFar(lastWeek))
+      const {
+        days: earlierDays,
+        weeks: earlierWeeks,
+        weekList,
+      } = metric.earlier
+      let usual = null
+      if (earlierWeeks > 0) {
+        if (metric.isRatio) {
+          usual = metric.measure(earlierDays)
+        } else if (metric.perWeek) {
+          usual =
+            weekList.reduce((total, days) => total + metric.measure(days), 0) /
+            earlierWeeks
+        } else {
+          usual = metric.measure(earlierDays) / earlierWeeks
+        }
+      }
+
+      const part = startWeekPart(
+        card,
+        current === null ? '–' : metric.format(current),
+        metric.weekText(current),
+      )
+
+      // Day by day: this week in front, last week's outline behind
+      const daily = (week) => week.map((day) => metric.measure([day]))
+      const thisDaily = daily(thisWeek)
+      const lastDaily = daily(lastWeek)
+      const maxValue = Math.max(
+        0,
+        ...thisDaily.slice(0, elapsed).filter((v) => v !== null),
+        ...lastDaily.filter((v) => v !== null),
+      )
+      const height = (value) =>
+        value && maxValue ? `max(3px, ${(value / maxValue) * 100}%)` : '0'
+      const strip = createEl('div', 'os-week-days')
+      const labels = createEl('div', 'os-week-labels')
+      thisWeek.forEach((day, i) => {
+        const isFuture = i >= elapsed
+        const col = createEl('div', 'os-week-day')
+        const ghost = createEl('div', 'os-week-ghost')
+        ghost.style.height = height(lastDaily[i])
+        col.appendChild(ghost)
+        if (!isFuture) {
+          const bar = createEl('div', 'os-week-bar')
+          bar.style.height = height(thisDaily[i])
+          col.appendChild(bar)
+          col.classList.add('is-clickable')
+          col.addEventListener('click', () => openDayInOnThisDay(day))
+        }
+        const show = (value) => (value === null ? 'none' : metric.format(value))
+        col.title = tc(
+          `${weekdayName(day)} ${formatShortDate(day)}：${isFuture ? '尚未到来' : show(thisDaily[i])} · 上周 ${show(lastDaily[i])}`,
+          `${weekdayName(day)} ${formatShortDate(day)}: ${isFuture ? 'still to come' : show(thisDaily[i])} · last week ${show(lastDaily[i])}`,
+        )
+        strip.appendChild(col)
+        labels.appendChild(
+          createEl(
+            'span',
+            i === elapsed - 1 ? 'is-today' : '',
+            weekdayInitial(day),
+          ),
+        )
+      })
+      part.append(strip, labels)
+
+      // Comparison lines: the other week's value and the change from it
+      function addCompare(label, other, trend) {
+        const line = createEl('div', 'os-week-compare')
+        const text = createEl('span', '', `${label} `)
+        text.appendChild(
+          createEl('strong', '', other === null ? '–' : metric.format(other)),
+        )
+        line.appendChild(text)
+        if (trend) {
+          line.appendChild(
+            createEl('span', `os-trend ${trend.className}`, trend.text),
+          )
+        }
+        part.appendChild(line)
+      }
+      function trendFrom(other, asPercent) {
+        if (current === null || other === null) return null
+        const delta = current - other
+        if (asPercent) {
+          if (other === 0) {
+            return current > 0 ? { className: 'is-up', text: '▲' } : null
+          }
+          const percent = Math.round((delta / other) * 100)
+          if (Math.abs(percent) < 5) return { className: 'is-even', text: '≈' }
+          return percent > 0
+            ? { className: 'is-up', text: `▲ ${percent}%` }
+            : { className: 'is-down', text: `▼ ${-percent}%` }
+        }
+        if (delta === 0) return { className: 'is-even', text: '=' }
+        return delta > 0
+          ? { className: 'is-up', text: `▲ ${metric.format(delta)}` }
+          : { className: 'is-down', text: `▼ ${metric.format(-delta)}` }
+      }
+      addCompare(tc('上周', 'Last week'), last, trendFrom(last, false))
+      if (earlierWeeks > 0) {
+        addCompare(tc('通常', 'Usual'), usual, trendFrom(usual, true))
+      } else {
+        part.appendChild(
+          createEl(
+            'div',
+            'os-week-compare',
+            tc('暂无更早的周数据', 'No earlier weeks yet'),
+          ),
+        )
+      }
+    }
+
+    // Which days are compared, said once (on the Weekly toggle) so the
+    // cards can stay short
+    const days =
+      elapsed === 1
+        ? weekdayName(thisWeek[0])
+        : `${weekdayName(thisWeek[0])}–${weekdayName(thisWeek[elapsed - 1])}`
+
+    // Videos watched: each scene played or with an O that day, counted
+    // once. Needs the scenes' play history, which loads after the page.
+    function addVideos(scenes) {
+      const videosByDay = new Map()
+      const addVideo = (day, sceneId) => {
+        if (!videosByDay.has(day)) videosByDay.set(day, new Set())
+        videosByDay.get(day).add(sceneId)
+      }
+      scenes.forEach((scene) => {
+        scene.play_history.forEach((timestamp) => {
+          const time = new Date(timestamp)
+          if (!isNaN(time.getTime())) {
+            addVideo(getLocalDateString(time), scene.id)
+          }
+        })
+      })
+      oHistoryCache.dayMap.forEach((events, day) => {
+        events.forEach((event) => addVideo(day, event.scene.id))
+      })
+      const counts = {}
+      videosByDay.forEach((ids, day) => {
+        counts[day] = ids.size
+      })
+      metrics.videos = {
+        earlier: earlierSince(firstActive(counts)),
+        perWeek: true,
+        measure: (days) => {
+          const ids = new Set()
+          days.forEach((day) =>
+            videosByDay.get(day)?.forEach((id) => ids.add(id)),
+          )
+          return ids.size
+        },
+        format: formatCount,
+        weekText: (value) =>
+          tc(
+            ` 个视频（本周）`,
+            ` video${value === 1 ? '' : 's'} this week`,
+          ),
+      }
+    }
+
+    return {
+      // Which days the weekly parts compare, for the toggle's tooltip
+      note: tc(
+        `与上周及通常一周的 ${days} 对比`,
+        `${days}, compared with the same days of last week and of a usual week`,
+      ),
+      // This week's days up to today
+      daysSoFar: soFar(thisWeek),
+      addTo,
+      // A weekly line alone, until a stat's day-by-day history is ready
+      addTotal: startWeekPart,
+      addVideos,
+    }
+  }
+
+  // ===== TOP PERFORMING =====
+  // Your top performers, tags and studios, by O's or by views. A scene's
+  // O's and views count for each performer and tag in it, and its studio.
+  // Three rows of three (see .os-top-list)
+  const TOP_PERFORMING_ROWS = 9
+
+  // A play, or an O on a scene with no play logged
+  function getViews(scene) {
+    return Math.max(scene.play_count, scene.o_counter > 0 ? 1 : 0)
+  }
+
+  function createTopPerforming(parent, scenes) {
+    let totalOs = 0
+    let totalViews = 0
+    const groups = {
+      performers: new Map(),
+      tags: new Map(),
+      studios: new Map(),
+    }
+    function count(map, entity, scene) {
+      if (!map.has(entity.id)) {
+        map.set(entity.id, { ...entity, os: 0, views: 0 })
+      }
+      const entry = map.get(entity.id)
+      entry.os += scene.o_counter
+      entry.views += getViews(scene)
+    }
+    scenes.forEach((scene) => {
+      totalOs += scene.o_counter
+      totalViews += getViews(scene)
+      scene.performers.forEach((performer) =>
+        count(groups.performers, performer, scene),
+      )
+      scene.tags.forEach((tag) => count(groups.tags, tag, scene))
+      if (scene.studio) count(groups.studios, scene.studio, scene)
+    })
+    if (totalOs === 0 && totalViews === 0) return
+    // "1 O", "3 O's", "2 views"
+    const plural = (n, word) =>
+      isZh()
+        ? `${n} ${word === 'O' ? '次 O' : '次观看'}`
+        : `${n} ${word}${n === 1 ? '' : word === 'O' ? "'s" : 's'}`
+
+    const card = createEl('div', 'os-card os-chart os-top')
+    card.style.setProperty('--os-accent', 'var(--os-blue)')
+    parent.appendChild(card)
+
+    const head = createEl('div', 'os-chart-head')
+    // Named after what's shown: Top Performers, Top Tags or Top Studios
+    const title = createEl('h4', 'os-chart-title')
+    head.appendChild(title)
+    const actions = createEl('div', 'os-chart-actions')
+    head.appendChild(actions)
+    card.appendChild(head)
+
+    const list = createEl('div', 'os-top-list')
+    card.appendChild(list)
+
+    let kind = 'performers'
+    let sort = 'os'
+    function addSwitcher(options, onPick) {
+      const switcher = createEl('div', 'os-segmented')
+      const buttons = options.map(([value, label]) => {
+        const button = createEl('button', '', label)
+        button.type = 'button'
+        button.dataset.value = value
+        button.addEventListener('click', () => {
+          onPick(value)
+          render()
+        })
+        switcher.appendChild(button)
+        return button
+      })
+      actions.appendChild(switcher)
+      return buttons
+    }
+    const kindButtons = addSwitcher(
+      [
+        ['performers', tc('演员', 'Performers')],
+        ['tags', tc('标签', 'Tags')],
+        ['studios', tc('工作室', 'Studios')],
+      ],
+      (value) => (kind = value),
+    )
+    const sortButtons = addSwitcher(
+      [
+        ['os', tc('O 数最多', "Most O's")],
+        ['views', tc('观看最多', 'Most Views')],
+      ],
+      (value) => (sort = value),
+    )
+
+    const kindTitles = {
+      performers: tc('演员排名', 'Top Performers'),
+      tags: tc('标签排名', 'Top Tags'),
+      studios: tc('工作室排名', 'Top Studios'),
+    }
+    const kindLabels = {
+      performers: tc('演员', 'performers'),
+      tags: tc('标签', 'tags'),
+      studios: tc('工作室', 'studios'),
+    }
+
+    function render() {
+      title.innerText = kindTitles[kind]
+      kindButtons.forEach((b) =>
+        b.classList.toggle('is-active', b.dataset.value === kind),
+      )
+      sortButtons.forEach((b) =>
+        b.classList.toggle('is-active', b.dataset.value === sort),
+      )
+
+      // Ties go to the other count: fewer views for O's, more O's for views
+      const entries = [...groups[kind].values()]
+        .filter((entry) => entry[sort] > 0)
+        .sort((a, b) =>
+          sort === 'os'
+            ? b.os - a.os || a.views - b.views
+            : b.views - a.views || b.os - a.os,
+        )
+        .slice(0, TOP_PERFORMING_ROWS)
+
+      list.innerHTML = ''
+      if (entries.length === 0) {
+        list.appendChild(
+          createEl(
+            'div',
+            'os-empty',
+            sort === 'os'
+              ? tc(
+                  `还没有获得 O 的${kindLabels[kind]}`,
+                  `No ${kind} with an O yet`,
+                )
+              : tc(
+                  `还没有观看记录的${kindLabels[kind]}`,
+                  `No ${kind} with a view yet`,
+                ),
+          ),
+        )
+        return
+      }
+
+      entries.forEach((entry, index) => {
+        const row = createEl('a', 'os-top-row')
+        openInNewTab(row, `/${kind}/${entry.id}`)
+        row.title =
+          sort === 'os'
+            ? tc(
+                `占你全部 O 的 ${Math.round((entry.os / totalOs) * 100)}%`,
+                `${Math.round((entry.os / totalOs) * 100)}% of all your O's`,
+              )
+            : tc(
+                `占你全部观看的 ${Math.round((entry.views / totalViews) * 100)}%`,
+                `${Math.round((entry.views / totalViews) * 100)}% of all your views`,
+              )
+
+        if (kind === 'performers' && entry.image_path) {
+          const avatar = createEl('img', 'os-top-avatar')
+          avatar.src = entry.image_path
+          avatar.loading = 'lazy'
+          avatar.alt = ''
+          row.appendChild(avatar)
+        } else {
+          row.appendChild(
+            createEl(
+              'span',
+              'os-top-avatar is-initial',
+              (entry.name || '?').charAt(0).toUpperCase(),
+            ),
+          )
+        }
+
+        const info = createEl('div', 'os-top-info')
+        const top = createEl('div', 'os-top-top')
+        top.appendChild(
+          createEl('span', 'os-top-name', entry.name || tc('未命名', 'Unnamed')),
+        )
+        top.appendChild(createEl('span', 'os-top-rank', `#${index + 1}`))
+        info.appendChild(top)
+        info.appendChild(
+          createEl(
+            'div',
+            'os-top-meta',
+            `${plural(entry.os, 'O')} · ${plural(entry.views, 'view')}`,
+          ),
+        )
+        row.appendChild(info)
+        list.appendChild(row)
+      })
+    }
+    render()
   }
 
   // ===== CALENDARS =====
@@ -1652,7 +2208,9 @@
             const cell = createDayCell(day)
             // Monday first, like the strip; the 1st sits under its weekday
             if (i === 0) {
-              cell.style.gridColumnStart = String(((day.date.getDay() + 6) % 7) + 1)
+              cell.style.gridColumnStart = String(
+                ((day.date.getDay() + 6) % 7) + 1,
+              )
             }
             monthGrid.appendChild(cell)
           })
@@ -2134,7 +2692,9 @@
 
       // The busiest bar (the first, if tied) keeps its number when the
       // month view is too narrow to show them all (see ostats.css)
-      const peak = data.find((item) => item.value > 0 && item.value === maxValue)
+      const peak = data.find(
+        (item) => item.value > 0 && item.value === maxValue,
+      )
 
       data.forEach((item) => {
         const col = createEl('div', 'os-chart-col')
@@ -2616,7 +3176,9 @@
       const videoListContainer = createEl('div')
       contentContainer.appendChild(videoListContainer)
 
-      const uniqueScenes = new Set(daySceneEvents.map((event) => event.scene.id))
+      const uniqueScenes = new Set(
+        daySceneEvents.map((event) => event.scene.id),
+      )
       const viewedItems = [
         ...daySceneEvents,
         ...dayImageOs.map(({ image, time }) => ({ image, time, hasO: true })),
@@ -2664,7 +3226,10 @@
       } else {
         viewedItems.forEach(({ scene, image, time, hasO }) => {
           const item = highlightOf({ scene, image })
-          const videoItem = createEl('div', hasO ? 'os-video has-o' : 'os-video')
+          const videoItem = createEl(
+            'div',
+            hasO ? 'os-video has-o' : 'os-video',
+          )
           videoItem.addEventListener('click', () => {
             window.open(item.href, '_blank', 'noopener,noreferrer')
           })
@@ -2831,24 +3396,60 @@
 
     // Individual stats, skipped when their own setting is on. The whole-row
     // setting overrides these, so a hidden row never shows any of its stats.
+    // Each Today card with its weekly part (unless Hide This Week is on)
+    const week = settings.hideThisWeek
+      ? null
+      : createWeekTrends(oHistoryCache, watchTimeData)
+    // Things to fill in once play history has loaded (it loads last)
+    const afterPlayHistory = []
     const todayStats = settings.hideTopStats
       ? []
       : [
           [
             settings.hideTopStatsOsToday,
             (row) => createOrgasmsToday(row, scenes, oHistoryCache),
+            (card) => week.addTo(card, 'os'),
           ],
           [
             settings.hideTopStatsStreak,
             (row) => createOrgasmStreak(row, scenes, oHistoryCache),
+            (card) => week.addTo(card, 'oDays'),
           ],
           [
             settings.hideTodayWatchTime,
             (row) => createWatchTimeTodayStat(row, watchTimeData),
+            (card) => week.addTo(card, 'watch'),
           ],
           [
             settings.hideTodayVideosWatched,
             (row) => createVideosWatchedToday(row, scenes, oHistoryCache),
+            (card) => {
+              // This week's count now; the days and comparisons once play
+              // history has loaded
+              const count = countVideosThisWeek(
+                scenes,
+                oHistoryCache,
+                week.daysSoFar,
+              )
+              const countOnly = week.addTotal(
+                card,
+                String(count),
+                tc(
+                  ` 个视频（本周）`,
+                  ` video${count === 1 ? '' : 's'} this week`,
+                ),
+              )
+              afterPlayHistory.push(() => {
+                week.addVideos(scenes)
+                countOnly.remove()
+                week.addTo(card, 'videos')
+              })
+            },
+          ],
+          [
+            settings.hideTodayAvgMinPerO,
+            (row) => createAvgMinPerOToday(row, watchTimeData, oHistoryCache),
+            (card) => week.addTo(card, 'avgMinPerO'),
           ],
         ].filter(([hidden]) => !hidden)
 
@@ -2866,7 +3467,12 @@
           [
             settings.hideTopStatsAverageMinPerO,
             (row) =>
-              createAverageOPerMinute(row, scenes, watchTimeData, oHistoryCache),
+              createAverageOPerMinute(
+                row,
+                scenes,
+                watchTimeData,
+                oHistoryCache,
+              ),
           ],
         ].filter(([hidden]) => !hidden)
 
@@ -2897,11 +3503,45 @@
 
     // Sections are added in page order. A hidden section is never created,
     // so the spacing between the ones that are left stays even.
+    // Today's cards, one row, each with this week under today
     if (todayStats.length > 0) {
-      const section = createSection(root, tc('今日', 'Today'))
-      const grid = createEl('div', 'os-grid')
+      const section = createSection(
+        root,
+        week ? tc('今日与本周', 'Today & Weekly') : tc('今日', 'Today'),
+      )
+      const grid = createEl('div', 'os-grid os-today-grid')
+      grid.style.setProperty('--os-cols', todayStats.length)
       section.appendChild(grid)
-      for (const [, create] of todayStats) await create(grid)
+      for (const [, create, addWeek] of todayStats) {
+        await create(grid)
+        if (week) addWeek(grid.lastElementChild)
+      }
+
+      // Weekly toggle: shows or hides the weekly part of every card,
+      // remembered in this browser (shown at first)
+      if (week) {
+        const toggle = createEl(
+          'button',
+          'os-btn os-weekly-toggle',
+          tc('本周', 'Weekly'),
+        )
+        toggle.type = 'button'
+        toggle.title = tc(
+          `在每张卡片中显示本周：${week.note}`,
+          `Show this week in each card: ${week.note}`,
+        )
+        const setWeekly = (on) => {
+          grid.classList.toggle('is-weekly-hidden', !on)
+          toggle.setAttribute('aria-pressed', String(on))
+        }
+        toggle.addEventListener('click', () => {
+          const on = grid.classList.contains('is-weekly-hidden')
+          setWeekly(on)
+          saveLayoutChoice('oStatsI18n_show_weekly', on)
+        })
+        setWeekly(loadLayoutChoice('oStatsI18n_show_weekly', true))
+        section.querySelector('.os-section-head').appendChild(toggle)
+      }
     }
 
     // Stash's totals, then the records
@@ -2947,11 +3587,18 @@
       await createChartPair(section, {
         storageKey: 'oStatsI18n_calendars_side_by_side',
         createO:
-          !settings.hideOCalendar && ((row) => createOHeatmap(row, oHistoryCache)),
+          !settings.hideOCalendar &&
+          ((row) => createOHeatmap(row, oHistoryCache)),
         createWatch:
           !settings.hideWatchCalendar &&
           ((row) => createWatchHeatmap(row, watchTimeData)),
       })
+    }
+
+    if (!settings.hideTopPerforming) {
+      const section = createSection(root, tc('表现最佳', 'Top Performing'))
+      createTopPerforming(section, scenes)
+      if (section.children.length === 1) section.remove()
     }
 
     let onThisDaySection = null
@@ -2976,11 +3623,21 @@
       createWatchTimeExportButton(root, oHistoryCache)
     }
 
+    // Play history is loaded after everything else, for On This Day and the
+    // Videos Watched card's week
+    if (!onThisDaySection && afterPlayHistory.length === 0) return
+    const playHistoryLoaded = addPlayHistory(scenes)
+    if (afterPlayHistory.length > 0) {
+      playHistoryLoaded
+        .then(() => afterPlayHistory.forEach((fill) => fill()))
+        .catch((err) =>
+          console.error('[OStats] Failed loading play history:', err),
+        )
+    }
     if (!onThisDaySection) return
 
-    // On This Day also needs play history, loaded after everything else
     const onThisDayBody = createEl('div')
-    addPlayHistory(scenes)
+    playHistoryLoaded
       .then(async () => {
         onThisDaySection.querySelector('.os-otd-loading')?.remove()
         onThisDaySection.appendChild(onThisDayBody)

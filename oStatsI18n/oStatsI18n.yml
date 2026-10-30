@@ -1,6 +1,6 @@
 name: O Stats I18n
-description: "Stash 统计页的 O 统计增强：今日、全部时间与纪录、亮点、活动图表（含 O 日历与观看日历热力图）、当日回顾（含 24 小时时间线与图片 O）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
-version: 2.2.0-1
+description: "Stash 统计页的 O 统计增强：今日与本周、全部时间与纪录、亮点、活动图表（含 O 日历与观看日历热力图）、表现最佳（演员/标签/工作室按 O 数或观看次数排名）、当日回顾（含 24 小时时间线与图片 O）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
+version: 2.2.0-2
 url: https://discourse.stashapp.cc/t/o-stats/4766/7
 ui:
   javascript:
@@ -15,25 +15,33 @@ settings:
     type: BOOLEAN
     description: 不计入图片上的 O。开启显示时，图片 O 会计入今日 O 数、连续天数、单日最多 O、O 次数图表和 O 日历，在「当日回顾」时间线上显示为橙色标记并出现在其「查看的内容」列表中，另有专属的「最 O 图片」亮点。平均分钟/O 只统计场景上的 O，因为图片没有观看时长。即使开启本项，每张图片上每次 O 的时间仍会被记录。默认关闭。
   01_hideTopStats:
-    displayName: 隐藏今日统计行
+    displayName: 隐藏今日与本周统计行
     type: BOOLEAN
-    description: 隐藏整个「今日」统计行（今日 O 数、连续天数、今日观看时长和今日观看视频数）。默认关闭。
+    description: 隐藏整个「今日与本周」统计行（今日和本周的 O 数、连续天数、观看时长、观看视频数与平均分钟/O）。默认关闭。
   02_hideTopStatsOsToday:
-    displayName: '[今日] 隐藏今日 O 数'
+    displayName: '[今日与本周] 隐藏今日 O 数'
     type: BOOLEAN
-    description: 隐藏「今日 O 数」。开启「隐藏今日统计行」时该项无效。默认关闭。
+    description: 隐藏「今日 O 数」。开启「隐藏今日与本周统计行」时该项无效。默认关闭。
   04_hideTopStatsStreak:
-    displayName: '[今日] 隐藏连续天数'
+    displayName: '[今日与本周] 隐藏连续天数'
     type: BOOLEAN
-    description: 隐藏「连续天数」。开启「隐藏今日统计行」时该项无效。默认关闭。
+    description: 隐藏「连续天数」。开启「隐藏今日与本周统计行」时该项无效。默认关闭。
   04a_hideTodayWatchTime:
-    displayName: '[今日] 隐藏今日观看时长'
+    displayName: '[今日与本周] 隐藏今日观看时长'
     type: BOOLEAN
-    description: 隐藏「今日观看时长」。开启「隐藏今日统计行」时该项无效。默认关闭。
+    description: 隐藏「今日观看时长」。开启「隐藏今日与本周统计行」时该项无效。默认关闭。
   04b_hideTodayVideosWatched:
-    displayName: '[今日] 隐藏今日观看视频数'
+    displayName: '[今日与本周] 隐藏今日观看视频数'
     type: BOOLEAN
-    description: 隐藏「今日观看视频数」。开启「隐藏今日统计行」时该项无效。默认关闭。
+    description: 隐藏「今日观看视频数」。开启「隐藏今日与本周统计行」时该项无效。默认关闭。
+  04c_hideTodayAvgMinPerO:
+    displayName: '[今日与本周] 隐藏平均分钟/O'
+    type: BOOLEAN
+    description: 隐藏「平均分钟/O」卡片（今日和本周每 O 的观看时长）。开启「隐藏今日与本周统计行」时该项无效。默认关闭。
+  04d_hideThisWeek:
+    displayName: '[今日与本周] 隐藏本周'
+    type: BOOLEAN
+    description: 「今日与本周」卡片只显示今日，不显示本周合计、逐日柱状图，也不与上周和通常一周对比。默认关闭。
   06a_hideAllTimeStats:
     displayName: 隐藏全部时间与纪录行
     type: BOOLEAN
@@ -90,6 +98,10 @@ settings:
     displayName: 隐藏观看日历
     type: BOOLEAN
     description: 隐藏 O 日历下方的观看日历热力图。默认关闭。
+  14_hideTopPerforming:
+    displayName: 隐藏表现最佳
+    type: BOOLEAN
+    description: 隐藏「表现最佳」分区，它按 O 数或观看次数对你的演员、标签和工作室排名。默认关闭。
   15_hideOnThisDay:
     displayName: 隐藏当日回顾
     type: BOOLEAN
