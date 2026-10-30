@@ -4,7 +4,7 @@
   if (window.__oStatsI18nLoaded) return
   window.__oStatsI18nLoaded = true
 
-  var PLUGIN_VERSION = '2.2.0-2'
+  var PLUGIN_VERSION = '2.2.0-3'
   var PLUGIN_ID = 'oStatsI18n'
   console.log('[oStatsI18n] O Stats I18n v' + PLUGIN_VERSION + ' loaded')
 
