@@ -4,6 +4,7 @@ __pycache__/
 
 # 插件运行时数据/日志（写入插件目录，不随仓库发布）
 oStatsI18n/watch_data.json
+OCheevsI18n/cheevs_data.json
 *_backend.log
 *_auto.log
 

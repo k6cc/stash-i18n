@@ -1,0 +1,28 @@
+name: O Cheevs I18n
+description: "为 Stash 添加成就系统：按首次启用时 Stash 已有总数起算，追踪观看时长、O 数与观看视频数三类成就，每项分普通/精良/稀有/史诗/传说五档，达成即弹出解锁提示；自带独立成就页面（概览与各分类进度）与顶栏奖杯入口，进度存盘于插件目录。中文/英文跟随 Stash 界面语言。"
+version: 0.3.0-1
+url: https://discourse.stashapp.cc/t/o-cheevs/19027
+ui:
+  css:
+    - OCheevsI18n.css
+  javascript:
+    - OCheevsI18n.js
+  assets:
+    /: .
+settings:
+  01_hideNavButton:
+    displayName: 隐藏顶栏按钮
+    type: BOOLEAN
+    description: 隐藏顶栏「统计」旁的奖杯按钮。成就页面仍可通过 /plugins/cheevs 打开。默认关闭。
+  02_hideUnlockPopups:
+    displayName: 隐藏解锁弹窗
+    type: BOOLEAN
+    description: 解锁成就时不弹出角落提示。默认关闭。
+
+exec:
+  - python
+  - '{pluginDir}/cheevs_data.py'
+interface: raw
+tasks:
+  - name: saveCheevsData
+    description: 由 O Cheevs I18n 调用以保存成就进度，无需手动运行。
