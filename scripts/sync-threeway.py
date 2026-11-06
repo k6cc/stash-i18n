@@ -132,6 +132,24 @@ def main():
     if git(["remote", "get-url", remote], check=False).returncode != 0:
         sys.exit("缺少 remote %s：先运行 pwsh -NoProfile -File scripts/upstream-diff.ps1 -Fetch" % remote)
 
+    # 记账表记的是上游目录；上游文件名通常是原版名（LockdownI18n → Lockdown.js）
+    up_dir = up_path.rstrip("/")
+    base_name = a.plugin[:-4] if a.plugin.endswith("I18n") else a.plugin
+    prefixes = [""] if up_dir in ("", ".") else [up_dir + "/"]
+    candidates = [p + base_name + ".js" for p in prefixes] + [p + a.plugin + ".js" for p in prefixes]
+    up_file = None
+    for cand in candidates:
+        if git(["cat-file", "-t", "%s:%s" % (a.theirs, cand)], check=False).stdout.strip() == "blob":
+            up_file = cand
+            break
+    if up_file is None:
+        listing = git(["ls-tree", "--name-only", a.theirs, up_dir or "."], check=False).stdout.split()
+        js = [x for x in listing if x.endswith(".js")]
+        if len(js) == 1:
+            up_file = (up_dir + "/" if up_dir not in ("", ".") else "") + js[0]
+        else:
+            sys.exit("无法确定上游文件：%s 下 JS 有 %d 个（%s）" % (up_dir, len(js), ", ".join(js)))
+
     outdir = a.out or os.path.join(tempfile.gettempdir(), "stash-i18n-sync", a.plugin)
     if not os.path.isdir(outdir):
         os.makedirs(outdir)
@@ -140,20 +158,35 @@ def main():
     if not os.path.exists(ours_path):
         sys.exit("找不到本地汉化文件：%s" % ours_path)
 
-    base = git(["show", "%s:%s" % (base_sha, up_path)]).stdout
-    theirs = git(["show", "%s:%s" % (a.theirs, up_path)]).stdout
+    base = git(["show", "%s:%s" % (base_sha, up_file)]).stdout
+    theirs = git(["show", "%s:%s" % (a.theirs, up_file)]).stdout
     ours = read_text(ours_path)
-    write_text(os.path.join(outdir, "base.js"), base)
-    write_text(os.path.join(outdir, "theirs.js"), theirs)
-    write_text(os.path.join(outdir, "ours.js"), ours)
 
-    p = subprocess.run(["git", "merge-file", "-p", "--diff3", "--", ours_path,
+    # 统一换行：本仓库工作区可能是 CRLF（autocrlf），上游 blob 是 LF；
+    # 不归一化时每一行都被当成「改动」，三方合并会退化成整文件冲突。
+    def lf(text):
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    write_text(os.path.join(outdir, "base.js"), lf(base))
+    write_text(os.path.join(outdir, "theirs.js"), lf(theirs))
+    write_text(os.path.join(outdir, "ours.js"), lf(ours))
+
+    p = subprocess.run(["git", "merge-file", "-p", "--diff3", "--",
+                        os.path.join(outdir, "ours.js"),
                         os.path.join(outdir, "base.js"), os.path.join(outdir, "theirs.js")],
                        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
     raw = p.stdout
     write_text(os.path.join(outdir, "merged_conflicted.js"), raw)
 
     resolved, blocks = split_conflicts(raw)
+    total = len(raw.splitlines())
+    biggest = max((no + nt for _ln, no, nt in blocks), default=0)
+    if not a.markers and biggest >= total * 0.9:
+        write_text(os.path.join(outdir, "conflicts.txt"),
+                   "整个文件被判为冲突（%d 行），已中止，未输出 merged.js。\n"
+                   "常见原因：换行符/BOM 不一致、上游路径取到了目录、或本地文件被整体替换过。\n" % total)
+        sys.exit("冲突覆盖整份文件（%d/%d 行），疑似换行符或路径问题，已中止；见 %s"
+                 % (biggest, total, os.path.join(outdir, "conflicts.txt")))
     report = ["冲突 %d 处（起始行, ours 行数, theirs 行数）" % len(blocks), ""]
     for i, (ln, no, nt) in enumerate(blocks, 1):
         report.append("%3d. 第 %6d 行  ours %4d 行 / theirs %4d 行" % (i, ln, no, nt))
