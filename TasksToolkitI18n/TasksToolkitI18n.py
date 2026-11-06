@@ -61,6 +61,7 @@ scheduler_status, autopilot_status (read); note, autotag_run, autotag_done,
 scheduler, scheduler_stop, autopilot, autopilot_set (write). Standard library only, Python 3.6 or later; the
 scheduler needs a Unix Stash (fork), as in Docker.
 """
+import binascii
 import datetime
 import http.client
 import json
@@ -84,7 +85,7 @@ except ImportError:          # Windows: no scheduler there (it needs fork)
     fcntl = None
 
 PLUGIN_ID = "TasksToolkitI18n"
-PLUGIN_VERSION = "0.6.4-1"
+PLUGIN_VERSION = "0.6.6-1"
 EVENTS_MAX = 100          # the newest events kept, oldest dropped
 STEPS_MAX = 40            # steps kept per run
 RUNS_MAX = 50             # routines with a run on record
@@ -158,28 +159,50 @@ def write_atomic(path, text):
     if not os.path.isdir(d):
         os.makedirs(d)
     tmp = "%s.%d.tmp" % (path, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    for i in range(20):
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        for i in range(20):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                # Windows: a reader holding the file open for a moment
+                if i == 19:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        # 0.6.5: a failed write leaves no stray temporary file behind
         try:
-            os.replace(tmp, path)
-            break
-        except PermissionError:
-            # Windows: a reader holding the file open for a moment
-            if i == 19:
-                raise
-            time.sleep(0.05)
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class Lock(object):
     """One writer at a time: a lock file created exclusively. One left
-    behind by a killed process is taken over after LOCK_STALE_S."""
+    behind by a killed process is taken over after LOCK_STALE_S.
+
+    0.6.5: the file holds a token of its own (pid and random bytes) and is
+    removed only while it still holds that token, so a holder taken over as
+    stale does not remove the next writer's lock on its way out; a long
+    holder calls touch(). The same class as Suite Data's (1.1.19): keep
+    both alike."""
 
     def __init__(self, folder):
         self.folder = folder
         self.path = os.path.join(folder, ".lock")
+        self.token = "%d-%s" % (os.getpid(), binascii.hexlify(os.urandom(8)).decode("ascii"))
+
+    def holder(self):
+        try:
+            with open(self.path, "r", encoding="ascii", errors="replace") as f:
+                return f.read()
+        except OSError:
+            return None
 
     def __enter__(self):
         if not os.path.isdir(self.folder):
@@ -188,12 +211,15 @@ class Lock(object):
         while True:
             try:
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode("ascii"))
+                os.write(fd, self.token.encode("ascii"))
                 os.close(fd)
                 return self
             except FileExistsError:
                 try:
-                    if time.time() - os.path.getmtime(self.path) > LOCK_STALE_S:
+                    seen = self.holder()
+                    # still the same holder right before the take-over, so a
+                    # lock someone else just took over is not removed too
+                    if time.time() - os.path.getmtime(self.path) > LOCK_STALE_S and self.holder() == seen:
                         os.remove(self.path)
                         continue
                 except OSError:
@@ -202,11 +228,19 @@ class Lock(object):
                     raise RuntimeError("the notes are busy; try again")
                 time.sleep(0.03)
 
+    def touch(self):
+        if self.holder() == self.token:
+            try:
+                os.utime(self.path, None)
+            except OSError:
+                pass
+
     def __exit__(self, *exc):
-        try:
-            os.remove(self.path)
-        except OSError:
-            pass
+        if self.holder() == self.token:
+            try:
+                os.remove(self.path)
+            except OSError:
+                pass
         return False
 
 
@@ -901,6 +935,10 @@ Q_CONFIG = "{ configuration { plugins } }"
 Q_BOXES = "{ configuration { general { stashBoxes { endpoint } } } }"
 Q_ID_DEFAULTS = """{ configuration { defaults { identify { sources { source { stash_box_endpoint scraper_id } }
     options { setCoverImage setOrganized includeMalePerformers skipMultipleMatches fieldOptions { field strategy createMissing } } } } } }"""
+# 0.6.5: Stash 0.27 deprecated includeMalePerformers for performerGenders (a
+# list; 0.32's input takes it). Asked for first; an older Stash refuses the
+# field, so the query without it follows (id_defaults).
+Q_ID_DEFAULTS_G = Q_ID_DEFAULTS.replace("includeMalePerformers", "includeMalePerformers performerGenders")
 Q_ID_SCENES = "query ($f: SceneFilterType) { findScenes(filter: { per_page: -1 }, scene_filter: $f) { scenes { id } } }"
 ID_FILTER = {"is_missing": "stash_id", "NOT": {"is_missing": "phash"}}
 ID_FIELDS = ("title", "code", "details", "director", "urls", "date", "studio", "performers", "tags", "stash_ids")
@@ -1005,7 +1043,7 @@ def safe_identify_input(endpoints, ids, defaults):
     """The page's safeIdentifyInput: stash-box fingerprints only, every field
     MERGE with nothing created, no cover, organized left alone."""
     o = (defaults or {}).get("options") or {}
-    return {
+    out = {
         "sources": [{"source": {"stash_box_endpoint": e}} for e in (endpoints or [])],
         "options": {
             "fieldOptions": [{"field": f, "strategy": "MERGE", "createMissing": False} for f in ID_FIELDS],
@@ -1014,6 +1052,25 @@ def safe_identify_input(endpoints, ids, defaults):
         },
         "sceneIDs": [str(x) for x in (ids or [])],
     }
+    # 0.6.5: the user's genders, when their Identify has some (the newer
+    # field; includeMalePerformers stays for a Stash older than 0.27)
+    g = [x for x in (o.get("performerGenders") or []) if isinstance(x, str) and re.match(r"^[A-Z_]{1,30}$", x)]
+    if g:
+        out["options"]["performerGenders"] = g
+    return out
+
+
+def id_defaults(q):
+    """The user's Identify defaults, with performerGenders when this Stash
+    has it; None when neither query answers."""
+    for qq in (Q_ID_DEFAULTS_G, Q_ID_DEFAULTS):
+        try:
+            d = (((q(qq) or {}).get("configuration") or {}).get("defaults")) or {}
+            if "identify" in d:
+                return d.get("identify")
+        except Exception:
+            pass
+    return None
 
 
 def id_endpoints(defaults, boxes):
@@ -1366,10 +1423,7 @@ class Runner(object):
         variables = step_vars(d)
         if d.get("special") == "identify":
             boxes = ((((self.ask(Q_BOXES) or {}).get("configuration") or {}).get("general") or {}).get("stashBoxes")) or []
-            try:
-                defaults = (((self.q(Q_ID_DEFAULTS) or {}).get("configuration") or {}).get("defaults") or {}).get("identify")
-            except Exception:
-                defaults = None
+            defaults = id_defaults(self.q)
             ends = id_endpoints(defaults, boxes)
             if not ends:
                 return "skipped", "no stash-box is set up in Stash", ""
@@ -1506,15 +1560,24 @@ AP_BACK_GAP_MS = AP_H          # ...the first 01:00 at least this long after it 
 # had it on without anyone choosing it, so it reads as off once (v 2 then
 # keeps what the user sets).
 AP_DEFAULT = {"v": 2, "on": False, "at": 0, "by": "", "offAt": 0, "autoOn": False, "skip": [], "taken": 0}
+# 0.6.5 (audit 2026-11-03): Scenes Toolkit's "Scan scenes" is not read only:
+# with "Save by itself" kept on on its page (scanOpts.save, on by default)
+# it saves exact fingerprint matches and sends their fingerprints, and its
+# task takes no argument that turns that off. The switch must not stop it
+# mid-save, so it is not among the read-only tasks (the page's KIT_SAVES).
+KIT_SAVES = ("SceneToolkit",)
 # The tree: (key, every ms, keys whose newer good end makes it due now).
 # Its order is the priority: new files, what they need, the toolkits'
 # reads, archiving after its scan, backups, the long ones last.
+# 0.6.6 (the user's decision after the 2026-11-03 audit): Autopilot runs only
+# reads, so a toolkit scan that may save (KIT_SAVES) is not in the tree. It
+# stays a step a routine can have (built by the user, or one that has it).
 AP_TREE = (
     ("scan", 6 * AP_H, ()),
     ("genfast", AP_D, ("scan",)),
     ("autotag", AP_D, ("scan",)),
     ("identify", AP_D, ()),
-) + tuple(("kit:" + k[0], 7 * AP_D, ()) for k in KITS if k[0] != "ArchiveToolkit") + tuple(
+) + tuple(("kit:" + k[0], 7 * AP_D, ()) for k in KITS if k[0] != "ArchiveToolkit" and k[0] not in KIT_SAVES) + tuple(
     ("kit:" + x[0], 7 * AP_D, ()) for x in KIT_STEPS) + (
     ("kit:ArchiveToolkit", AP_D, ()),
     ("ap:archive", AP_D, ("kit:ArchiveToolkit",)),
@@ -1528,7 +1591,7 @@ Q_STOP = "mutation ($id: ID!) { stopJob(job_id: $id) }"
 Q_SD = 'mutation ($a: Map) { runPluginOperation(plugin_id: "SuiteData", args: $a) }'
 # Stash names a plugin task's job "Running plugin task: <task>"
 AP_TASK_RX = re.compile(r"plugin task", re.I)
-AP_READ_TASKS = tuple(k[2] for k in KITS) + tuple(x[3] for x in KIT_STEPS)
+AP_READ_TASKS = tuple(k[2] for k in KITS if k[0] not in KIT_SAVES) + tuple(x[3] for x in KIT_STEPS)
 
 
 def ap_path(root):

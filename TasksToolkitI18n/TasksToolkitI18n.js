@@ -30,7 +30,7 @@
   window.__TasksToolkitI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '0.6.4-1';
+  var PLUGIN_VERSION = '0.6.6-1';
   var _intlLocale = '';
   var _afterLocale = [];        // locale 到达后要重绘的东西（导航入口、面板）
   function tc(zh, en) {
@@ -79,6 +79,9 @@
   const PREFS_KEY = "TasksToolkitI18nPrefs";     // UI only: last tab, unticked rows
   const DEBUG = false;
   const log = (m, lvl = "log") => { if (DEBUG || lvl === "error") console[lvl](`[${PLUGIN_ID}]`, m); };
+  // 0.6.6 (audit 2026-11-03): the suite's shared runtime (suiteRuntime below):
+  // one toast, one keyboard owner, GraphQL with a timeout, one "ago"
+  const RT = suiteRuntime({ id: PLUGIN_ID });
 
   // ═══ Pure helpers (tested) ═════════════════════════════════════════════════
 
@@ -96,18 +99,14 @@
     return `${fmtN(n)} ${n === 1 ? w : ws}`;
   };
   const pad2 = (n) => String(n).padStart(2, "0");
+  // 英文沿用 runtime 的统一措辞；中文按语言本地化
   function fmtAgo(at, now) {
-    const m = Math.floor((now - at) / 60000);
-    if (isZh()) {
-      if (m < 1) return "刚刚";
-      if (m < 60) return `${m} 分钟前`;
-      if (m < 48 * 60) return m < 24 * 60 ? `${Math.round(m / 60)} 小时前` : "昨天";
-      return `${Math.round(m / 1440)} 天前`;
-    }
-    if (m < 1) return "just now";
-    if (m < 60) return `${m} min ago`;
-    if (m < 48 * 60) return m < 24 * 60 ? `${Math.round(m / 60)} h ago` : "yesterday";
-    return `${Math.round(m / 1440)} days ago`;
+    if (!isZh()) return RT.ago(at, now);
+    const m = Math.floor(((now == null ? Date.now() : now) - at) / 60000);
+    if (m < 1) return "刚刚";
+    if (m < 60) return `${m} 分钟前`;
+    if (m < 48 * 60) return m < 24 * 60 ? `${Math.round(m / 60)} 小时前` : "昨天";
+    return `${Math.round(m / 1440)} 天前`;
   }
   function fmtDur(ms) {
     if (!(ms > 0)) return isZh() ? "0 秒" : "0 s";
@@ -173,6 +172,17 @@
     // moves: archiving is its page's, or its own task, never a safe step)
     ["ArchiveToolkit", "Archive Toolkit", "db", "Scan archive", "0.1.0"],
   ];
+  // 0.6.5 (audit 2026-11-03): Scenes Toolkit's "Scan scenes" is not read
+  // only. It runs with the switches kept on its page, and "Save by itself"
+  // (scanOpts.save, on by default) saves exact fingerprint matches and sends
+  // their fingerprints to the stash-box; its task takes no argument that
+  // turns that off. So it is no longer under Safe to run (nor in Run the
+  // safe ones): it is listed under Your review, and the Autopilot switch
+  // does not stop it mid-save (AP_READ_TASKS in the .py). A routine the
+  // user built with it keeps it.
+  const KIT_SAVES = ["SceneToolkit"];
+  const KIT_SAVES_SUB = "Planned on the server with the switches kept on its page: with Save by itself on there, it saves exact fingerprint matches and sends their fingerprints";
+  const KIT_SAVES_SUB_ZH = "在服务器上按它页面里保留的开关规划：那里开着「自动保存」时，它会保存指纹完全匹配的结果并把指纹发出去";
   // 0.5.0: a toolkit's second read-only step, apart from its scan:
   // [key, plugin, name, icon, task, args, min, sub, run kind]. Planned on the
   // server only: the connector's scan() is the scan, so there is no browser
@@ -282,8 +292,8 @@
     const ks = m && !kit && KIT_STEPS.find((x) => x[0] === m[1]);
     if (ks) return { name: ks[2], sub: ks[7], src: kitName(ks[1]), heavy: false, icon: ks[3], c: "or", kit: ks[1], q: Q.kitscan, plugin: ks[1], task: ks[4], args: ks[5], min: ks[6], only: true, runKind: ks[8] };
     if (!kit) return null;
-    return { name: `${kit[1]} scan`, sub: "Reads only, planned on the server; what it finds waits on its page", src: kit[1], heavy: false, icon: kit[2], c: "or", kit: kit[0],
-      q: Q.kitscan, plugin: kit[0], task: kit[3], args: { mode: "scan" }, min: kit[4] };
+    return { name: `${kit[1]} scan`, sub: KIT_SAVES.includes(kit[0]) ? KIT_SAVES_SUB : "Reads only, planned on the server; what it finds waits on its page", src: kit[1], heavy: false, icon: kit[2], c: "or", kit: kit[0],
+      q: Q.kitscan, plugin: kit[0], task: kit[3], args: { mode: "scan" }, min: kit[4], saves: KIT_SAVES.includes(kit[0]) };
   }
   // 目录键的中文名；没有中文条目（或非目录键）返回 null
   function catZh(k) {
@@ -296,7 +306,7 @@
     const ks = m && KIT_STEPS.find((x) => x[0] === m[1]);
     if (ks && KIT_STEP_ZH[ks[0]]) return { name: KIT_STEP_ZH[ks[0]][0], sub: KIT_STEP_ZH[ks[0]][1] };
     const kit = m && KITS.find((x) => x[0] === m[1]);
-    if (kit) return { name: `${kit[1]} 扫描`, sub: "只读取，在服务器上规划；结果等你在它的页面上查看" };
+    if (kit) return { name: `${kit[1]} 扫描`, sub: KIT_SAVES.includes(kit[0]) ? KIT_SAVES_SUB_ZH : "只读取，在服务器上规划；结果等你在它的页面上查看" };
     return null;
   }
   // 工具包的第二类步骤与 Autopilot 的步骤（品牌名与 task 名保持英文）
@@ -326,12 +336,16 @@
   const ID_FILTER = { is_missing: "stash_id", NOT: { is_missing: "phash" } };
   function safeIdentifyInput(endpoints, ids, defaults) {
     const o = (defaults && defaults.options) || {};
+    const genders = (Array.isArray(o.performerGenders) ? o.performerGenders : []).filter((x) => typeof x === "string" && /^[A-Z_]{1,30}$/.test(x));
     return {
       sources: (endpoints || []).map((e) => ({ source: { stash_box_endpoint: e } })),
       options: {
         fieldOptions: ID_FIELDS.map((f) => ({ field: f, strategy: "MERGE", createMissing: false })),
         setCoverImage: false, setOrganized: false, skipMultipleMatches: true, skipSingleNamePerformers: true,
         includeMalePerformers: o.includeMalePerformers === false ? false : true,
+        // 0.6.5: the user's genders, when their Identify has some (the newer
+        // field; includeMalePerformers stays for a Stash older than 0.27)
+        ...(genders.length ? { performerGenders: genders } : {}),
       },
       sceneIDs: (ids || []).map(String),
     };
@@ -648,7 +662,7 @@
   // "Auto tag: 1,258 scenes added in the last 7 days · 37 performers, 4 studios, 12 tags to look for"
   const atNames = (a) => (a.performers || 0) + (a.studios || 0) + (a.tags || 0);
   function autotagTitle(a, now) {
-    const what = [a.scenes ? plural(a.scenes, "scene") : "", a.galleries ? plural(a.galleries, "gallery", "galleries") : ""].filter(Boolean).join(tc(" 和 ", " and "));
+    const what = [a.scenes ? plural(a.scenes, "scene") : "", a.galleries ? plural(a.galleries, "gallery", "galleries") : ""].filter(Boolean).join(tc("、", " and "));
     if (!what) return tc("自动打标签：上次之后没有新增内容", "Auto tag: nothing added since the last one");
     const d = new Date(a.since || 0);
     const when = a.first ? tc("最近 7 天内", "in the last 7 days")
@@ -753,7 +767,14 @@
     for (const kit of L.kits || []) {
       if (!kit.present) continue;
       const at2 = kit.lastScan || lastOk(H, `kit:${kit.id}`), srv = kitServer(kit.id, kit.version), c = catOf(`kit:${kit.id}`);
-      add({ k: `kit:${kit.id}`, need: !at2 || now - at2 > 7 * 86400000,
+      if (c.saves) {
+        const due = !at2 || now - at2 > 7 * 86400000;
+        rows.look.push({ k: `kit:${kit.id}`, icon: c.icon, c: "or", src: kitName(kit.id),
+          title: at2 ? tc(`${kitName(kit.id)}：上次扫描 ${ago(at2)}`, `${kitName(kit.id)}: last scan ${ago(at2)}`) : tc(`${kitName(kit.id)}：还没扫描过`, `${kitName(kit.id)}: not scanned yet`),
+          sub: srv ? tc(`${KIT_SAVES_SUB_ZH}。在它的页面上启动它，或放进一个例程。`, `${KIT_SAVES_SUB}. Start it on its page, or in a routine.`)
+            : tc(`它可能自己保存指纹匹配的结果（它页面上开着「自动保存」）。升级到 ${c.min} 后也能从 Stash 里运行。`, `It may save fingerprint matches by itself (Save by itself on its page). Update it to ${c.min} to run it from Stash too.`),
+          what: "May save", pc: "ye", go: kit.page || "/scenetoolkit", goLabel: tc("打开", "Open"), opt: !due });
+      } else add({ k: `kit:${kit.id}`, need: !at2 || now - at2 > 7 * 86400000,
         title: at2 ? tc(`${kitName(kit.id)}：上次扫描 ${ago(at2)}`, `${kitName(kit.id)}: last scan ${ago(at2)}`) : tc(`${kitName(kit.id)}：还没扫描过`, `${kitName(kit.id)}: not scanned yet`),
         sub: srv ? tc("只读取，在服务器上规划；结果等你在它的页面上查看。", "Reads only, planned on the server; results wait on its page.")
           : tc(`只读取；结果等你在它的页面上查看。升级到 ${c.min} 后也能从 Stash 里运行。`, `Reads only; results wait on its page. Update it to ${c.min} to run it from Stash too.`),
@@ -1052,7 +1073,7 @@
   // The scheduler's state in words: { ok, text, start (offer Start), warn }
   function schedLine(st, now, err) {
     if (!st) return { ok: false, text: err ? tc(`调度器没有响应（${err}）。`, `Stash's scheduler did not answer (${err}).`) : tc("正在询问调度器…", "Asking Stash's scheduler…"), start: !!err };
-    if (st.supported === false) return { ok: false, text: tc(`调度器无法在这里运行：${st.error || "需要 Linux 上的 Stash（如 Docker）"}。安排在 Stash 里运行的例程会等待。`, `Stash's scheduler cannot run here: ${st.error || "it needs Stash on Linux (as in Docker)"}. Routines set to run in Stash wait.`), start: false };
+    if (st.supported === false) return { ok: false, text: isZh() ? "调度器无法在这里运行：需要 Linux 上的 Stash（如 Docker）。安排在 Stash 里运行的例程会等待。" : `Stash's scheduler cannot run here: ${st.error || "it needs Stash on Linux (as in Docker)"}. Routines set to run in Stash wait.`, start: false };
     if (!st.running) return { ok: false, text: tc(`调度器没有运行${st.stopWhy ? `（${st.stopWhy}）` : ""}，安排在 Stash 里运行的例程会等待。`, `Stash's scheduler is not running${st.stopWhy ? ` (${st.stopWhy})` : ""}, so routines set to run in Stash wait.`), start: true };
     const parts = [tc(`调度器自 ${fmtWhen(st.started || now, now)} 起运行`, `Scheduler running since ${fmtWhen(st.started || now, now)}`)];
     if (st.busy && st.busy.name) parts.push(tc(`正在运行 ${st.busy.name}${st.busy.step ? `：${st.busy.step}` : ""}`, `running ${st.busy.name} now${st.busy.step ? `: ${st.busy.step}` : ""}`));
@@ -1169,6 +1190,25 @@
         : tc(`目前都做完了。下一项：${stepName(nx.k)} ${when}。`, `All done for now. Next: ${stepName(nx.k)} ${when}.`))
         : (ap.view && ap.view.length ? tc("这里没有它能运行的任务。", "Nothing it can run here.") : tc("30 秒内启动。", "Starting within 30 s.")) };
   }
+  // 0.6.5 (audit 2026-11-03): Esc in a sheet. In a text box or menu it
+  // only leaves the box (as the other toolkits do); then, with the routine
+  // editor holding unsaved edits, a first Esc says so (as Ratings' panel),
+  // and the next one closes. Before, Esc anywhere closed the sheet and
+  // dropped the edits without a word. Pure, tested.
+  function sheetEsc(sh, typing) {
+    if (!sh) return "close";
+    if (typing) return "blur";
+    return sh.kind === "edit" && sh.orig !== undefined && JSON.stringify(sh.r) !== sh.orig && !sh.warned ? "warn" : "close";
+  }
+  // 0.6.6 (the user's decision after the 2026-11-03 audit): Autopilot runs
+  // only reads, so a toolkit scan that may save (KIT_SAVES) is not in its
+  // tree (AP_TREE in the .py). The first switch-on turns timed routines off
+  // because their steps are in the tree; a routine with such a step would
+  // lose it there, so it stays on. Pure, tested.
+  const apSaves = (k) => KIT_SAVES.some((id) => k === `kit:${id}`);
+  function apTakes(r) {
+    return !!(r && r.on && r.sched && r.sched.freq !== "hand" && !(r.steps || []).some(apSaves));
+  }
   // What the switch going off did, in words
   function apOffWords(r) {
     const st = (r && r.stopped) || [], left = (r && r.left) || [];
@@ -1184,23 +1224,16 @@
       GUARDS, heavyJob, classifyDesc, inNight, gate, firstReady, parseHM, nextRun, lastDue, dueState, schedWords, cronLine, readData, writeData, normRoutine,
       routineSteps, enqueue, enqueueRoutine, moveItem, pushHist, finishCur, histFilter, histCounts, timePerPlugin, lastOk, estimate, overview, recommend,
       applyRecommended, serverScript, stepBody, shSafe, kitServer, verAtLeast, autotagTitle, navPlan, shq, slugOf, fmtDur, fmtAgo, fmtWhen, HIST_MAX, GRACE_MS, LONG_MS, suiteData, lockFree,
-      tickOn, nextTicks, serverHist, SCAN_STALE_MS, fmtNext, schedLine, keepAliveScript, AP_STEPS, apEvery, apNext, apState, apOffWords, jobLeft, leftWords, navInfo, jobName, starterRoutines };
+      tickOn, nextTicks, serverHist, SCAN_STALE_MS, fmtNext, schedLine, keepAliveScript, AP_STEPS, apEvery, apNext, apState, apOffWords, jobLeft, leftWords, navInfo, jobName, starterRoutines, sheetEsc, apTakes, KIT_SAVES, RT };
     return;
   }
 
   // ═══ Stash ═════════════════════════════════════════════════════════════════
 
-  async function gql(query, variables) {
-    const res = await fetch("/graphql", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, variables }),
-    });
-    let json;
-    try { json = await res.json(); }
-    catch { throw new Error(tc(`Stash 返回 ${res.status}${res.status === 401 ? "：已退出登录？" : ""}`, `Stash returned ${res.status}${res.status === 401 ? ": logged out?" : ""}`)); }
-    if (json?.errors?.length) throw new Error(json.errors[0].message);
-    return json?.data ?? null;
+  // 0.6.6: through the runtime, with its timeouts (60 s; plugin operations
+  // and tasks 180 s): a hung request used to stall the queue's tick
+  async function gql(query, variables, opt) {
+    return RT.gql(query, variables, opt);
   }
   function navigate(url) {
     history.pushState({}, "", url);
@@ -1279,19 +1312,11 @@
 
   // ═══ Feedback: the suite's toast and click-again ═══════════════════════════
 
-  let toastEl = null, toastTimer = 0;
+  // 0.6.6: the suite's one toast (the runtime's; same kinds and timings as
+  // this plugin's own was). injectStyles first: its theme tokens paint it.
   function toast(text, kind, act) {
     injectStyles();
-    if (!toastEl) { toastEl = document.createElement("div"); toastEl.id = "tt-toast"; toastEl.setAttribute("role", "status"); }
-    const host = document.fullscreenElement || document.body;
-    if (toastEl.parentNode !== host) host.appendChild(toastEl);
-    const k = ["info", "done", "warn", "error"].includes(kind) ? kind : "info";
-    toastEl.className = `tt-t-${k}`;
-    toastEl.innerHTML = `<span>${esc(text)}</span>${act ? `<button class="tt-link" type="button">${esc(act.label)}</button>` : ""}`;
-    if (act) toastEl.querySelector("button").addEventListener("click", () => { toastEl.hidden = true; act.fn(); });
-    toastEl.hidden = false;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toastEl.hidden = true; }, k === "error" || k === "warn" || act ? 8000 : 3000);
+    return RT.toast(text, kind, act ? { action: act } : undefined);
   }
   function armed(id) {
     if (S.armed === id) { S.armed = null; clearTimeout(S.armTimer); return true; }
@@ -1317,6 +1342,15 @@
   }`;
   const ID_DEFAULTS_Q = `{ configuration { defaults { identify { sources { source { stash_box_endpoint scraper_id } }
     options { setCoverImage setOrganized includeMalePerformers skipMultipleMatches fieldOptions { field strategy createMissing } } } } } }`;
+  // 0.6.5: performerGenders (Stash 0.27+) asked for first; an older Stash
+  // refuses the field, so the query without it follows
+  const ID_DEFAULTS_QG = ID_DEFAULTS_Q.replace("includeMalePerformers", "includeMalePerformers performerGenders");
+  async function readIdDefaults() {
+    for (const q of [ID_DEFAULTS_QG, ID_DEFAULTS_Q]) {
+      try { const x = await gql(q); if (x && x.configuration && x.configuration.defaults) return x.configuration.defaults.identify || null; } catch (_) {}
+    }
+    return null;
+  }
   // A toolkit's last background job (its `run` key): from Suite Data's store
   // when it is installed, asking for that one key (SD.overlay would read
   // every key, logs of a megabyte and more), else from its config
@@ -1337,7 +1371,7 @@
       const on = (id) => ((d.plugins || []).find((p) => p && p.id === id) || { enabled: false }).enabled !== false && (d.plugins || []).some((p) => p && p.id === id);
       const sdOn = on("SuiteData");
       let idDefaults = null;
-      try { const x = await gql(ID_DEFAULTS_Q); idDefaults = x && x.configuration && x.configuration.defaults && x.configuration.defaults.identify; } catch (_) {}
+      idDefaults = await readIdDefaults();
       const C = conns();
       const kits = await Promise.all(KITS.map(async ([id]) => {
         const present = on(id) && !!C[id];
@@ -1468,7 +1502,7 @@
     await save((d) => {
       names = [];
       const now = Date.now();
-      for (const r of d.routines) if (r.on && r.sched.freq !== "hand") { r.on = false; r.apOff = now; r.edited = now; names.push(r.name); }
+      for (const r of d.routines) if (apTakes(r)) { r.on = false; r.apOff = now; r.edited = now; names.push(r.name); }
       return names.length ? d : null;
     });
     apKeep(await serverOp("autopilot_set", { taken: String(Date.now()) }));
@@ -1574,7 +1608,7 @@
     if (c.special === "identify") {
       const d = await gql(`query { configuration { general { stashBoxes { endpoint } } } }`);
       let defaults = null;
-      try { const x = await gql(ID_DEFAULTS_Q); defaults = x.configuration.defaults.identify; } catch (_) {}
+      defaults = await readIdDefaults();
       const ends = idEndpoints(defaults, d.configuration.general.stashBoxes);
       if (!ends.length) throw new Error(tc("没有设置 stash-box（设置 > 元数据提供方）", "No stash-box is set up (Settings > Metadata Providers)"));
       const s = await gql(`query ($f: SceneFilterType) { findScenes(filter: { per_page: -1 }, scene_filter: $f) { scenes { id } } }`, { f: ID_FILTER });
@@ -1860,7 +1894,7 @@
   const RESULT_ZH = { ok: "成功", failed: "失败", skipped: "跳过", running: "运行中", missed: "错过" };
   const resultZh = (r) => tc(RESULT_ZH[r] || r, r);
   // 需要你查看的行，其 what 值是逻辑标记（Writes/Info/Saves/Needs you），只在显示时翻译
-  const WHAT_ZH = { Writes: "写入", Info: "信息", Saves: "保存", "Needs you": "需要你处理" };
+  const WHAT_ZH = { Writes: "写入", Info: "信息", Saves: "保存", "Needs you": "需要你处理", "May save": "可能保存" };
   const whatZh = (w) => tc(WHAT_ZH[w] || w, w);
   // 服务器给的「不能运行」原因，显示时翻译；未收录的保持原文
   const whyZh = (w) => {
@@ -1896,7 +1930,7 @@
     if (!pageEl || !pageEl.isConnected) return;
     // a soft redraw (every tick) waits while the user is in a field or has
     // a menu open, and is skipped when nothing changed
-    if (soft && (pageEl.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName))) return;
+    if (soft && (pageEl.contains(document.activeElement) && RT.isTextEntry(document.activeElement))) return;
     const now = Date.now();
     let body;
     if (S.dataErr && !S.data) body = `<div class="tt-card tt-empty"><b>${tc("Tasks Toolkit 读不到自己的数据", "Tasks Toolkit could not read its data")}</b><span>${esc(S.dataErr)}</span>
@@ -1974,6 +2008,10 @@
         <span class="tt-muted">${esc(apEvery(r.every, r.after))}</span><span class="tt-grow"></span>
         <span class="tt-apt"><span class="tt-apw" title="${esc((r.last && r.last.text) || "")}">${esc(lastW(r))}</span><span class="tt-apn">${esc(nextW(r))}</span></span></div>`; }).join("")}</div>
       ${absent.length ? `<p class="tt-note">${tc("未安装：", "Not installed: ")}${esc(absent.map((r) => `${stepName(r.k)}${/^needs /.test(r.why) ? `（${whyZh(r.why)}）` : ""}`).join(tc("、", ", ")))}.</p>` : ""}` : `<p class="tt-note">${tc("Stash 的调度器检查过后（30 秒内）就会显示列表。", "The list shows once Stash's scheduler has looked (within 30 s).")}</p>`;
+    // 0.6.6: say which installed scan is left out, and where it can run
+    const saving = ((S.lib && S.lib.kits) || []).filter((x) => x.present && KIT_SAVES.includes(x.id));
+    const savesNote = saving.length ? tc(` 只读取：${saving.map((x) => `${(catOf(`kit:${x.id}`) || {}).src || x.id} 的扫描`).join("、")} 可能会保存，所以不在列表里；例程可以运行它。`,
+      ` Only reads: ${saving.map((x) => `${(catOf(`kit:${x.id}`) || {}).src || x.id}'s scan`).join(", ")} may save, so it is not in the list; a routine can run it.`) : "";
     const sched = ap && ap.sched && ap.sched.running === false && ap.sched.supported !== false && on ? `<button class="tt-btn tt-sm tt-go" data-a="schedstart">${ic("play", "width:12px;height:12px")}${tc("启动调度器", "Start the scheduler")}</button>` : "";
     return `<div class="tt-card tt-ap" data-k="${st.k}">
       <div class="tt-aph"><button class="tt-tog tt-apbig${on ? " on" : ""}" role="switch" aria-checked="${on}" data-a="apsw">${ic("bolt")}<i></i>Autopilot ${on ? tc("已开启", "on") : tc("已关闭", "off")}</button>
@@ -1981,7 +2019,7 @@
         <button class="tt-link" data-a="fold" data-k="ap" aria-expanded="${!!S.fold.ap}">${S.fold.ap ? tc("隐藏", "Hide") : tc("显示", "Show")}${tc("它的任务", " its tasks")}</button></div>
       ${S.fold.ap ? `<div class="tt-apbody">${tree}
         <div class="tt-apset">${tog2("apauto", !!(ap && ap.autoOn === true), tc("忘了的话，01:00 自动帮我打开", "Back on by itself at 01:00 if I forget"))}</div>
-        <p class="tt-note">${tc("一次一项，从上往下，只要 Stash 空闲就做。关闭会停掉扫描和生成（之后会接着做，跳过已完成的部分）；正在保存你数据的任务会先做完。", "One task at a time, top first, whenever Stash is free. Off stops scans and generating (they pick up later, skipping what is done); anything saving your data finishes first.")}</p></div>` : ""}</div>`;
+        <p class="tt-note">${tc("一次一项，从上往下，只要 Stash 空闲就做。关闭会停掉扫描和生成（之后会接着做，跳过已完成的部分）；正在保存你数据的任务会先做完。", "One task at a time, top first, whenever Stash is free. Off stops scans and generating (they pick up later, skipping what is done); anything saving your data finishes first.")}${savesNote}</p></div>` : ""}</div>`;
   }
   const tog2 = (a, on, label) => `<button class="tt-tog${on ? " on" : ""}" aria-pressed="${!!on}" data-a="${a}"><i></i>${esc(label)}</button>`;
   function pills(r) {
@@ -2237,14 +2275,24 @@
     S.sheet = sh;
     if (!sheetEl) { sheetEl = document.createElement("div"); sheetEl.className = "tt tt-veil"; sheetEl.addEventListener("click", onSheetClick); sheetEl.addEventListener("input", onSheetInput); }
     if (!sheetEl.isConnected) document.body.appendChild(sheetEl);
-    document.documentElement.setAttribute("data-owns-keys", "taskstoolkit");
+    RT.claimKeys();
     renderSheet();
     setTimeout(() => { const f = sheetEl.querySelector("[data-focus]"); if (f) f.focus(); }, 0);
+  }
+  // Esc and a click on the veil: an unsaved routine warns once first
+  function tryCloseSheet() {
+    if (sheetEsc(S.sheet, false) === "warn") {
+      S.sheet.warned = true;
+      S.sheet.err = tc("还没保存：按 Enter 或「保存」会保留；再按一次 Esc 就丢弃改动。", "Not saved yet: Enter or Save keeps it; Esc again drops the changes.");
+      renderSheet();
+      return;
+    }
+    closeSheet();
   }
   function closeSheet() {
     S.sheet = null;
     if (sheetEl) sheetEl.remove();
-    if (document.documentElement.getAttribute("data-owns-keys") === "taskstoolkit") document.documentElement.removeAttribute("data-owns-keys");
+    RT.releaseKeys();
   }
   function renderSheet() {
     if (!sheetEl || !S.sheet) return;
@@ -2372,7 +2420,7 @@
     else if (f === "dow") { r.sched.dow = +ev.target.value || 0; renderSheet(); }
   }
   async function onSheetClick(ev) {
-    if (ev.target === sheetEl) { closeSheet(); return; }
+    if (ev.target === sheetEl) { tryCloseSheet(); return; }
     const t = ev.target.closest("[data-a]");
     if (!t || !sheetEl.contains(t)) return;
     const a = t.dataset.a, sh = S.sheet;
@@ -2430,7 +2478,7 @@
   function openEditor(id) {
     const ex = id && S.data.routines.find((x) => x.id === id);
     const base = ex ? JSON.parse(JSON.stringify(ex)) : normRoutine({ id: newId("t"), name: "", steps: [], sched: { freq: "daily", time: "02:00", dow: 0 }, where: "browser" });
-    openSheet({ kind: "edit", r: base, isNew: !ex, menu: !ex });
+    openSheet({ kind: "edit", r: base, isNew: !ex, menu: !ex, orig: JSON.stringify(base) });
   }
   function openKeep() {
     const port = location.port || (location.protocol === "https:" ? "443" : "9999");
@@ -2528,10 +2576,18 @@
   // One key listener for the page and its sheets (THEME's keyboard rules):
   // an open sheet owns the keyboard; on the page 1-3 pick a tab.
   function onKey(ev) {
+    // another plugin's panel owns the keyboard (the runtime's owner; an open
+    // sheet here claims it for this plugin, so it still gets its keys)
+    if (!RT.keysFree()) return;
     if (!S.sheet && location.pathname !== PAGE_PATH) return;
-    const tg = ev.target, typing = !!tg && (tg.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(tg.tagName || ""));
+    const tg = ev.target, typing = RT.isTextEntry(tg);
     if (S.sheet) {
-      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); closeSheet(); return; }
+      if (ev.key === "Escape") {
+        ev.preventDefault(); ev.stopPropagation();
+        if (sheetEsc(S.sheet, typing && sheetEl && sheetEl.contains(tg)) === "blur") tg.blur();
+        else tryCloseSheet();
+        return;
+      }
       if (ev.ctrlKey || ev.metaKey) return;
       if (S.sheet.kind === "edit" && ev.altKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown") && tg && tg.dataset && tg.dataset.step !== undefined) {
         ev.preventDefault(); ev.stopPropagation();
@@ -2953,6 +3009,237 @@
     };
   }
 
+  // ═══ The suite runtime (shared copy) ══════════════════════════════════════
+  // The suite's shared runtime (audit 2026-11-03, docs/audit-2026-11-03.md, Ideas 1).
+  // Every plugin carries this same copy, checked by scripts/check_shared.py against
+  // scripts/shared/suiteRuntime.js. The first copy to load publishes it as
+  // window.StashSuite and every other plugin uses that one, so there is one toast
+  // stack, one keyboard owner, one route signal and one GraphQL helper with a
+  // timeout. A copy with a higher RT_VER replaces an older one. Nothing here writes
+  // data, and nothing here can start a device. o: { id: the plugin's id }.
+  function suiteRuntime(o) {
+    const RT_VER = 1;
+    const W = typeof window !== "undefined" ? window : null;
+    const have = W && W.StashSuite;
+    let R = have;
+    if (!(have && typeof have.ver === "number" && have.ver >= RT_VER && typeof have.toast === "function")) {
+      // merged into what is there: the toolkits keep their registry on
+      // window.StashSuite.toolkits, and replacing the object lost it
+      const m = make();
+      R = have && typeof have === "object" ? Object.assign(have, m) : m;
+    }
+    if (W && R !== have) { try { W.StashSuite = R; } catch (_) {} }
+    const id = String((o && o.id) || "plugin");
+    return {
+      ver: R.ver,
+      // toast(text, kind "info"|"done"|"warn"|"error", { action: { label, fn }, ms, id })
+      // -> { close }. One design (THEME: Feedback); an `id` replaces that toast
+      toast: (text, kind, opts) => R.toast(text, kind, { ...(opts || {}), from: id }),
+      isTextEntry: (el) => R.isTextEntry(el),
+      // the keyboard: one owner at a time, on <html data-owns-keys>
+      keysOwner: () => R.keysOwner(),
+      keysFree: () => R.keysFree(id),
+      claimKeys: () => R.claimKeys(id),
+      releaseKeys: () => R.releaseKeys(id),
+      // gql(query, variables, { timeout ms }) -> data; throws a readable Error
+      gql: (q, v, op) => R.gql(q, v, op),
+      ago: (at, now) => R.ago(at, now),
+      // onRoute(fn(location)) -> unsubscribe: after every SPA navigation
+      onRoute: (fn) => R.onRoute(fn),
+      // onPage("StudioPage", fn(props)) -> unsubscribe | false: after every render
+      // of a patchable Stash page (0.32: PerformerPage, StudioPage, TagPage, GroupPage...)
+      onPage: (name, fn) => R.onPage(name, fn),
+      uiHost: () => R.uiHost(),
+    };
+
+    function make() {
+      const D = typeof document !== "undefined" ? document : null;
+      const later = (f, ms) => setTimeout(f, ms);
+      // ── what counts as typing: text entry only. A range input keeps focus after
+      // a drag, and treating it as typing made Stop (IntifaceSync's 0) do nothing.
+      const NOT_TEXT = new Set(["range", "checkbox", "radio", "button", "submit", "reset", "color", "file", "image"]);
+      function isTextEntry(el) {
+        if (!el || !el.tagName) return false;
+        const t = el.tagName;
+        if (t === "INPUT") return !NOT_TEXT.has(String(el.type || "text").toLowerCase());
+        return t === "TEXTAREA" || t === "SELECT" || !!el.isContentEditable;
+      }
+      // a fullscreen <video> paints none of its children: then the body
+      function uiHost() {
+        const fs = D && D.fullscreenElement;
+        return fs && fs.tagName !== "VIDEO" ? fs : D && D.body;
+      }
+      // ── the toast
+      const LIFE = { info: 3000, done: 3000, warn: 8000, error: 8000 };
+      const CSS = "#sx-toasts { position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 2147483000; display: flex;" +
+        " flex-direction: column; align-items: center; gap: 8px; pointer-events: none; max-width: calc(100vw - 24px); }" +
+        " #sx-toasts .sx-toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; max-width: min(420px, calc(100vw - 24px));" +
+        " padding: 9px 14px; color: var(--sx-tx, #CECDC3); font: 13.5px/1.4 system-ui, sans-serif; text-align: left; box-sizing: border-box;" +
+        " background: linear-gradient(180deg, var(--sx-raise, #343331) 0, var(--sx-ui, #282726) 64px); border: 1px solid var(--sx-line, #403E3C);" +
+        " border-top-color: var(--sx-edge, #575653); border-left: 3px solid var(--tk, var(--sx-bl, #4385BE)); border-radius: 12px;" +
+        " box-shadow: 0 1px 0 rgba(0,0,0,.5), 0 20px 50px -12px rgba(0,0,0,.6); }" +
+        " #sx-toasts .sx-toast[data-kind=done] { --tk: var(--sx-gr, #879A39); } #sx-toasts .sx-toast[data-kind=warn] { --tk: var(--sx-ye, #D0A215); }" +
+        " #sx-toasts .sx-toast[data-kind=error] { --tk: var(--sx-re, #D14D41); }" +
+        " #sx-toasts .sx-toast button { flex: none; font: inherit; font-size: 13px; padding: 0; border: 0; background: none; cursor: pointer;" +
+        " color: var(--sx-bl-tx, var(--sx-bl, #4385BE)); text-decoration: underline; }" +
+        " @media (max-width: 575.98px) { #sx-toasts { bottom: 84px; } }";
+      let host = null;
+      const named = new Map();
+      function ensureHost() {
+        if (!D || typeof D.createElement !== "function" || !D.body) return null;
+        if (!host) {
+          host = D.createElement("div");
+          host.id = "sx-toasts";
+          if (!D.getElementById || !D.getElementById("sx-toasts-css")) {
+            const st = D.createElement("style");
+            st.id = "sx-toasts-css";
+            st.textContent = CSS;
+            (D.head || D.body).appendChild(st);
+          }
+          try { D.addEventListener("fullscreenchange", () => { const p = uiHost(); if (host && p && host.parentNode !== p) p.appendChild(host); }); } catch (_) {}
+        }
+        const p = uiHost();
+        if (p && host.parentNode !== p) p.appendChild(host);
+        return host;
+      }
+      function closeToast(el) {
+        if (!el) return;
+        clearTimeout(el.__sxT);
+        if (el.parentNode) el.parentNode.removeChild(el);
+        for (const [k, v] of named) if (v === el) named.delete(k);
+      }
+      function toast(text, kind, opts) {
+        const k = LIFE[kind] ? kind : "info", op = opts || {};
+        const h = ensureHost();
+        if (!h) return { close() {} };
+        const key = op.id ? `${op.from || ""}:${op.id}` : "";
+        let el = key ? named.get(key) : null;
+        if (!el || el.parentNode !== h) {
+          el = D.createElement("div");
+          el.className = "sx-toast";
+          h.appendChild(el);
+          if (key) named.set(key, el);
+        }
+        // three at most: the oldest goes
+        while (h.children && h.children.length > 3) closeToast(h.firstChild);
+        el.setAttribute("role", k === "error" ? "alert" : "status");
+        el.setAttribute("data-kind", k);
+        if (op.from) el.setAttribute("data-from", op.from);
+        while (el.firstChild) el.removeChild(el.firstChild);
+        const span = D.createElement("span");
+        span.textContent = String(text == null ? "" : text);
+        el.appendChild(span);
+        const act = op.action && op.action.label && typeof op.action.fn === "function" ? op.action : null;
+        if (act) {
+          const b = D.createElement("button");
+          b.type = "button";
+          b.textContent = String(act.label);
+          b.addEventListener("click", (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); closeToast(el); try { act.fn(); } catch (_) {} });
+          el.appendChild(b);
+        }
+        const ms = typeof op.ms === "number" ? op.ms : act ? 8000 : LIFE[k];
+        clearTimeout(el.__sxT);
+        if (ms > 0) el.__sxT = later(() => closeToast(el), ms);
+        return { close: () => closeToast(el), el };
+      }
+      // ── the keyboard owner
+      const root = () => (D && D.documentElement) || null;
+      const keysOwner = () => { const r = root(); return (r && r.getAttribute && r.getAttribute("data-owns-keys")) || ""; };
+      const keysFree = (who) => { const w = keysOwner(); return !w || w === who; };
+      const claimKeys = (who) => { const r = root(); if (r && r.setAttribute) r.setAttribute("data-owns-keys", who); };
+      const releaseKeys = (who) => { const r = root(); if (r && r.removeAttribute && keysOwner() === who) r.removeAttribute("data-owns-keys"); };
+      // ── GraphQL, with a timeout: a hung request used to freeze a page and
+      // stall its plugin's saves until a reload
+      function httpWords(st) {
+        if (st === 401) return "Stash returned 401: logged out?";
+        if (st === 403) return "Stash refused this address (403): check public_whitelist in Stash's settings";
+        return `Stash returned ${st}`;
+      }
+      async function gql(query, variables, op) {
+        const ms = (op && op.timeout) || (/runPlugin(Operation|Task)/.test(String(query)) ? 180000 : 60000);
+        const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+        let timer = null;
+        const late = new Promise((_, no) => {
+          timer = later(() => { try { if (ac) ac.abort(); } catch (_) {} no(new Error(`Stash did not answer in ${Math.round(ms / 1000)} s`)); }, ms);
+        });
+        const run = (async () => {
+          const res = await fetch("/graphql", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query, variables: variables || {} }), signal: ac ? ac.signal : undefined });
+          let json = null;
+          try { json = await res.json(); } catch (_) {}
+          if (!json) throw new Error(httpWords(res.status));
+          if (json.errors && json.errors.length) throw new Error((json.errors[0] && json.errors[0].message) || "Stash error");
+          return json.data == null ? null : json.data;
+        })();
+        try { return await Promise.race([run, late]); } finally { clearTimeout(timer); }
+      }
+      // ── "how long ago", one wording for the suite
+      function ago(at, now) {
+        const m = Math.floor(((now == null ? Date.now() : now) - at) / 60000);
+        if (!(m >= 1)) return "just now";
+        if (m < 60) return `${m} min ago`;
+        if (m < 24 * 60) return `${Math.round(m / 60)} h ago`;
+        if (m < 48 * 60) return "yesterday";
+        return `${Math.round(m / 1440)} days ago`;
+      }
+      // ── one route signal: history's push/replace, Back/Forward, and a 1 s
+      // look as a fallback (instead of every plugin's own poll and body observer)
+      const routeSubs = new Set();
+      let routeOn = false, lastHref = "";
+      function fireRoute() {
+        const loc = W && W.location;
+        if (!loc || loc.href === lastHref) return;
+        lastHref = loc.href;
+        for (const f of [...routeSubs]) { try { f(loc); } catch (_) {} }
+      }
+      function routeInstall() {
+        if (routeOn || !W || !W.history) return;
+        routeOn = true;
+        lastHref = W.location ? W.location.href : "";
+        for (const m of ["pushState", "replaceState"]) {
+          const orig = W.history[m];
+          if (typeof orig !== "function") continue;
+          try { W.history[m] = function () { const r = orig.apply(this, arguments); Promise.resolve().then(fireRoute); return r; }; } catch (_) {}
+        }
+        try { W.addEventListener("popstate", () => Promise.resolve().then(fireRoute)); } catch (_) {}
+        try { setInterval(fireRoute, 1000); } catch (_) {}
+      }
+      function onRoute(fn) {
+        if (typeof fn !== "function") return () => {};
+        routeInstall();
+        routeSubs.add(fn);
+        return () => { routeSubs.delete(fn); };
+      }
+      // ── a patchable Stash page, once per page however many plugins ask: a host
+      // after it that calls each subscriber after every render (never changing what
+      // Stash draws). Performers Toolkit's PerformerPage host, made shared.
+      const pages = new Map();
+      function onPage(name, fn) {
+        const api = W && W.PluginApi;
+        if (typeof fn !== "function" || !api || !api.patch || typeof api.patch.after !== "function" || !api.React) return false;
+        let set = pages.get(name);
+        if (!set) {
+          set = new Set();
+          pages.set(name, set);
+          const Rc = api.React, subs = set;
+          const Host = function SuiteRuntimePageHost(p) {
+            Rc.useEffect(() => { for (const f of [...subs]) { try { f(p.pageProps || {}); } catch (_) {} } });
+            return null;
+          };
+          try {
+            api.patch.after(name, function () {
+              const props = arguments[0], result = arguments[arguments.length - 1];
+              try { return Rc.createElement(Rc.Fragment, null, result, Rc.createElement(Host, { key: "sx-page-host", pageProps: props })); } catch (_) { return result; }
+            });
+          } catch (_) { pages.delete(name); return false; }
+        }
+        set.add(fn);
+        return () => { set.delete(fn); };
+      }
+      return { ver: RT_VER, toast, isTextEntry, keysOwner, keysFree, claimKeys, releaseKeys, gql, ago, onRoute, onPage, uiHost };
+    }
+  }
+
   // ═══ Theme tokens (suiteTheme) ═════════════════════════════════════════════
   // The suite's colours, taken from whatever theme Stash shows (docs/THEME.md
   // "Theme tokens", MAINTENANCE §4.25). With the Flexoki theme plugin on, the
@@ -3255,7 +3542,7 @@
   }
   // every element Tasks Toolkit draws sits under one of these: the page, its
   // sheets (mounted on body, carrying .tt), the toast and the top-bar entry
-  const THEME = suiteTheme({ id: "taskstoolkit", scope: ".tt, #tt-toast, .tt-nav, .tt-apsw" });
+  const THEME = suiteTheme({ id: "taskstoolkit", scope: ".tt, #sx-toasts, .tt-nav, .tt-apsw" });
 
   function injectStyles() {
     if (document.getElementById("taskstoolkit-styles")) return;
@@ -3632,14 +3919,6 @@
   .tt-apsw { padding: 0 5px; margin: 0 4px 0 0; }
 }
 
-/* the toast (the suite's one design) */
-#tt-toast { position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 2147483000; display: flex; align-items: center; gap: 10px;
-  max-width: min(420px, calc(100vw - 24px)); padding: 9px 14px; color: var(--sx-tx); font-size: 13.5px; line-height: 1.4; text-align: left;
-  background: linear-gradient(180deg, var(--sx-raise) 0, var(--sx-ui) 64px); border: 1px solid var(--sx-line); border-top-color: var(--sx-edge); border-left: 3px solid var(--tk, var(--sx-bl));
-  border-radius: 12px; box-shadow: 0 1px 0 rgba(0,0,0,calc(.7*var(--sx-k))), 0 20px 50px -12px rgba(0,0,0,calc(.75*var(--sx-k))); }
-#tt-toast[hidden] { display: none; }
-#tt-toast.tt-t-done { --tk: var(--sx-gr); } #tt-toast.tt-t-warn { --tk: var(--sx-ye); } #tt-toast.tt-t-error { --tk: var(--sx-re); }
-#tt-toast .tt-link { flex: none; font-size: 13px; background: none; border: 0; color: var(--sx-bl); cursor: pointer; padding: 0; }
 
 /* tablets: the side column under the main one */
 @media (max-width: 991.98px) { .tt-side { max-width: none; flex-basis: 100%; } .tt-rgrid { grid-template-columns: minmax(0, 1fr); } }
