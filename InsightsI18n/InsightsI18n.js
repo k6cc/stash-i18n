@@ -22,7 +22,7 @@
   window.__InsightsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.14.1-1';
+  var PLUGIN_VERSION = '2.15.0-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -30,6 +30,15 @@
   }
   function isZh() {
     return _intlLocale.indexOf('zh') === 0;
+  }
+  // the suite's "ago" in Chinese (RT.ago is the shared English wording)
+  function agoZh(at, now) {
+    const m = Math.floor(((now == null ? Date.now() : now) - at) / 60000);
+    if (!(m >= 1)) return "刚刚";
+    if (m < 60) return `${m} 分钟前`;
+    if (m < 24 * 60) return `${Math.round(m / 60)} 小时前`;
+    if (m < 48 * 60) return "昨天";
+    return `${Math.round(m / 1440)} 天前`;
   }
   ;(function initIntlBridge() {
     try {
@@ -54,6 +63,241 @@
   const DATA_KEYS = ["watch", "ostatsImported", "dupLog", "prefs"];   // in Suite Data's store when it is installed
   const DEBUG = (() => { try { return localStorage.getItem("insightsI18nDebug") === "1"; } catch (_) { return false; } })();
   const log = (m, lvl = "log") => { if (DEBUG || lvl === "error") console[lvl](`[${PLUGIN_ID}]`, m); };
+  // the suite's shared runtime (2.15.0): GraphQL with a timeout, the toast,
+  // "ago" and the route signal (MAINTENANCE §4.14i)
+  const RT = suiteRuntime({ id: PLUGIN_ID });
+  // everything a click acts on (onClick); 2.15.0 makes the same targets keyboard ones
+  const ACT_SEL = "[data-tab],[data-set],[data-nav],[data-daynav],[data-day],[data-bar],[data-go],[data-act],[data-jump],[data-hub]";
+
+  // The suite's shared runtime (audit 2026-11-03, docs/audit-2026-11-03.md, Ideas 1).
+  // Every plugin carries this same copy, checked by scripts/check_shared.py against
+  // scripts/shared/suiteRuntime.js. The first copy to load publishes it as
+  // window.StashSuite and every other plugin uses that one, so there is one toast
+  // stack, one keyboard owner, one route signal and one GraphQL helper with a
+  // timeout. A copy with a higher RT_VER replaces an older one. Nothing here writes
+  // data, and nothing here can start a device. o: { id: the plugin's id }.
+  function suiteRuntime(o) {
+    const RT_VER = 1;
+    const W = typeof window !== "undefined" ? window : null;
+    const have = W && W.StashSuite;
+    let R = have;
+    if (!(have && typeof have.ver === "number" && have.ver >= RT_VER && typeof have.toast === "function")) {
+      // merged into what is there: the toolkits keep their registry on
+      // window.StashSuite.toolkits, and replacing the object lost it
+      const m = make();
+      R = have && typeof have === "object" ? Object.assign(have, m) : m;
+    }
+    if (W && R !== have) { try { W.StashSuite = R; } catch (_) {} }
+    const id = String((o && o.id) || "plugin");
+    return {
+      ver: R.ver,
+      // toast(text, kind "info"|"done"|"warn"|"error", { action: { label, fn }, ms, id })
+      // -> { close }. One design (THEME: Feedback); an `id` replaces that toast
+      toast: (text, kind, opts) => R.toast(text, kind, { ...(opts || {}), from: id }),
+      isTextEntry: (el) => R.isTextEntry(el),
+      // the keyboard: one owner at a time, on <html data-owns-keys>
+      keysOwner: () => R.keysOwner(),
+      keysFree: () => R.keysFree(id),
+      claimKeys: () => R.claimKeys(id),
+      releaseKeys: () => R.releaseKeys(id),
+      // gql(query, variables, { timeout ms }) -> data; throws a readable Error
+      gql: (q, v, op) => R.gql(q, v, op),
+      ago: (at, now) => R.ago(at, now),
+      // onRoute(fn(location)) -> unsubscribe: after every SPA navigation
+      onRoute: (fn) => R.onRoute(fn),
+      // onPage("StudioPage", fn(props)) -> unsubscribe | false: after every render
+      // of a patchable Stash page (0.32: PerformerPage, StudioPage, TagPage, GroupPage...)
+      onPage: (name, fn) => R.onPage(name, fn),
+      uiHost: () => R.uiHost(),
+    };
+
+    function make() {
+      const D = typeof document !== "undefined" ? document : null;
+      const later = (f, ms) => setTimeout(f, ms);
+      // ── what counts as typing: text entry only. A range input keeps focus after
+      // a drag, and treating it as typing made Stop (IntifaceSync's 0) do nothing.
+      const NOT_TEXT = new Set(["range", "checkbox", "radio", "button", "submit", "reset", "color", "file", "image"]);
+      function isTextEntry(el) {
+        if (!el || !el.tagName) return false;
+        const t = el.tagName;
+        if (t === "INPUT") return !NOT_TEXT.has(String(el.type || "text").toLowerCase());
+        return t === "TEXTAREA" || t === "SELECT" || !!el.isContentEditable;
+      }
+      // a fullscreen <video> paints none of its children: then the body
+      function uiHost() {
+        const fs = D && D.fullscreenElement;
+        return fs && fs.tagName !== "VIDEO" ? fs : D && D.body;
+      }
+      // ── the toast
+      const LIFE = { info: 3000, done: 3000, warn: 8000, error: 8000 };
+      const CSS = "#sx-toasts { position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 2147483000; display: flex;" +
+        " flex-direction: column; align-items: center; gap: 8px; pointer-events: none; max-width: calc(100vw - 24px); }" +
+        " #sx-toasts .sx-toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; max-width: min(420px, calc(100vw - 24px));" +
+        " padding: 9px 14px; color: var(--sx-tx, #CECDC3); font: 13.5px/1.4 system-ui, sans-serif; text-align: left; box-sizing: border-box;" +
+        " background: linear-gradient(180deg, var(--sx-raise, #343331) 0, var(--sx-ui, #282726) 64px); border: 1px solid var(--sx-line, #403E3C);" +
+        " border-top-color: var(--sx-edge, #575653); border-left: 3px solid var(--tk, var(--sx-bl, #4385BE)); border-radius: 12px;" +
+        " box-shadow: 0 1px 0 rgba(0,0,0,.5), 0 20px 50px -12px rgba(0,0,0,.6); }" +
+        " #sx-toasts .sx-toast[data-kind=done] { --tk: var(--sx-gr, #879A39); } #sx-toasts .sx-toast[data-kind=warn] { --tk: var(--sx-ye, #D0A215); }" +
+        " #sx-toasts .sx-toast[data-kind=error] { --tk: var(--sx-re, #D14D41); }" +
+        " #sx-toasts .sx-toast button { flex: none; font: inherit; font-size: 13px; padding: 0; border: 0; background: none; cursor: pointer;" +
+        " color: var(--sx-bl-tx, var(--sx-bl, #4385BE)); text-decoration: underline; }" +
+        " @media (max-width: 575.98px) { #sx-toasts { bottom: 84px; } }";
+      let host = null;
+      const named = new Map();
+      function ensureHost() {
+        if (!D || typeof D.createElement !== "function" || !D.body) return null;
+        if (!host) {
+          host = D.createElement("div");
+          host.id = "sx-toasts";
+          if (!D.getElementById || !D.getElementById("sx-toasts-css")) {
+            const st = D.createElement("style");
+            st.id = "sx-toasts-css";
+            st.textContent = CSS;
+            (D.head || D.body).appendChild(st);
+          }
+          try { D.addEventListener("fullscreenchange", () => { const p = uiHost(); if (host && p && host.parentNode !== p) p.appendChild(host); }); } catch (_) {}
+        }
+        const p = uiHost();
+        if (p && host.parentNode !== p) p.appendChild(host);
+        return host;
+      }
+      function closeToast(el) {
+        if (!el) return;
+        clearTimeout(el.__sxT);
+        if (el.parentNode) el.parentNode.removeChild(el);
+        for (const [k, v] of named) if (v === el) named.delete(k);
+      }
+      function toast(text, kind, opts) {
+        const k = LIFE[kind] ? kind : "info", op = opts || {};
+        const h = ensureHost();
+        if (!h) return { close() {} };
+        const key = op.id ? `${op.from || ""}:${op.id}` : "";
+        let el = key ? named.get(key) : null;
+        if (!el || el.parentNode !== h) {
+          el = D.createElement("div");
+          el.className = "sx-toast";
+          h.appendChild(el);
+          if (key) named.set(key, el);
+        }
+        // three at most: the oldest goes
+        while (h.children && h.children.length > 3) closeToast(h.firstChild);
+        el.setAttribute("role", k === "error" ? "alert" : "status");
+        el.setAttribute("data-kind", k);
+        if (op.from) el.setAttribute("data-from", op.from);
+        while (el.firstChild) el.removeChild(el.firstChild);
+        const span = D.createElement("span");
+        span.textContent = String(text == null ? "" : text);
+        el.appendChild(span);
+        const act = op.action && op.action.label && typeof op.action.fn === "function" ? op.action : null;
+        if (act) {
+          const b = D.createElement("button");
+          b.type = "button";
+          b.textContent = String(act.label);
+          b.addEventListener("click", (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); closeToast(el); try { act.fn(); } catch (_) {} });
+          el.appendChild(b);
+        }
+        const ms = typeof op.ms === "number" ? op.ms : act ? 8000 : LIFE[k];
+        clearTimeout(el.__sxT);
+        if (ms > 0) el.__sxT = later(() => closeToast(el), ms);
+        return { close: () => closeToast(el), el };
+      }
+      // ── the keyboard owner
+      const root = () => (D && D.documentElement) || null;
+      const keysOwner = () => { const r = root(); return (r && r.getAttribute && r.getAttribute("data-owns-keys")) || ""; };
+      const keysFree = (who) => { const w = keysOwner(); return !w || w === who; };
+      const claimKeys = (who) => { const r = root(); if (r && r.setAttribute) r.setAttribute("data-owns-keys", who); };
+      const releaseKeys = (who) => { const r = root(); if (r && r.removeAttribute && keysOwner() === who) r.removeAttribute("data-owns-keys"); };
+      // ── GraphQL, with a timeout: a hung request used to freeze a page and
+      // stall its plugin's saves until a reload
+      function httpWords(st) {
+        if (st === 401) return "Stash returned 401: logged out?";
+        if (st === 403) return "Stash refused this address (403): check public_whitelist in Stash's settings";
+        return `Stash returned ${st}`;
+      }
+      async function gql(query, variables, op) {
+        const ms = (op && op.timeout) || (/runPlugin(Operation|Task)/.test(String(query)) ? 180000 : 60000);
+        const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+        let timer = null;
+        const late = new Promise((_, no) => {
+          timer = later(() => { try { if (ac) ac.abort(); } catch (_) {} no(new Error(`Stash did not answer in ${Math.round(ms / 1000)} s`)); }, ms);
+        });
+        const run = (async () => {
+          const res = await fetch("/graphql", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query, variables: variables || {} }), signal: ac ? ac.signal : undefined });
+          let json = null;
+          try { json = await res.json(); } catch (_) {}
+          if (!json) throw new Error(httpWords(res.status));
+          if (json.errors && json.errors.length) throw new Error((json.errors[0] && json.errors[0].message) || "Stash error");
+          return json.data == null ? null : json.data;
+        })();
+        try { return await Promise.race([run, late]); } finally { clearTimeout(timer); }
+      }
+      // ── "how long ago", one wording for the suite
+      function ago(at, now) {
+        const m = Math.floor(((now == null ? Date.now() : now) - at) / 60000);
+        if (!(m >= 1)) return "just now";
+        if (m < 60) return `${m} min ago`;
+        if (m < 24 * 60) return `${Math.round(m / 60)} h ago`;
+        if (m < 48 * 60) return "yesterday";
+        return `${Math.round(m / 1440)} days ago`;
+      }
+      // ── one route signal: history's push/replace, Back/Forward, and a 1 s
+      // look as a fallback (instead of every plugin's own poll and body observer)
+      const routeSubs = new Set();
+      let routeOn = false, lastHref = "";
+      function fireRoute() {
+        const loc = W && W.location;
+        if (!loc || loc.href === lastHref) return;
+        lastHref = loc.href;
+        for (const f of [...routeSubs]) { try { f(loc); } catch (_) {} }
+      }
+      function routeInstall() {
+        if (routeOn || !W || !W.history) return;
+        routeOn = true;
+        lastHref = W.location ? W.location.href : "";
+        for (const m of ["pushState", "replaceState"]) {
+          const orig = W.history[m];
+          if (typeof orig !== "function") continue;
+          try { W.history[m] = function () { const r = orig.apply(this, arguments); Promise.resolve().then(fireRoute); return r; }; } catch (_) {}
+        }
+        try { W.addEventListener("popstate", () => Promise.resolve().then(fireRoute)); } catch (_) {}
+        try { setInterval(fireRoute, 1000); } catch (_) {}
+      }
+      function onRoute(fn) {
+        if (typeof fn !== "function") return () => {};
+        routeInstall();
+        routeSubs.add(fn);
+        return () => { routeSubs.delete(fn); };
+      }
+      // ── a patchable Stash page, once per page however many plugins ask: a host
+      // after it that calls each subscriber after every render (never changing what
+      // Stash draws). Performers Toolkit's PerformerPage host, made shared.
+      const pages = new Map();
+      function onPage(name, fn) {
+        const api = W && W.PluginApi;
+        if (typeof fn !== "function" || !api || !api.patch || typeof api.patch.after !== "function" || !api.React) return false;
+        let set = pages.get(name);
+        if (!set) {
+          set = new Set();
+          pages.set(name, set);
+          const Rc = api.React, subs = set;
+          const Host = function SuiteRuntimePageHost(p) {
+            Rc.useEffect(() => { for (const f of [...subs]) { try { f(p.pageProps || {}); } catch (_) {} } });
+            return null;
+          };
+          try {
+            api.patch.after(name, function () {
+              const props = arguments[0], result = arguments[arguments.length - 1];
+              try { return Rc.createElement(Rc.Fragment, null, result, Rc.createElement(Host, { key: "sx-page-host", pageProps: props })); } catch (_) { return result; }
+            });
+          } catch (_) { pages.delete(name); return false; }
+        }
+        set.add(fn);
+        return () => { set.delete(fn); };
+      }
+      return { ver: RT_VER, toast, isTextEntry, keysOwner, keysFree, claimKeys, releaseKeys, gql, ago, onRoute, onPage, uiHost };
+    }
+  }
 
   const DAY = 86400000;
 
@@ -349,8 +593,8 @@
     { id: "natural", label: "Natural or enhanced", labelZh: "天然或隆胸", get: (p) => naturalGroup(p.fake) },
     { id: "tattoos", label: "Tattoos", labelZh: "纹身", get: (p) => yesNo(p.tattoos, "tattoos", "no tattoos") },
     { id: "piercings", label: "Piercings", labelZh: "穿孔", get: (p) => yesNo(p.piercings, "piercings", "no piercings") },
-    { id: "age", label: "Age in the scene", labelZh: "场景中的年龄", get: (p, s) => ageGroup(ageAt(p.birth, s.date)) },
-    { id: "career", label: "Career stage in the scene", labelZh: "场景中的职业阶段", get: (p, s) => careerGroup(p.careerStart, s.date) },
+    { id: "age", label: "Age in the scene", labelZh: "场景中的年龄", get: (p, s) => ageGroup(ageAt(p.birth, shotOn(s))) },
+    { id: "career", label: "Career stage in the scene", labelZh: "场景中的职业阶段", get: (p, s) => careerGroup(p.careerStart, shotOn(s)) },
     { id: "favourite", label: "Favourites", labelZh: "最爱", get: (p) => (p.fav ? "favourites" : "not favourites") },
     { id: "ptags", label: "Performer tags", labelZh: "演员标签", multi: (p) => (p.tags || []).map((t) => t[1]) },
   ];
@@ -809,10 +1053,11 @@
   function dateConflicts(scenes, perfById) {
     const out = [];
     for (const s of scenes) {
-      if (!s.date) continue;
+      const day = shotOn(s);
+      if (!day) continue;
       for (const pid of s.perf || []) {
         const p = perfById.get(pid);
-        const a = p ? rawAge(p.birth, s.date) : null;
+        const a = p ? rawAge(p.birth, day) : null;
         if (a !== null && a < 18) out.push({ s, p, age: a });
       }
     }
@@ -830,9 +1075,43 @@
     }
     return [...m.values()].filter((g) => g.length > 1).sort((a, b) => b.length - a.length || a[0].name.localeCompare(b[0].name));
   }
+  // 2.15.0: a release date in the future can be a pre-release; a production
+  // date (Stash 0.32, when it was shot) in the future is a typo either way
   function futureDates(scenes, now) {
     const today = dayKey(now);
-    return scenes.filter((s) => s.date && s.date.slice(0, 10) > today);
+    return scenes.filter((s) => (s.date && s.date.slice(0, 10) > today) || (s.pdate && s.pdate.slice(0, 10) > today));
+  }
+
+  // The day a scene was shot: Stash 0.32's production date when it is set,
+  // else the release date (2.15.0, audit Idea 3). Ages at the scene use it, so
+  // a re-release no longer makes a performer older (or a check fire) by its
+  // release date.
+  const shotOn = (s) => (s && (s.pdate || s.date)) || null;
+
+  // Studios with no scenes at all: none of their own and none in any studio
+  // under them (2.15.0). Stash's scene_count filter counts a studio's own
+  // scenes only, so a network whose sub-studios hold every scene was listed
+  // (127 of the user's 169). `scenes` is the whole cached library.
+  // -> { empty: [studio], networks: own-empty studios whose sub-studios have scenes }
+  function emptyStudios(studios, scenes) {
+    const byId = new Map((studios || []).map((x) => [x.id, x]));
+    const own = new Set(), any = new Set();
+    for (const s of scenes || []) if (s.studio) own.add(String(s.studio.id));
+    for (const id of own) {
+      let cur = id, guard = 0;
+      while (cur && !any.has(cur) && guard++ < 50) {
+        any.add(cur);
+        const st = byId.get(cur);
+        cur = st && st.parent ? st.parent : null;
+      }
+    }
+    const empty = [], networks = [];
+    for (const st of studios || []) {
+      if (own.has(st.id)) continue;
+      if (any.has(st.id)) networks.push(st); else empty.push(st);
+    }
+    empty.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+    return { empty, networks: networks.length };
   }
 
   // ── Collection ────────────────────────────────────────────────────────────
@@ -964,7 +1243,7 @@
   function ageCounts(scenes, perfById) {
     const m = new Map();
     for (const s of scenes) for (const pid of s.perf || []) {
-      const a = ageAt(perfById.get(pid)?.birth, s.date);
+      const a = ageAt(perfById.get(pid)?.birth, shotOn(s));
       if (a === null || a < 18 || a > 50) continue;
       const r = m.get(a) || { n: 0, o: 0 };
       r.n += 1; r.o += s.o || 0; m.set(a, r);
@@ -1176,6 +1455,8 @@
     if (ok("details")) { const x = first((s) => s.details); if (x !== undefined) v.details = x; }
     if (ok("director")) { const x = first((s) => s.director); if (x !== undefined) v.director = x; }
     if (ok("date")) { const x = first((s) => s.date); if (x !== undefined) v.date = x; }
+    // 2.14.2 (audit): Stash 0.32's production date, or the copy's was lost (rule 5)
+    if (ok("production_date")) { const x = first((s) => s.production_date); if (x !== undefined) v.production_date = x; }
     // 2.13: the higher rating when both are rated (the kept one's alone was
     // kept up to 2.12; the user wants the better score to survive)
     if (ok("rating100")) { const r = all.map((s) => s.rating100).filter((x) => typeof x === "number"); if (r.length) v.rating100 = Math.max(...r); }
@@ -1888,19 +2169,24 @@
       PERFORMER_TRAITS, SCENE_TRAITS, traitRows, liftTone, performerTable, topScenes, library, ratingBands,
       backlog, BACKLOG, encodeCriterion, listUrl, watchPerO, mergeOStats, addWatch, yesNo,
       countryCode, codecName, containerName, resBucket, fpsBucket, shapeOf, percentile, fileStats, upgrades, spaceHogs,
-      healthScore, gradeOf, rawAge, dateConflicts, sameNames, futureDates, growth, tagCounts, coTags, networks,
+      healthScore, gradeOf, rawAge, dateConflicts, sameNames, futureDates, emptyStudios, shotOn, growth, tagCounts, coTags, networks,
       pairs, newFaces, ageCounts, notable, nonstop,
       isEfficient, dupChoose, dupPick, mergePlan, parseDupLog, withDupLog, DUP_LOG_MAX, CODEC_EFF, picQuality, stars, mergeValues, notEfficient, isOrdinal, ordinalKey, strength, rankTraits, liftPos,
       sceneTotals, totalsMatch, activityDiff, mergeScenes, parseLockdown, lockdownModel,
       codecTier, isPoor, tierColor, TIER_COLOR, audioColor, RES_COLOR, CODEC_RANK, nextConfig, withWatch, moviesRenamed,
       mvUrl, toolkitTab, refreshStash,
-      HUB_KNOWN, hubPresent, hubNorm, hubTotals, hubOrder, hubQueue, hubQueueView, hubKeepLost, HUB_LOOK, hubLook, hubPick };
+      HUB_KNOWN, hubPresent, hubNorm, hubTotals, hubOrder, hubQueue, hubQueueView, hubKeepLost, HUB_LOOK, hubLook, hubPick,
+      focusables, keyActs, ago, ACT_SEL, RT };
     return;
   }
 
   // ═══ Stash ═════════════════════════════════════════════════════════════════
 
+  // RT.gql: the same request with a timeout (60 s; plugin operations 180 s).
+  // The pagehide flush of watch time keeps its own keepalive request: it has
+  // to outlive the page, which RT.gql's fetch is not asked to do.
   async function gql(query, variables, keepalive) {
+    if (!keepalive) return RT.gql(query, variables);
     const res = await fetch("/graphql", {
       method: "POST", credentials: "same-origin", keepalive: !!keepalive,
       headers: { "Content-Type": "application/json" },
@@ -1930,7 +2216,7 @@
 
   const SCENE_WANT = ["id", "title", "date", "created_at", "rating100", "organized", "o_counter", "o_history",
     "play_count", "play_duration", "play_history", "last_played_at", "resume_time", "interactive",
-    "paths { screenshot }", "studio { id name }", "tags { id name }", "performers { id }"];
+    "paths { screenshot }", "studio { id name }", "tags { id name }", "performers { id }", "production_date"];
   // Files are asked for field by field too: frame_rate, bit_rate and
   // fingerprints are not in every Stash.
   const FILE_WANT = ["duration", "size", "width", "height", "video_codec", "audio_codec", "frame_rate", "bit_rate", "format",
@@ -1947,7 +2233,7 @@
     const files = s.files || [];
     const f = files[0] || {};
     return {
-      id: String(s.id), title: s.title || f.basename || tc(`场景 ${s.id}`, `Scene ${s.id}`), date: s.date || null,
+      id: String(s.id), title: s.title || f.basename || tc(`场景 ${s.id}`, `Scene ${s.id}`), date: s.date || null, pdate: s.production_date || null,
       created: toMs(s.created_at), rating: s.rating100 ?? null, organized: !!s.organized, o: s.o_counter || 0,
       oh: s.o_history || [], plays: s.play_count || 0, playDur: s.play_duration || 0, ph: s.play_history || [],
       last: toMs(s.last_played_at), resume: s.resume_time || 0, interactive: !!s.interactive,
@@ -2231,7 +2517,7 @@
     return names;
   }
 
-  const MERGE_WANT = ["id", "title", "code", "details", "director", "date", "rating100", "organized", "urls", "studio { id }",
+  const MERGE_WANT = ["id", "title", "code", "details", "director", "date", "production_date", "rating100", "organized", "urls", "studio { id }",
     "tags { id }", "performers { id }", "galleries { id }", "groups { group { id } scene_index }", "stash_ids { endpoint stash_id }",
     "files { id basename width height video_codec }", "o_counter", "play_count", "resume_time", "play_duration", "custom_fields",
     "o_history", "play_history", "scene_markers { id title seconds end_seconds primary_tag { id } tags { id } }"];
@@ -3161,7 +3447,7 @@
   // shades (the error box, row dividers, tinted verdicts, the calendar
   // ramps) are exact Flexoki values with Flexoki on; without it they are
   // mixed from the tokens the same way (a tint of the hue on the surface).
-  const THEME = suiteTheme({ id: "insights", scope: "#insights, #ins-tip", extra: (X) => {
+  const THEME = suiteTheme({ id: "insights", scope: "#insights, #ins-tip, #sx-toasts", extra: (X) => {
     const t = X.t, m = X.mix, fx = X.mode === "flexoki", light = X.mode === "light";
     const v = {
       "err-bd": fx ? "#6B2620" : m(t.ui, t.re, 0.45), "err-bg": fx ? "#2A1513" : m(t.ui, t.re, 0.12), "err-tx": fx ? "#F0C9C3" : t["re-l"],
@@ -3310,16 +3596,17 @@
 /* the Files tab reads like a console */
 .ins-con { font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
 .ins-con .ins-row { font-size: 12px; min-height: 26px; }
-.ins-con .hd { display: flex; justify-content: space-between; color: var(--tx2b); letter-spacing: .08em; font-size: 11px; margin-bottom: 4px; }
+.ins-con .hd { display: flex; justify-content: space-between; color: var(--tx2b); letter-spacing: .08em; font-size: 11px; margin-bottom: 4px; text-transform: uppercase; }
 .ins-con table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .ins-con th, .ins-con td { padding: 4px 6px; text-align: right; font-weight: 400; white-space: nowrap; }
-.ins-con th { color: var(--tx2b); font-size: 11px; letter-spacing: .06em; }
+.ins-con th { color: var(--tx2b); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
 .ins-con td:first-child, .ins-con th:first-child { text-align: left; }
 .ins-con tr + tr td { border-top: 1px solid var(--ins-div1); }
 .ins-con tr.click { cursor: pointer; } .ins-con tr.click:hover td { background: rgba(255,255,255,.03); }
 .ins-strip { display: flex; flex-wrap: wrap; gap: 8px 26px; margin-bottom: 14px; padding: 12px 16px; }
-.ins-strip span { color: var(--tx2b); margin-right: 6px; letter-spacing: .06em; font-size: 11px; }
+.ins-strip span { color: var(--tx2b); margin-right: 6px; letter-spacing: .06em; font-size: 11px; text-transform: uppercase; }
 .ins-strip b { color: var(--hi); font-weight: 500; }
+#insights [tabindex="0"]:focus-visible, #insights button:focus-visible { outline: 2px solid var(--sx-bl); outline-offset: 2px; border-radius: 6px; }
 .ins-strip .warn b { color: var(--sx-ye-tx); }
 .ins-li { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 8px; margin: 0 -8px;
   border-radius: 7px; min-height: 40px; }
@@ -3465,7 +3752,7 @@
 .ins-tog.on i { background: var(--gr); } .ins-tog.on i::after { left: 13px; background: var(--hi); }
 .ins-tog:disabled, .ins-seg button:disabled { opacity: .5; cursor: default; }
 .ins-sum { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; margin-bottom: 10px; font-size: 12px; }
-.ins-sum em { font-style: normal; color: var(--tx2b); letter-spacing: .06em; margin-right: 7px; font-size: 11px; }
+.ins-sum em { font-style: normal; color: var(--tx2b); letter-spacing: .06em; margin-right: 7px; font-size: 11px; text-transform: uppercase; }
 .ins-sum b { color: var(--hi); font-weight: 600; }
 .ins-dups { max-height: 560px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ui3) transparent; }
 .ins-dg { padding: 6px 0; } .ins-dg + .ins-dg { border-top: 1px solid var(--ins-div1); }
@@ -3604,7 +3891,7 @@
   // One tooltip for everything: any element with data-tip.
   function wireTips(root) {
     let tip = document.getElementById("ins-tip");
-    if (!tip) { tip = document.createElement("div"); tip.id = "ins-tip"; document.body.appendChild(tip); }
+    if (!tip) { tip = document.createElement("div"); tip.id = "ins-tip"; tip.setAttribute("role", "tooltip"); document.body.appendChild(tip); }   // 2.14.2: a role, solid under see-through
     const place = (ev) => {
       const w = tip.offsetWidth, h = tip.offsetHeight;
       let x = ev.clientX + 14, y = ev.clientY + 14;
@@ -3961,10 +4248,7 @@
 
   function metaText() {
     if (!app.data) return "";
-    const min = Math.max(0, Math.round((Date.now() - app.data.at) / 60000));
-    const when = min < 1 ? tc("刚刚更新", "updated just now") : min < 60 ? tc(`${min} 分钟前更新`, `updated ${min} min ago`)
-      : min < 2880 ? tc(`${Math.round(min / 60)} 小时前更新`, `updated ${Math.round(min / 60)} h ago`)
-      : tc(`${Math.round(min / 1440)} 天前更新`, `updated ${Math.round(min / 1440)} days ago`);
+    const when = isZh() ? `${agoZh(app.data.at)}更新` : `updated ${RT.ago(app.data.at)}`;
     return when + (app.syncing ? ` · ${app.syncing}` : app.syncNote ? ` · ${app.syncNote}` : "");
   }
   // Only the line in the header, so a check never redraws what is being read.
@@ -4306,13 +4590,12 @@
   // ── Library ───────────────────────────────────────────────────────────────
 
   const CYCLE = ["var(--sx-cy)", "var(--sx-or)", "var(--sx-pu)", "var(--sx-bl)", "var(--sx-ye)", "var(--sx-gr)", "var(--sx-ma)", "var(--sx-re)"];
-  function ago(ms) {
-    const min = Math.round((Date.now() - ms) / 60000);
-    if (min < 1) return tc("刚刚", "just now");
-    if (min < 60) return tc(`${min} 分钟前`, `${min} min ago`);
-    if (min < 48 * 60) return tc(`${plural(Math.round(min / 60), "hour")}前`, plural(Math.round(min / 60), "hour") + " ago");
-    if (min < 60 * 24 * 60) return tc(`${plural(Math.round(min / 1440), "day")}前`, plural(Math.round(min / 1440), "day") + " ago");
-    return fmtDate(ms);
+  // 2.15.0: the suite's words in English (RT.ago: "3 h ago", "yesterday",
+  // "3 days ago"; was "48 hours ago"); past 60 days the date, as before.
+  // Chinese keeps its own wording (agoZh).
+  function ago(ms, now = Date.now()) {
+    if (!(now - ms < 60 * DAY)) return fmtDate(ms);
+    return isZh() ? agoZh(ms, now) : RT.ago(ms, now);
   }
   const resOf = (s) => resBucket(s.w, s.h) || "?";
 
@@ -4468,7 +4751,7 @@
     if (order) list.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key)); else list.sort((a, b) => b.n - a.n);
     const tot = list.reduce((a, r) => a + r.n, 0);
     const max = Math.max(1, ...list.map((r) => r.n));
-    return `<div class="hd"><span>${o.head}</span><span>${tc(`共 ${fmtN(tot)} 个文件`, `${fmtN(tot)} FILES`)}</span></div>` + rows(list.slice(0, o.limit || 9).map((r, i) => {
+    return `<div class="hd"><span>${o.head}</span><span>${tc(`共 ${fmtN(tot)} 个文件`, `${fmtN(tot)} files`)}</span></div>` + rows(list.slice(0, o.limit || 9).map((r, i) => {
       const key = o.disp ? o.disp(r.key) : r.key;
       const tm = o.tipMore ? o.tipMore(r) : "";
       return { label: key, value: r.n, text: `${fmtN(r.n)} <small>${pct(r.n / Math.max(1, tot))}</small>`,
@@ -4499,32 +4782,32 @@
 
     el.innerHTML = `
       <div class="ins-card ins-well ins-con ins-strip" style="--c:var(--cy)">
-        <div><span>${tc("文件", "FILES")}</span><b>${fmtN(fs.files)}</b></div><div><span>${tc("大小", "SIZE")}</span><b>${fmtBytes(fs.size)}</b></div>
-        <div><span>${tc("总时长", "RUNTIME")}</span><b>${fmtDur(fs.secs)}</b></div><div><span>${tc("平均码率", "AVG BITRATE")}</span><b>${fmtMbps(avgBr)} Mbps</b></div>
-        <div><span>${tc("每小时", "PER HOUR")}</span><b>${fs.secs ? fmtBytes((first / fs.secs) * 3600) : "–"}</b></div>
-        <div class="click" data-go="${esc(S([{ type: "file_count", modifier: "GREATER_THAN", value: { value: 1 } }]))}" style="cursor:pointer" data-tip="${tc("文件数超过一个的场景：打开它们", "Scenes with more than one file: open them")}"><span>${tc("多文件", "MULTI-FILE")}</span><b>${fmtN(fs.multi)}</b></div>
-        ${fs.noFile ? `<div class="warn" data-go="${esc(S([{ type: "file_count", modifier: "EQUALS", value: { value: 0 } }]))}" style="cursor:pointer" data-tip="${tc("文件已不在的场景：打开它们", "Scenes whose file is gone: open them")}"><span>${tc("无文件", "NO FILE")}</span><b>${fmtN(fs.noFile)}</b></div>` : ""}
-        ${fs.noPhash ? `<div class="warn" data-tab="actions" style="cursor:pointer" data-tip="${tc("没有 phash 的文件无法作为重复项匹配。请到「操作」标签页生成。", "Files without a phash cannot be matched as duplicates. Generate them on the Actions tab.")}"><span>${tc("无 PHASH", "NO PHASH")}</span><b>${fmtN(fs.noPhash)}</b></div>` : ""}
+        <div><span>${tc("文件", "Files")}</span><b>${fmtN(fs.files)}</b></div><div><span>${tc("大小", "Size")}</span><b>${fmtBytes(fs.size)}</b></div>
+        <div><span>${tc("总时长", "Runtime")}</span><b>${fmtDur(fs.secs)}</b></div><div><span>${tc("平均码率", "Avg bitrate")}</span><b>${fmtMbps(avgBr)} Mbps</b></div>
+        <div><span>${tc("每小时", "Per hour")}</span><b>${fs.secs ? fmtBytes((first / fs.secs) * 3600) : "–"}</b></div>
+        <div class="click" data-go="${esc(S([{ type: "file_count", modifier: "GREATER_THAN", value: { value: 1 } }]))}" style="cursor:pointer" data-tip="${tc("文件数超过一个的场景：打开它们", "Scenes with more than one file: open them")}"><span>${tc("多文件", "Multi-file")}</span><b>${fmtN(fs.multi)}</b></div>
+        ${fs.noFile ? `<div class="warn" data-go="${esc(S([{ type: "file_count", modifier: "EQUALS", value: { value: 0 } }]))}" style="cursor:pointer" data-tip="${tc("文件已不在的场景：打开它们", "Scenes whose file is gone: open them")}"><span>${tc("无文件", "No file")}</span><b>${fmtN(fs.noFile)}</b></div>` : ""}
+        ${fs.noPhash ? `<div class="warn" data-tab="actions" style="cursor:pointer" data-tip="${tc("没有 phash 的文件无法作为重复项匹配。请到「操作」标签页生成。", "Files without a phash cannot be matched as duplicates. Generate them on the Actions tab.")}"><span>${tc("无 PHASH", "No phash")}</span><b>${fmtN(fs.noPhash)}</b></div>` : ""}
       </div>
       <div class="ins-grid3">
-        ${card({ title: tc("视频编码", "Video codec"), icon: "film", c: "cy" }, con(dist(fs.vcodec, null, { head: tc("编码", "CODEC"), disp: (k) => valZh(CODEC_LABEL_ZH, k), color: (r) => tierColor(r.key),
+        ${card({ title: tc("视频编码", "Video codec"), icon: "film", c: "cy" }, con(dist(fs.vcodec, null, { head: tc("编码", "Codec"), disp: (k) => valZh(CODEC_LABEL_ZH, k), color: (r) => tierColor(r.key),
           link: (r) => S([{ type: "video_codec", modifier: "INCLUDES", value: VC_MATCH[r.key] || r.raw }], "filesize") })))}
-        ${card({ title: tc("音频编码", "Audio codec"), icon: "audio", c: "cy" }, con(dist(fs.acodec, null, { head: tc("编码", "CODEC"), disp: (k) => valZh(CODEC_LABEL_ZH, k), color: (r) => audioColor(r.key),
+        ${card({ title: tc("音频编码", "Audio codec"), icon: "audio", c: "cy" }, con(dist(fs.acodec, null, { head: tc("编码", "Codec"), disp: (k) => valZh(CODEC_LABEL_ZH, k), color: (r) => audioColor(r.key),
           link: (r) => (r.raw ? S([{ type: "audio_codec", modifier: "EQUALS", value: r.raw }]) : null) })))}
-        ${card({ title: tc("容器", "Container"), icon: "box", c: "cy" }, con(dist(fs.container, null, { head: tc("格式", "FORMAT"), disp: (k) => valZh(CONTAINER_LABEL_ZH, k) })))}
-        ${card({ title: tc("分辨率", "Resolution"), icon: "expand", c: "cy" }, con(dist(fs.res, RES_ORDER, { head: tc("分辨率", "RESOLUTION"), disp: (k) => valZh(RES_LABEL_ZH, k), color: (r) => RES_COLOR[r.key],
+        ${card({ title: tc("容器", "Container"), icon: "box", c: "cy" }, con(dist(fs.container, null, { head: tc("格式", "Format"), disp: (k) => valZh(CONTAINER_LABEL_ZH, k) })))}
+        ${card({ title: tc("分辨率", "Resolution"), icon: "expand", c: "cy" }, con(dist(fs.res, RES_ORDER, { head: tc("分辨率", "Resolution"), disp: (k) => valZh(RES_LABEL_ZH, k), color: (r) => RES_COLOR[r.key],
           link: (r) => S([{ type: "resolution", modifier: RES_LINK[r.key][0], value: RES_LINK[r.key][1] }], "filesize"),
           tipMore: () => tc("\n会打开 Stash 的分辨率筛选；它的档位略有不同", "\nOpens Stash's resolution filter; its steps differ a little") })))}
-        ${card({ title: tc("帧率", "Frame rate"), icon: "frame", c: "cy" }, con(dist(fs.fps, FPS_ORDER, { head: tc("帧率", "FPS"), disp: (k) => valZh(FPS_LABEL_ZH, k),
+        ${card({ title: tc("帧率", "Frame rate"), icon: "frame", c: "cy" }, con(dist(fs.fps, FPS_ORDER, { head: tc("帧率", "fps"), disp: (k) => valZh(FPS_LABEL_ZH, k),
           link: (r) => { const x = FPS_LINK[r.key]; return x ? S([x[1] === null ? { type: "framerate", modifier: "GREATER_THAN", value: { value: x[0] - 1 } } : { type: "framerate", modifier: "BETWEEN", value: { value: x[0], value2: x[1] } }]) : null; } })))}
-        ${card({ title: tc("画面比例", "Shape"), icon: "frame", c: "cy" }, con(dist(fs.shape, ["landscape", "portrait", "square", "VR"], { head: tc("画面比例", "SHAPE"), disp: (k) => valZh(SHAPE_LABEL_ZH, k),
+        ${card({ title: tc("画面比例", "Shape"), icon: "frame", c: "cy" }, con(dist(fs.shape, ["landscape", "portrait", "square", "VR"], { head: tc("画面比例", "Shape"), disp: (k) => valZh(SHAPE_LABEL_ZH, k),
           tipMore: (r) => (r.key === "VR" ? tc("\n按比例与尺寸判定：宽 4K 以上的 2:1，或 2.8K 以上的 1:1", "\nTold by shape: 2:1 at 4K wide or more, or 1:1 at 2.8K or more") : "") })))}
       </div>
       <div class="ins-grid">
         ${card({ title: tc("各分辨率的码率", "Bitrate by resolution"), icon: "gauge", c: "cy", sub: tc("Mbps。一半的文件落在低与高之间；超过中位数 2.5 倍的算作空间大户。", "Mbps. Half the files sit between low and high; over 2.5× the median counts as a space hog.") },
-          con(`<table><tr><th>${tc("分辨率", "RES")}</th><th>${tc("文件", "FILES")}</th><th>${tc("低 10%", "LOW 10%")}</th><th>${tc("中位数", "MEDIAN")}</th><th>${tc("高 10%", "HIGH 10%")}</th><th>${tc("大户阈值", "HOG ABOVE")}</th></tr>${brRows}</table>`))}
+          con(`<table><tr><th>${tc("分辨率", "Res")}</th><th>${tc("文件", "Files")}</th><th>${tc("低 10%", "Low 10%")}</th><th>${tc("中位数", "Median")}</th><th>${tc("高 10%", "High 10%")}</th><th>${tc("大户阈值", "Hog above")}</th></tr>${brRows}</table>`))}
         ${card({ title: tc("每小时占用", "Cost per hour"), icon: "disk", c: "cy", sub: tc("视频每小时占用的存储，按编码分类。点一个编码可按文件大小从大到小列出它的文件。", "Storage an hour of video takes, by codec. Click a codec to list its files, largest first.") },
-          con(`<table><tr><th>${tc("编码", "CODEC")}</th><th>${tc("文件", "FILES")}</th><th>${tc("每小时", "PER HOUR")}</th><th>${tc("平均分辨率", "AVG RES")}</th><th>${tc("占空间", "OF SPACE")}</th></tr>${costRows}</table>`))}
+          con(`<table><tr><th>${tc("编码", "Codec")}</th><th>${tc("文件", "Files")}</th><th>${tc("每小时", "Per hour")}</th><th>${tc("平均分辨率", "Avg res")}</th><th>${tc("占空间", "Of space")}</th></tr>${costRows}</table>`))}
       </div>
       ${spaceCard(m, fs, net)}
       <div class="ins-note" style="text-align:center">${tc(`重复项、需要重编码或升级的文件、空间大户都在 ${go("#", "操作")} 标签页。`, `Duplicates, files to re-encode or upgrade, and space hogs are on the ${go("#", "Actions")} tab.`)}</div>`;
@@ -4645,12 +4928,19 @@
     const checks = [
       { n: fs.noFile, icon: "alert", c: "re", title: tc("没有文件的场景", "Scenes with no file"), sub: tc("文件在 Stash 之外被移动或删除了；扫一次或清理一下就能解决。", "The file was moved or deleted outside Stash; a scan or clean sorts it out"),
         go: S([{ type: "file_count", modifier: "EQUALS", value: { value: 0 } }]) },
-      { n: new Set(conflicts.map((x) => x.s.id)).size, icon: "alert", c: "re", title: tc("日期早于演员年满 18 岁的场景", "Scenes dated before a performer turned 18"), sub: tc("几乎总是生日或场景日期填错了（重发版、笔误）。", "Nearly always a wrong birthdate or a wrong scene date (a re-release, a typo)"),
+      { n: new Set(conflicts.map((x) => x.s.id)).size, icon: "alert", c: "re", title: tc("日期早于演员年满 18 岁的场景", "Scenes dated before a performer turned 18"), sub: tc("几乎总是生日或场景日期填错了（笔误；只有没有拍摄日期时才参考重发版日期）。", "Nearly always a wrong birthdate or a wrong scene date (a typo; a re-release's date counts only without a production date)"),
         more: conflicts.length, pills: conflicts.slice(0, 10).map((x) => ({ label: `${x.s.title} · ${x.p.name}, ${x.age}`, go: `/scenes/${x.s.id}` })) },
       { n: twins.length, icon: "users", c: "re", title: tc("同名的演员", "Performers with the same name"), sub: tc("多半是同一个人被添加了两次；Stash 可以合并。", "Probably one person added twice; Stash can merge them"),
         pills: twins.slice(0, 12).map((g) => ({ label: `${g[0].name} ×${g.length}`, go: `/performers?q=${encodeURIComponent(g[0].name)}` })) },
-      { n: future.length, icon: "calendar", c: "ye", title: tc("发行日期在未来", "Release date in the future"), sub: tc("预热发行日期没问题；笔误不是。", "Pre-release dates are fine; typos are not"),
+      { n: future.length, icon: "calendar", c: "ye", title: future.some((s) => s.pdate && s.pdate.slice(0, 10) > today) ? tc("发行或拍摄日期在未来", "Release or production date in the future") : tc("发行日期在未来", "Release date in the future"),
+        sub: tc("预热发行日期没问题；笔误不是。", "Pre-release dates are fine; typos are not"),
+        // the list opened is the release dates; future production dates as pills
+        pills: future.filter((s) => s.pdate && s.pdate.slice(0, 10) > today).slice(0, 10).map((s) => ({ label: tc(`${s.title} · 拍摄于 ${s.pdate.slice(0, 10)}`, `${s.title} · made ${s.pdate.slice(0, 10)}`), go: `/scenes/${s.id}` })),
         go: S([{ type: "date", modifier: "GREATER_THAN", value: { value: today } }], "date", "asc") },
+      // 2.15.0 (checked against Stash's source): 0.32's tag scene_count is a
+      // HierarchicalCountInput, and with no depth Stash counts the tag's own
+      // scenes only (no sub-tags); its list page's criterion is a plain number
+      // that sends none. So this link is direct, like the count (tagCounts)
       { n: c["t.once"], icon: "tag", c: "or", title: tc("只在一个场景用到的标签", "Tags used on one scene"), sub: tc("往往是笔误，或是另一个标签的近似重复。", "Often a typo or a near-twin of another tag"),
         go: listUrl("/tags", [{ type: "scene_count", modifier: "EQUALS", value: { value: 1 } }], "name", "asc") },
       idle !== null
@@ -4658,8 +4948,18 @@
             go: P(["scene_count", "image_count", "gallery_count"].map((type) => ({ type, modifier: "EQUALS", value: { value: 0 } })), "name") }
         : { n: c["p.noscenes"], icon: "user", c: "tx2", title: tc("没有场景的演员", "Performers with no scenes"), sub: tc("若是特意保留，就没问题。", "Fine if you keep them on purpose"),
             go: P([{ type: "scene_count", modifier: "EQUALS", value: { value: 0 } }], "name") },
-      { n: c["st.noscenes"], icon: "studio", c: "tx2", title: tc("没有场景的工作室", "Studios with no scenes"), sub: tc("往往是母网络，这没问题。", "Often a parent network, which is fine"),
-        go: listUrl("/studios", [{ type: "scene_count", modifier: "EQUALS", value: { value: 0 } }], "name", "asc") },
+      // 2.15.0: no scenes of their own and none under them (emptyStudios);
+      // networks whose sub-studios have scenes are left out. The list opened
+      // is Stash's own: no scenes and no sub-studios (a network whose
+      // sub-studios are all empty too is only in the pills)
+      ...(m.studios && m.studios.length ? [(() => {
+        const E = m.get("emptyStudios", () => emptyStudios(m.studios, m.scenes));
+        return { n: E.empty.length, icon: "studio", c: "tx2", title: tc("没有场景的工作室", "Studios with no scenes"),
+          sub: tc(`自身没有场景，其下子工作室也没有；若是特意保留，就没问题${E.networks ? `。另有 ${plural(E.networks, "network")} 个工作室只在子工作室里有场景，未计入` : ""}`, `None of their own and none in a sub-studio; fine if you keep them on purpose${E.networks ? `. ${plural(E.networks, "network")} with scenes only in their sub-studios left out` : ""}`),
+          more: E.empty.length, pills: E.empty.slice(0, 10).map((x) => ({ label: x.name || tc(`工作室 ${x.id}`, `Studio ${x.id}`), go: `/studios/${x.id}` })),
+          go: listUrl("/studios", [{ type: "scene_count", modifier: "EQUALS", value: { value: 0 } }, { type: "child_count", modifier: "EQUALS", value: { value: 0 } }], "name", "asc") };
+      })()] : [{ n: c["st.noscenes"], icon: "studio", c: "tx2", title: tc("自身没有场景的工作室", "Studios with no scenes of their own"), sub: tc("往往是母网络，这没问题。", "Often a parent network, which is fine"),
+        go: listUrl("/studios", [{ type: "scene_count", modifier: "EQUALS", value: { value: 0 } }], "name", "asc") }]),
     ].filter((x) => x.n !== null && x.n !== undefined);
     const open = checks.filter((x) => x.n > 0);
     return { open, clear: checks.filter((x) => !x.n), serious: open.filter((x) => x.c === "re" || x.c === "ye").reduce((a, x) => a + x.n, 0) };
@@ -4752,8 +5052,8 @@
       dupBody = `<div class="ins-opts"><span>${tc("保留", "Keep")}</span><span class="ins-seg">${seg("best", tc("最佳（以 1080p 为目标）", "Best, 1080p target"))}${seg("hevc", tc("HEVC 或 AV1", "HEVC or AV1"))}${seg("smallest", tc("最小", "Smallest"))}</span>
           ${tog("merge", m.noO ? tc("先把标记、播放、评分、标签和演员移到保留的场景", "Move markers, plays, rating, tags and performers to the kept scene first") : tc("先把标记、O、播放、评分、标签和演员移到保留的场景", "Move markers, O's, plays, rating, tags and performers to the kept scene first"))}
           ${a.mode === "hevc" ? tog("sharp", tc("仅当 HEVC/AV1 副本至少一样清晰", "Only if the HEVC/AV1 copy is at least as sharp")) : ""}</div>
-        <div class="ins-con ins-sum"><span><em>${tc("分组", "GROUPS")}</em><b>${fmtN(D.plans.length)}</b></span><span><em>${tc("可清理", "READY")}</em><b style="color:var(--up)">${fmtN(D.ready)}</b></span>
-          <span><em>${tc("待移除", "TO REMOVE")}</em><b style="color:var(--down)">${plural(D.files, "file")} · ${fmtBytes(D.bytes)}</b></span><span><em>${tc("需查看", "NEEDS A LOOK")}</em><b style="color:var(--ye)">${fmtN(D.review)}</b></span>
+        <div class="ins-con ins-sum"><span><em>${tc("分组", "Groups")}</em><b>${fmtN(D.plans.length)}</b></span><span><em>${tc("可清理", "Ready")}</em><b style="color:var(--up)">${fmtN(D.ready)}</b></span>
+          <span><em>${tc("待移除", "To remove")}</em><b style="color:var(--down)">${plural(D.files, "file")} · ${fmtBytes(D.bytes)}</b></span><span><em>${tc("需查看", "Needs a look")}</em><b style="color:var(--ye)">${fmtN(D.review)}</b></span>
           <span style="margin-left:auto"><button class="ins-chip" data-act="dups" ${busy ? "disabled" : ""}>${tc("重新扫描", "scan again")}</button></span></div>
         ${D.plans.length ? `<div class="ins-well ins-dups">${shown.map((p) => `<div class="ins-dg${p.review ? " review" : ""}">${p.review ? `<div class="why">${ic("alert")} ${esc(p.reason)}</div>` : ""}
           ${item({ s: p.keep }, true)}${p.items.map((it) => item(it, false)).join("")}${p.plan ? `<div class="plan">${esc(p.plan)}</div>` : ""}</div>`).join("")}</div>
@@ -5554,8 +5854,33 @@
 
   // ── Controls (one delegated click handler on the root) ────────────────────
 
+  // The click targets that are not a control already: a tab stop and a role
+  // each (a link when it opens a page, else a button). Idempotent; a pill
+  // with nothing to do ("+3 more", data-go="#" stripped) gets none.
+  function focusables(root) {
+    if (!root || !root.querySelectorAll) return;
+    for (const e of root.querySelectorAll(ACT_SEL)) {
+      if (e === root || e.hasAttribute("tabindex") || /^(BUTTON|A|INPUT|SELECT|TEXTAREA|SUMMARY)$/.test(e.tagName)) continue;
+      e.setAttribute("tabindex", "0");
+      if (e.tagName !== "TR" && !e.hasAttribute("role")) e.setAttribute("role", e.dataset.go ? "link" : "button");
+    }
+  }
+  // Enter or Space on a focused target is a click (with Ctrl/Cmd/Shift held
+  // a page opens in a new tab, as a click does). Typing is left alone.
+  function keyActs(ev) {
+    if (!(ev.key === "Enter" || ev.key === " ") || ev.altKey || ev.repeat || ev.defaultPrevented) return false;
+    const t = ev.target;
+    if (!t || RT.isTextEntry(t) || /^(BUTTON|A|SUMMARY)$/.test(t.tagName || "")) return false;
+    return !!(t.matches && t.matches(ACT_SEL) && t.getAttribute("tabindex") === "0");
+  }
+  function onKey(ev) {
+    if (!keyActs(ev)) return;
+    ev.preventDefault();
+    onClick(ev);
+  }
+
   function onClick(ev) {
-    const t = ev.target.closest && ev.target.closest("[data-tab],[data-set],[data-nav],[data-daynav],[data-day],[data-bar],[data-go],[data-act],[data-jump],[data-hub]");
+    const t = ev.target.closest && ev.target.closest(ACT_SEL);
     // the panel carries data-tab itself (for its colour): a click on blank
     // space would find it and act as a tab click (user report: blank areas
     // jumped the page to the top)
@@ -5666,7 +5991,11 @@
       app.watch = parseWatch(saved.watch) || {};
       app.model = buildModel(app.data, app.watch, app.lockdown, app.set);
       render();
-    } catch (e) { btn.textContent = tc(`失败：${e.message}`, `Failed: ${e.message}`); }
+    } catch (e) {
+      // 2.15.0: the suite's toast and words (was "Failed: <msg>" on the button)
+      btn.disabled = false; btn.textContent = tc("导入", "Import");
+      RT.toast(tc(`未导入：${e.message}`, `Not imported: ${e.message}`), "error");
+    }
   }
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -5826,6 +6155,11 @@
       app.root = document.createElement("div");
       app.root.id = "insights";
       app.root.addEventListener("click", onClick);
+      // 2.15.0: rows, tiles, pills and bars were mouse-only (div/span/tr
+      // with data-go and friends): each one gets a tab stop, and Enter or
+      // Space does what a click does. Native buttons and links are left alone.
+      app.root.addEventListener("keydown", onKey);
+      try { new MutationObserver(() => focusables(app.root)).observe(app.root, { childList: true, subtree: true }); } catch (_) {}
     // Middle-click (or Ctrl/Cmd/Shift-click) on anything that goes to a page
     // opens it in a new tab, as a link would; most of these are buttons and
     // rows, not <a href> (user report: middle-click did nothing). The
@@ -5867,14 +6201,17 @@
   // React redraws the Stats page after data loads; put the dashboard back
   // at once rather than up to a second later. Only observes on that page,
   // and mounts as soon as it notices the page, not on the next 1 s tick.
+  // 2.15.0: the suite's route signal starts and stops it (was a 500 ms poll)
   let obs = null;
-  setInterval(() => {
+  function onRoute() {
     if (onStats() && !obs) {
       obs = new MutationObserver(() => { if (!app.root || !app.root.isConnected) mount(); });
       obs.observe(document.body, { childList: true, subtree: true });
       mount();
     } else if (!onStats() && obs) { obs.disconnect(); obs = null; }
-  }, 500);
+  }
+  RT.onRoute(onRoute);
+  onRoute();
 
   try { localStorage.setItem(ALIVE, String(Date.now())); } catch (_) {}
   setTimeout(flushWatch, 5000);      // anything a closed tab left behind

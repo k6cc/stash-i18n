@@ -1,4 +1,4 @@
-> v2.14.1-1：基于 allisless0 的 Insights 插件的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；已同步上游 2.14.1。
+> v2.15.0-1：基于 allisless0 的 Insights 插件的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；已同步上游 2.15.0。
 
 # InsightsI18n
 
@@ -18,6 +18,8 @@ Stash 统计页上的数据仪表盘（Insights 的汉化版），挂在 Stash �
 
 - 读取与同步：有上次的缓存时先立即呈现，再只读取自上次以来改动过的场景（按 updated_at / last_played_at）、演员与工作室；没有缓存时才完整分页读取整库
 - 统计口径：以本地自然日为单位（不沿用 O Stats 的 UTC 解析）；观看时长在播放器中按秒累计，按天写入插件配置，因此各设备一致
+- 场景中的年龄：Stash 0.32 有拍摄日期（production date）时以拍摄日期为准，没有才退回发行日期，重发版不会因此虚增年龄或误报未成年
+- 键盘可用：Tab 移到任意行、磁贴、胶囊，Enter 或空格等同点击（Ctrl/Cmd/Shift 同点击，在新标签页打开）
 - 「什么对你有效」：按演员与场景特征对比其份额，可按演员性别筛选（媒体库中存在多种性别时才出现筛选按钮，演员特征旁也有同样的筛选）；年龄段自 18 岁起分组，18 岁以下不计入
 - 异常时长：超过 6 小时（或 DVD 的 VOB 超过 4 小时，ffprobe 会误读这类文件）的时长不参与「最长」、总计与平均值，并在库标签页注明数量、可一键列出这些场景
 - 国家名跟随 Stash 界面语言（设置 → 界面），而不是浏览器的语言
@@ -38,7 +40,7 @@ Stash 统计页上的数据仪表盘（Insights 的汉化版），挂在 Stash �
 
 ## 上游同步
 
-- 本目录是 [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) 的 `plugins/Insights`（MIT，基线 commit `c660e7d`）在**文案层**的本地化派生，功能逻辑沿用上游实现，版权归上游作者
+- 本目录是 [allisless0/stash-plugins](https://gitlab.com/allisless0/stash-plugins) 的 `plugins/Insights`（MIT，基线 commit `f56ad0e`）在**文案层**的本地化派生，功能逻辑沿用上游实现，版权归上游作者
 - 上游发布新版后的同步流程与基线记账见仓库根 [UPSTREAM.md](../UPSTREAM.md) 与 `scripts/upstream-diff.ps1`
 - 该上游仓库同时托管多个插件（Lockdown、Slideshow、Suite Data 等），同步时只取 `plugins/Insights`
 
@@ -46,5 +48,5 @@ Stash 统计页上的数据仪表盘（Insights 的汉化版），挂在 Stash �
 
 - 与上游原版 Insights **不建议同时启用**：两者都会在统计页挂载内容并读取同一批数据
 - 插件 ID、localStorage 键（`insightsI18n*`）、IndexedDB 库名（`insightsI18n`）与 Suite Data 中的存储命名均以 `InsightsI18n` 为前缀，与上游原版各自独立
-- 版本号为「上游版本-汉化修订号」：上游 2.14.1 → 本仓库 2.14.1-1（修订号用于汉化自身的措辞/描述修订）
+- 版本号为「上游版本-汉化修订号」：上游 2.15.0 → 本仓库 2.15.0-1（修订号用于汉化自身的措辞/描述修订）
 - Stash 的 Groups 采用官方中文「合集」；装有 Movies Toolkit 且未开启其 `keepGroupsName` 时，Stash 会把「合集」显示为「影片」，本插件同一处也会跟着显示「影片」
