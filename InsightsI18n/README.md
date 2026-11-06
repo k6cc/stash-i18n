@@ -1,4 +1,4 @@
-> v2.15.0-1：基于 allisless0 的 Insights 插件的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；已同步上游 2.15.0。
+> v2.15.0-2：基于 allisless0 的 Insights 插件的多语言（中/英）重构版，UI 文案跟随 Stash 界面语言；已同步上游 2.15.0。
 
 # InsightsI18n
 

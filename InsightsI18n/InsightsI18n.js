@@ -22,7 +22,7 @@
   window.__InsightsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.15.0-1';
+  var PLUGIN_VERSION = '2.15.0-2';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -4482,7 +4482,7 @@
           statRow("flame", "or", tc("当前连续", "Current streak"), plural(st.current, "day"), st.atRisk ? `${tc(`今天再来${W.one}就能续上`, `${W.one} today keeps it going`)}` : st.current ? tc("仍在继续", "still going") : st.daysSinceLast !== null ? tc(`距上次 ${W.word} 已经 ${plural(st.daysSinceLast, "day")}`, `${plural(st.daysSinceLast, "day")} since the last ${W.word}`) : "") +
           statRow("trophy", "ye", tc("最长连续", "Best streak"), plural(st.best.len, "day"), st.best.len ? tc(`${fmtDate(st.best.from)} 至 ${fmtDate(st.best.to)}`, `${fmtDate(st.best.from)} to ${fmtDate(st.best.to)}`) : "") +
           statRow("calendar", "bl", tc("最长间隔", "Longest break"), plural(st.longestBreak, "day"), tc(`两次有 ${W.word} 的日子之间`, `between two days with ${W.one}`)) +
-          statRow("clock", "cy", tc("通常间隔", "Usually"), st.avgGapDays ? `every ${st.avgGapDays.toFixed(1)} days` : "–", tc(`平均来看，从一个有 ${W.word} 的日子到下一个`, `on average, from one ${W.word} day to the next`)) +
+          statRow("clock", "cy", tc("通常间隔", "Usually"), st.avgGapDays ? tc(`每 ${st.avgGapDays.toFixed(1)} 天一次`, `every ${st.avgGapDays.toFixed(1)} days`) : "–", tc(`平均来看，从一个有 ${W.word} 的日子到下一个`, `on average, from one ${W.word} day to the next`)) +
           statRow(W.icon, W.c, tc("记录日", "Record day"), A.record ? W.n(A.record.n) : "–", A.record ? fmtDate(parseDay(A.record.day)) : "") +
           statRow(W.icon, "pu", tc("累计", "All time"), W.n(A.events.length + A.undated), tc(`${fmtN(noO ? m.lib.totals.played : m.lib.totals.withO)} 个场景有`, `${fmtN(noO ? m.lib.totals.played : m.lib.totals.withO)} scenes have one`)))}
       </div>
@@ -5093,7 +5093,7 @@
           (a.tagMsg ? `<div class="ins-note" style="color:var(--up)">${esc(a.tagMsg)}</div>` : ""))}
         ${card({ title: tc("值得升级", "Worth upgrading"), icon: "up", c: "re", id: "ins-a-up", right: `<b style="color:var(--hi)">${fmtN(up.n)}</b>`,
           sub: tc(`低于 720p，或编码不是 HEVC、AV1、H264（${fmtBytes(up.size)}）。你观看最多的排在最前：这些换个好点的副本最值。`, `Below 720p, or in a codec other than HEVC, AV1 or H264 (${fmtBytes(up.size)}). The ones you watch most come first: a better copy of those is worth the most.`) },
-          con(up.list.length ? up.list.slice(0, 8).map((s) => (m.noO ? sceneLine(s, s.plays ? `${s.plays}×` : "", "var(--cy)", "") : sceneLine(s, s.o ? `${s.o}${ic("drop")}` : "", "var(--otx)", s.o || s.plays ? ` · played ${s.plays}×` : ""))).join("") : `<div class="ins-empty">${ic("check")} ${tc("没有低于 720p 或编码较差的文件。", "Nothing below 720p or in a poor codec.")}</div>`) +
+          con(up.list.length ? up.list.slice(0, 8).map((s) => (m.noO ? sceneLine(s, s.plays ? `${s.plays}×` : "", "var(--cy)", "") : sceneLine(s, s.o ? `${s.o}${ic("drop")}` : "", "var(--otx)", s.o || s.plays ? tc(` · 播放 ${s.plays}×`, ` · played ${s.plays}×`) : ""))).join("") : `<div class="ins-empty">${ic("check")} ${tc("没有低于 720p 或编码较差的文件。", "Nothing below 720p or in a poor codec.")}</div>`) +
           (up.n ? `<div class="ins-btns"><span class="ins-go" data-go="${esc(S([{ type: "resolution", modifier: "LESS_THAN", value: "720p" }], topSort()))}">${tc("全部低于 720p", "All below 720p")}${ic("arrow")}</span></div>` : ""))}
       </div>
       <div class="ins-grid">
@@ -5703,7 +5703,7 @@
   // Opens the movie in Stash, or with `go` somewhere else.
   function movieRow(x, o = {}) {
     const noO = app.model.noO;
-    const tip = o.tip || `${x.name}\n${plural(x.owned, "scene")} · played ${fmtN(x.plays)}× · watched ${fmtDur(x.watch)}${noO ? "" : ` · ${os(x.o)}`}`;
+    const tip = o.tip || `${x.name}\n${tc(`${plural(x.owned, "scene")} · 播放 ${fmtN(x.plays)}× · 观看 ${fmtDur(x.watch)}${noO ? "" : ` · ${os(x.o)}`}`, `${plural(x.owned, "scene")} · played ${fmtN(x.plays)}× · watched ${fmtDur(x.watch)}${noO ? "" : ` · ${os(x.o)}`}`)}`;
     return `<div class="ins-li mv click" data-go="${esc(o.go || `/groups/${x.id}`)}" data-tip="${esc(tip)}">${poster(x)}
       <div style="min-width:0"><div class="n">${esc(x.name)}</div><div class="sub">${o.sub || ""}</div>
       ${o.max ? `<div class="ins-trk" style="height:5px;margin-top:4px"><i style="width:${Math.max(2, Math.round((o.value / o.max) * 100))}%"></i></div>` : ""}</div>
