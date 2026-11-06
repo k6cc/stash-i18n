@@ -20,7 +20,6 @@
   window.__LockdownI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.20.0-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -46,9 +45,16 @@
       console.warn('[LockdownI18n] i18n bridge failed:', e);
     }
   })();
-  console.log('[LockdownI18n] Lockdown I18n v' + PLUGIN_VERSION + ' loaded');
 
   const PLUGIN_ID = "LockdownI18n";
+  // the manifest's version; validate.sh checks they agree
+  const PLUGIN_VERSION = "2.23.0-1";
+  console.log('[LockdownI18n] Lockdown I18n v' + PLUGIN_VERSION + ' loaded');
+  // the suite's shared runtime (2.23.0, MAINTENANCE §4.12): GraphQL with a
+  // timeout, typing, the keyboard owner and "ago". Not its toast (ldToast
+  // stays at the top, under the bar: see there) nor its route signal (the
+  // history patch below has to check a route before the page renders)
+  const RT = suiteRuntime({ id: PLUGIN_ID });
   const DATA_KEYS = ["history", "stats", "active", "presets", "pics"];   // in Suite Data's store when it is installed (pics: 2.9)
   const STATE_KEY = "lockdownI18nState";   // this browser's copy of the active lock
   const PREF_KEY  = "lockdownI18nPrefs";   // { setup, last, guideSeen, barTipSeen }
@@ -69,6 +75,236 @@
   const OWNER_TTL_MS = 6000, OWNER_RENEW_MS = 2000;
   const PENDING_KEY = "lockdownPendingEnd";   // finished runs whose write has not landed yet (review M4)
   const GQL_TIMEOUT_MS = 20000;        // a request that never answers no longer freezes a loop (review M6)
+
+  // The suite's shared runtime (audit 2026-11-03, docs/audit-2026-11-03.md, Ideas 1).
+  // Every plugin carries this same copy, checked by scripts/check_shared.py against
+  // scripts/shared/suiteRuntime.js. The first copy to load publishes it as
+  // window.StashSuite and every other plugin uses that one, so there is one toast
+  // stack, one keyboard owner, one route signal and one GraphQL helper with a
+  // timeout. A copy with a higher RT_VER replaces an older one. Nothing here writes
+  // data, and nothing here can start a device. o: { id: the plugin's id }.
+  function suiteRuntime(o) {
+    const RT_VER = 1;
+    const W = typeof window !== "undefined" ? window : null;
+    const have = W && W.StashSuite;
+    let R = have;
+    if (!(have && typeof have.ver === "number" && have.ver >= RT_VER && typeof have.toast === "function")) {
+      // merged into what is there: the toolkits keep their registry on
+      // window.StashSuite.toolkits, and replacing the object lost it
+      const m = make();
+      R = have && typeof have === "object" ? Object.assign(have, m) : m;
+    }
+    if (W && R !== have) { try { W.StashSuite = R; } catch (_) {} }
+    const id = String((o && o.id) || "plugin");
+    return {
+      ver: R.ver,
+      // toast(text, kind "info"|"done"|"warn"|"error", { action: { label, fn }, ms, id })
+      // -> { close }. One design (THEME: Feedback); an `id` replaces that toast
+      toast: (text, kind, opts) => R.toast(text, kind, { ...(opts || {}), from: id }),
+      isTextEntry: (el) => R.isTextEntry(el),
+      // the keyboard: one owner at a time, on <html data-owns-keys>
+      keysOwner: () => R.keysOwner(),
+      keysFree: () => R.keysFree(id),
+      claimKeys: () => R.claimKeys(id),
+      releaseKeys: () => R.releaseKeys(id),
+      // gql(query, variables, { timeout ms }) -> data; throws a readable Error
+      gql: (q, v, op) => R.gql(q, v, op),
+      ago: (at, now) => R.ago(at, now),
+      // onRoute(fn(location)) -> unsubscribe: after every SPA navigation
+      onRoute: (fn) => R.onRoute(fn),
+      // onPage("StudioPage", fn(props)) -> unsubscribe | false: after every render
+      // of a patchable Stash page (0.32: PerformerPage, StudioPage, TagPage, GroupPage...)
+      onPage: (name, fn) => R.onPage(name, fn),
+      uiHost: () => R.uiHost(),
+    };
+
+    function make() {
+      const D = typeof document !== "undefined" ? document : null;
+      const later = (f, ms) => setTimeout(f, ms);
+      // ── what counts as typing: text entry only. A range input keeps focus after
+      // a drag, and treating it as typing made Stop (IntifaceSync's 0) do nothing.
+      const NOT_TEXT = new Set(["range", "checkbox", "radio", "button", "submit", "reset", "color", "file", "image"]);
+      function isTextEntry(el) {
+        if (!el || !el.tagName) return false;
+        const t = el.tagName;
+        if (t === "INPUT") return !NOT_TEXT.has(String(el.type || "text").toLowerCase());
+        return t === "TEXTAREA" || t === "SELECT" || !!el.isContentEditable;
+      }
+      // a fullscreen <video> paints none of its children: then the body
+      function uiHost() {
+        const fs = D && D.fullscreenElement;
+        return fs && fs.tagName !== "VIDEO" ? fs : D && D.body;
+      }
+      // ── the toast
+      const LIFE = { info: 3000, done: 3000, warn: 8000, error: 8000 };
+      const CSS = "#sx-toasts { position: fixed; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 2147483000; display: flex;" +
+        " flex-direction: column; align-items: center; gap: 8px; pointer-events: none; max-width: calc(100vw - 24px); }" +
+        " #sx-toasts .sx-toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; max-width: min(420px, calc(100vw - 24px));" +
+        " padding: 9px 14px; color: var(--sx-tx, #CECDC3); font: 13.5px/1.4 system-ui, sans-serif; text-align: left; box-sizing: border-box;" +
+        " background: linear-gradient(180deg, var(--sx-raise, #343331) 0, var(--sx-ui, #282726) 64px); border: 1px solid var(--sx-line, #403E3C);" +
+        " border-top-color: var(--sx-edge, #575653); border-left: 3px solid var(--tk, var(--sx-bl, #4385BE)); border-radius: 12px;" +
+        " box-shadow: 0 1px 0 rgba(0,0,0,.5), 0 20px 50px -12px rgba(0,0,0,.6); }" +
+        " #sx-toasts .sx-toast[data-kind=done] { --tk: var(--sx-gr, #879A39); } #sx-toasts .sx-toast[data-kind=warn] { --tk: var(--sx-ye, #D0A215); }" +
+        " #sx-toasts .sx-toast[data-kind=error] { --tk: var(--sx-re, #D14D41); }" +
+        " #sx-toasts .sx-toast button { flex: none; font: inherit; font-size: 13px; padding: 0; border: 0; background: none; cursor: pointer;" +
+        " color: var(--sx-bl-tx, var(--sx-bl, #4385BE)); text-decoration: underline; }" +
+        " @media (max-width: 575.98px) { #sx-toasts { bottom: 84px; } }";
+      let host = null;
+      const named = new Map();
+      function ensureHost() {
+        if (!D || typeof D.createElement !== "function" || !D.body) return null;
+        if (!host) {
+          host = D.createElement("div");
+          host.id = "sx-toasts";
+          if (!D.getElementById || !D.getElementById("sx-toasts-css")) {
+            const st = D.createElement("style");
+            st.id = "sx-toasts-css";
+            st.textContent = CSS;
+            (D.head || D.body).appendChild(st);
+          }
+          try { D.addEventListener("fullscreenchange", () => { const p = uiHost(); if (host && p && host.parentNode !== p) p.appendChild(host); }); } catch (_) {}
+        }
+        const p = uiHost();
+        if (p && host.parentNode !== p) p.appendChild(host);
+        return host;
+      }
+      function closeToast(el) {
+        if (!el) return;
+        clearTimeout(el.__sxT);
+        if (el.parentNode) el.parentNode.removeChild(el);
+        for (const [k, v] of named) if (v === el) named.delete(k);
+      }
+      function toast(text, kind, opts) {
+        const k = LIFE[kind] ? kind : "info", op = opts || {};
+        const h = ensureHost();
+        if (!h) return { close() {} };
+        const key = op.id ? `${op.from || ""}:${op.id}` : "";
+        let el = key ? named.get(key) : null;
+        if (!el || el.parentNode !== h) {
+          el = D.createElement("div");
+          el.className = "sx-toast";
+          h.appendChild(el);
+          if (key) named.set(key, el);
+        }
+        // three at most: the oldest goes
+        while (h.children && h.children.length > 3) closeToast(h.firstChild);
+        el.setAttribute("role", k === "error" ? "alert" : "status");
+        el.setAttribute("data-kind", k);
+        if (op.from) el.setAttribute("data-from", op.from);
+        while (el.firstChild) el.removeChild(el.firstChild);
+        const span = D.createElement("span");
+        span.textContent = String(text == null ? "" : text);
+        el.appendChild(span);
+        const act = op.action && op.action.label && typeof op.action.fn === "function" ? op.action : null;
+        if (act) {
+          const b = D.createElement("button");
+          b.type = "button";
+          b.textContent = String(act.label);
+          b.addEventListener("click", (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); closeToast(el); try { act.fn(); } catch (_) {} });
+          el.appendChild(b);
+        }
+        const ms = typeof op.ms === "number" ? op.ms : act ? 8000 : LIFE[k];
+        clearTimeout(el.__sxT);
+        if (ms > 0) el.__sxT = later(() => closeToast(el), ms);
+        return { close: () => closeToast(el), el };
+      }
+      // ── the keyboard owner
+      const root = () => (D && D.documentElement) || null;
+      const keysOwner = () => { const r = root(); return (r && r.getAttribute && r.getAttribute("data-owns-keys")) || ""; };
+      const keysFree = (who) => { const w = keysOwner(); return !w || w === who; };
+      const claimKeys = (who) => { const r = root(); if (r && r.setAttribute) r.setAttribute("data-owns-keys", who); };
+      const releaseKeys = (who) => { const r = root(); if (r && r.removeAttribute && keysOwner() === who) r.removeAttribute("data-owns-keys"); };
+      // ── GraphQL, with a timeout: a hung request used to freeze a page and
+      // stall its plugin's saves until a reload
+      function httpWords(st) {
+        if (st === 401) return "Stash returned 401: logged out?";
+        if (st === 403) return "Stash refused this address (403): check public_whitelist in Stash's settings";
+        return `Stash returned ${st}`;
+      }
+      async function gql(query, variables, op) {
+        const ms = (op && op.timeout) || (/runPlugin(Operation|Task)/.test(String(query)) ? 180000 : 60000);
+        const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+        let timer = null;
+        const late = new Promise((_, no) => {
+          timer = later(() => { try { if (ac) ac.abort(); } catch (_) {} no(new Error(`Stash did not answer in ${Math.round(ms / 1000)} s`)); }, ms);
+        });
+        const run = (async () => {
+          const res = await fetch("/graphql", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query, variables: variables || {} }), signal: ac ? ac.signal : undefined });
+          let json = null;
+          try { json = await res.json(); } catch (_) {}
+          if (!json) throw new Error(httpWords(res.status));
+          if (json.errors && json.errors.length) throw new Error((json.errors[0] && json.errors[0].message) || "Stash error");
+          return json.data == null ? null : json.data;
+        })();
+        try { return await Promise.race([run, late]); } finally { clearTimeout(timer); }
+      }
+      // ── "how long ago", one wording for the suite
+      function ago(at, now) {
+        const m = Math.floor(((now == null ? Date.now() : now) - at) / 60000);
+        if (!(m >= 1)) return "just now";
+        if (m < 60) return `${m} min ago`;
+        if (m < 24 * 60) return `${Math.round(m / 60)} h ago`;
+        if (m < 48 * 60) return "yesterday";
+        return `${Math.round(m / 1440)} days ago`;
+      }
+      // ── one route signal: history's push/replace, Back/Forward, and a 1 s
+      // look as a fallback (instead of every plugin's own poll and body observer)
+      const routeSubs = new Set();
+      let routeOn = false, lastHref = "";
+      function fireRoute() {
+        const loc = W && W.location;
+        if (!loc || loc.href === lastHref) return;
+        lastHref = loc.href;
+        for (const f of [...routeSubs]) { try { f(loc); } catch (_) {} }
+      }
+      function routeInstall() {
+        if (routeOn || !W || !W.history) return;
+        routeOn = true;
+        lastHref = W.location ? W.location.href : "";
+        for (const m of ["pushState", "replaceState"]) {
+          const orig = W.history[m];
+          if (typeof orig !== "function") continue;
+          try { W.history[m] = function () { const r = orig.apply(this, arguments); Promise.resolve().then(fireRoute); return r; }; } catch (_) {}
+        }
+        try { W.addEventListener("popstate", () => Promise.resolve().then(fireRoute)); } catch (_) {}
+        try { setInterval(fireRoute, 1000); } catch (_) {}
+      }
+      function onRoute(fn) {
+        if (typeof fn !== "function") return () => {};
+        routeInstall();
+        routeSubs.add(fn);
+        return () => { routeSubs.delete(fn); };
+      }
+      // ── a patchable Stash page, once per page however many plugins ask: a host
+      // after it that calls each subscriber after every render (never changing what
+      // Stash draws). Performers Toolkit's PerformerPage host, made shared.
+      const pages = new Map();
+      function onPage(name, fn) {
+        const api = W && W.PluginApi;
+        if (typeof fn !== "function" || !api || !api.patch || typeof api.patch.after !== "function" || !api.React) return false;
+        let set = pages.get(name);
+        if (!set) {
+          set = new Set();
+          pages.set(name, set);
+          const Rc = api.React, subs = set;
+          const Host = function SuiteRuntimePageHost(p) {
+            Rc.useEffect(() => { for (const f of [...subs]) { try { f(p.pageProps || {}); } catch (_) {} } });
+            return null;
+          };
+          try {
+            api.patch.after(name, function () {
+              const props = arguments[0], result = arguments[arguments.length - 1];
+              try { return Rc.createElement(Rc.Fragment, null, result, Rc.createElement(Host, { key: "sx-page-host", pageProps: props })); } catch (_) { return result; }
+            });
+          } catch (_) { pages.delete(name); return false; }
+        }
+        set.add(fn);
+        return () => { set.delete(fn); };
+      }
+      return { ver: RT_VER, toast, isTextEntry, keysOwner, keysFree, claimKeys, releaseKeys, gql, ago, onRoute, onPage, uiHost };
+    }
+  }
   const SAVE_MS = 15000;              // progress (watch time, playhead) is written at most this often
   const SEEK_SLACK = 2;                // seconds forward that are not a skip
   const INPUT_MS = 1000;               // a seek this soon after a click, key or wheel is the user's
@@ -220,6 +456,13 @@
           out[field] = { modifier: mod, value: n.value ?? 0, value2: n.value2 };
           break;
         }
+        // 2.22.2 (audit): Stash 0.32 made a tag filter's counts (scene_count...)
+        // this type, with an optional depth; a saved "tags with 20+ scenes" was refused
+        case "HierarchicalCountInput": {
+          const n = num(v), depth = (v && typeof v === "object" && v.depth != null) ? v.depth : s.depth;
+          out[field] = { modifier: mod, value: n.value ?? 0, value2: n.value2, ...(depth != null ? { depth: Number(depth) } : {}) };
+          break;
+        }
         case "DateCriterionInput":
         case "TimestampCriterionInput": {
           const n = num(v);
@@ -317,7 +560,7 @@
     // 2.13.0 (user): and the timeline's preview pictures are hidden, so the
     // frames ahead cannot be looked at either (previewGuard)
     { k: "speed", name: tc("禁止快进", "No fast-forward"), heat: [0.5], ranks: [tc("1 倍速、无预览", "1x speed, no previews")],
-      text: tc("播放速度固定在 1 倍速，时间轴的预览图也一并隐藏：鼠标悬停在进度条上不会弹出画面，播放器下方的缩略图条也消失。", "Playback speed is held at 1x, and the timeline's preview pictures are hidden: no frame pops up when you hover over the seek bar, and the scrubber strip under the player is gone.") },
+      text: tc("播放速度固定在 1 倍速，时间轴的预览图也一并隐藏：鼠标悬停在进度条上不会弹出画面，播放器下方的缩略图条也消失，场景卡片也不再播放预览。", "Playback speed is held at 1x, and the timeline's preview pictures are hidden: no frame pops up when you hover over the seek bar, the scrubber strip under the player is gone, and scene cards play no preview.") },
     // 2.13.0 (the user, after an interview): looking away from the playing
     // scene (the tab hidden, or the window losing focus to another app) for
     // more than EYES_GRACE_MS stops the clock and drains points (eyesCheck)
@@ -344,6 +587,10 @@
     // toy; its heat counts only if Goon mode ran for TOY_SHARE of the watching
     { k: "toy", name: tc("玩具主导", "Toy in charge"), goal: "edge", heat: [2], ranks: [tc("Goon 模式驱动", "Goon mode drives it")], needs: "goon",
       text: tc("由 Intiface Sync 的 Goon 模式驱动进程。开局后按一次「启动玩具」；只有 Goon 模式运行了至少 80% 的观看时长，这份热度才算数。", "Intiface Sync's Goon mode drives the build-up. Press Start the toy once the run begins; the heat counts only if Goon mode ran for at least 80% of your watched time.") },
+    // 2.22 (user): on top of Toy in charge, not knowing what the Journey does next.
+    // `blindj`: "blind" is Blind seeking's key (RETIRED), and old runs keep theirs
+    { k: "blindj", name: tc("盲抽旅程", "Blind Journey"), goal: "edge", heat: [1], ranks: [tc("下一步不可预知", "What's coming is hidden")], needs: "goon", with: "toy",
+      text: tc("配合「玩具主导」时，Goon 模式会隐藏接下来会发生什么：前方的曲线与时间轴、下一次变化何时到来都不再显示；功率、手柄、动作与「停止」仍然可用。只有「玩具主导」的热度计入时，这份热度才计入。", "With Toy in charge, Goon mode hides what's coming: the graph and timeline ahead and when the next change comes. Power, pads, moves and Stop stay. Counts only when Toy in charge's heat does.") },
     // 2.2 (user feedback): Timer had no condition of its own, so its runs
     // could not reach the heat of Finish and Edge.
     { k: "one", name: tc("单一场景", "One scene"), goal: "timer", heat: [2], ranks: [tc("循环重播", "On repeat")],
@@ -383,19 +630,28 @@
   // charge, so the run scores without its +2)
   const HIDE_LO = 0.75, HIDE_HI = 1.25, TOY_SHARE = 0.8;
   const hiddenTarget = (min, r) => Math.max(MIN_MIN, Math.round(min * (HIDE_LO + (HIDE_HI - HIDE_LO) * Math.min(1, Math.max(0, Number(r) || 0)))));
-  // Goon mode's own choices (Intiface Sync's G2_STYLES / G2_PACES ids); the
-  // setup offers them, Lockdown passes them to goon.start
-  const TOY_STYLES = [["climb", tc("稳步攀升", "Steady climb")], ["waves", tc("波浪", "Waves")], ["rhythm", tc("节奏", "Rhythm")], ["tease", tc("挑逗", "Tease")], ["coaster", tc("过山车", "Rollercoaster")], ["endurance", tc("耐力", "Endurance")]];
-  const TOY_PACES = [["slow", tc("慢", "Slow")], ["normal", tc("常规", "Normal")], ["fast", tc("快", "Fast")]];
+  // Goon mode's own choices (Intiface Sync's G2_JOURNEYS / G2_JPACES ids); the setup
+  // offers them, Lockdown passes them to goon.start. TOY_STYLES: what runs saved
+  // before Journeys hold (2.22): their names for the history, and their Journey.
+  const toyJourneys = () => [["slowburn", tc("慢燃", "Slow Burn")], ["tides", tc("潮汐", "Tides")], ["denial", tc("克制", "Denial")], ["storm", tc("风暴", "Storm")]];
+  const TOY_LENGTHS = [15, 30, 60];
+  const TOY_STYLE_JOURNEY = { climb: "slowburn", waves: "tides", rhythm: "tides", tease: "denial", coaster: "storm", endurance: "slowburn" };
+  const TOY_JOURNEY_STYLE = { slowburn: "climb", tides: "waves", denial: "tease", storm: "coaster" };   // an older Intiface Sync's
+  const BLIND_NEEDS = "needs Intiface Sync 1.67";
+  const toyStyles = () => [["climb", tc("稳步攀升", "Steady climb")], ["waves", tc("波浪", "Waves")], ["rhythm", tc("节奏", "Rhythm")], ["tease", tc("撩拨", "Tease")], ["coaster", tc("过山车", "Rollercoaster")], ["endurance", tc("耐力", "Endurance")]];
+  const toyPaces = () => [["slow", tc("慢", "Slow")], ["normal", tc("常规", "Normal")], ["fast", tc("快", "Fast")]];
   // 2.13.0 (user): Goon mode starts from level 1 by default (3 before);
   // the setup's Level picker still sets any start level (toyLevelPrefs
   // moves a setup that only had the old default)
-  const TOY_DEFAULT = { style: "waves", level: 1, pace: "normal" };
+  const TOY_DEFAULT = { journey: "tides", length: 30, level: 1, pace: "normal" };
   function normaliseToy(t) {
     const x = t && typeof t === "object" ? t : {};
-    return { style: TOY_STYLES.some(([k]) => k === x.style) ? x.style : TOY_DEFAULT.style,
+    const j = toyJourneys().some(([k]) => k === x.journey) ? x.journey : TOY_STYLE_JOURNEY[x.style];
+    return { journey: j || TOY_DEFAULT.journey,
+             length: TOY_LENGTHS.includes(Number(x.length)) ? Number(x.length) : TOY_DEFAULT.length,
              level: clamp(x.level, 1, 10, TOY_DEFAULT.level),
-             pace: TOY_PACES.some(([k]) => k === x.pace) ? x.pace : TOY_DEFAULT.pace };
+             pace: toyPaces().some(([k]) => k === x.pace) ? x.pace : TOY_DEFAULT.pace,
+             ...(x.style ? { style: x.style } : {}), ...(x.blind ? { blind: true } : {}) };
   }
   // 2.13.0 (user: "No fast-forward still shows the timeline preview on
   // hover"): under it the frames ahead are hidden too. The stylesheet does
@@ -432,7 +688,10 @@
     if (p.last && typeof p.last === "object" && p.last.setup) out.last = { ...p.last, setup: fix(p.last.setup) };
     return out;
   }
-  const toyStyleName = (k) => (TOY_STYLES.find(([s]) => s === k) || [k, k])[1];
+  const toyStyleName = (k) => (toyStyles().find(([s]) => s === k) || [k, k])[1];
+  const toyJourneyName = (k) => (toyJourneys().find(([s]) => s === k) || [k, k])[1];
+  // A history entry from before Journeys keeps the style it played
+  const toyName = (t) => (t.journey ? toyJourneyName(t.journey) : toyStyleName(t.style || "waves"));
   // A run's toy: whether its heat counts. null for a run without Toy in charge.
   function toyEarned(L) {
     if (!L || !L.conds || !L.conds.toy || goalType(L) !== "edge") return null;
@@ -510,6 +769,7 @@
       const v = clamp(raw[c.k], 0, c.ranks.length, 0);
       if (v) conds[c.k] = v;
     }
+    for (const c of conditions()) if (c.with && !conds[c.with]) delete conds[c.k];   // 2.22
     return {
       kind: KINDS[x.kind] ? x.kind : d.kind,
       pick: x.pick === "random" ? "random" : "choose",
@@ -569,6 +829,7 @@
     // kept its settings (`toy`), so it comes back on
     const conds = { ...((e && e.conds) || condsFromRules(r, g)) };
     if (e && e.toy && g.type === "edge") conds.toy = 1;
+    if (e && e.toy && e.toy.blind && g.type === "edge") conds.blindj = 1;   // 2.22, the same
     // 2.12.2: normaliseSetup drops a retired condition; `retired` says which,
     // for the notice (openStart), and is not part of the setup
     const gone = retiredIn({ conds });
@@ -707,7 +968,7 @@
   const SKIP_CARD_EVERY_MS = 10 * 60000, SKIP_CARD_MAX = 3, SKIP_CARD_PTS = 15;   // 2.20
   const HOLD_EVERY_MS = 10 * 60000, HOLD_LASTS_MS = 10 * 60000, HOLD_HAND = 2;
   const HOLD_KINDS = {
-    eyes: { name: tc("盯着画面", "Eyes on screen"), ms: 2 * 60000, pts: 30, text: tc("连续播放 2 分钟，期间不切换标签页或应用", "2 minutes of playing without switching tabs or apps") },
+    eyes: { get name() { return tc("盯着画面", "Eyes on screen"); }, ms: 2 * 60000, pts: 30, get text() { return tc("连续播放 2 分钟，期间不切换标签页或应用", "2 minutes of playing without switching tabs or apps"); } },
     // 2.19 (user: "you have to watch minimum 5 min within the current open
     // scene. also a 10 min version"): Stay cards, dealt in the same deal.
     // Played on the scene on screen; its watched time counts (skips, pausing
@@ -715,8 +976,8 @@
     // removed it should only reward if complete"): opening another scene
     // only loses the card, nothing is taken off; the scene ending plays it
     // again (the "ended" listener) rather than Roulette's next.
-    stay5: { name: tc("停留 5", "Stay 5"), ms: 5 * 60000, pts: 40, stay: true, text: tc("在本场景连续播放 5 分钟；打开别的场景就会失去它", "5 minutes of playing on this scene; opening another scene loses it") },
-    stay10: { name: tc("停留 10", "Stay 10"), ms: 10 * 60000, pts: 100, stay: true, text: tc("在本场景连续播放 10 分钟；打开别的场景就会失去它", "10 minutes of playing on this scene; opening another scene loses it") },
+    stay5: { get name() { return tc("停留 5", "Stay 5"); }, ms: 5 * 60000, pts: 40, stay: true, get text() { return tc("在本场景连续播放 5 分钟；打开别的场景就会失去它", "5 minutes of playing on this scene; opening another scene loses it"); } },
+    stay10: { get name() { return tc("停留 10", "Stay 10"); }, ms: 10 * 60000, pts: 100, stay: true, get text() { return tc("在本场景连续播放 10 分钟；打开别的场景就会失去它", "10 minutes of playing on this scene; opening another scene loses it"); } },
   };
   // The deal picks one of these by the hand's seed and the deal's number,
   // so every device deals the same card. A run where another scene can't
@@ -882,6 +1143,45 @@
   }
   const tagReadyIn = (t, w) => Math.max(0, (t && t.at ? t.at : 0) - w);
   // Ready cards, for the bar's badge.
+  const SOON_MS = 2 * 60000;
+  const minTxt = (ms) => `${Math.max(1, Math.ceil(ms / 60000))} min`;
+  // 2.21 (user: "I dont notice them at all ... wider with slots so I know at a glance my inventory"): the hand as
+  // slots, kind by kind, with the room left in it: `on` a card, `live` one running, `wait` a tag card recharging, none
+  // of them an empty slot. `f` is the thin line under a slot, 0 to 1: time left, or how far recharged. `o.skips`: this
+  // run deals skip cards; `o.now` the wall clock, for the Race.
+  function handSlots(hand, w, o) {
+    if (!hand) return [];
+    const out = [], clamp = (x) => Math.max(0, Math.min(1, x)), r = hand.race;
+    if (r && r.st === "held") out.push({ g: "race", on: true, tip: tc("竞赛牌：可以打出", "Race card: ready to play") });
+    if (r && r.st === "on") out.push({ g: "race", on: true, live: true, f: clamp((r.until - ((o && o.now) || 0)) / RACE_MS), tip: tc("竞赛进行中：现在完成", "Race: running, finish now") });
+    if (hand.hold && HOLD_KINDS[hand.hold.k]) {
+      const k = HOLD_KINDS[hand.hold.k];
+      out.push({ g: "hold", k: hand.hold.k, on: true, live: true, f: clamp(1 - (w - hand.hold.from) / k.ms), tip: tc(`${k.name}：坚持中`, `${k.name}: holding`) });
+    }
+    for (const c of hand.holds) {
+      const k = HOLD_KINDS[c.k] || HOLD_KINDS.eyes, left = c.until - w;
+      out.push({ g: "hold", k: c.k, on: true, soon: left < SOON_MS, f: clamp(left / HOLD_LASTS_MS), tip: tc(`${k.name}：还剩 ${minTxt(left)}`, `${k.name}: expires in ${minTxt(left)}`) });
+    }
+    for (let i = hand.holds.length; i < HOLD_HAND; i++) out.push({ g: "hold", tip: tc(`坚持牌空位：每观看 ${HOLD_EVERY_MS / 60000} 分钟发一张`, `Room for a hold card: one comes every ${HOLD_EVERY_MS / 60000} min watched`) });
+    const sk = hand.sk || 0;
+    if (sk || (o && o.skips)) for (let i = 0; i < SKIP_CARD_MAX; i++) out.push(i < sk ? { g: "skip", on: true, tip: tc("跳过牌：场景跳过配额用完后可再跳一次", "Skip card: one more skip when a scene is out of them") } : { g: "skip", tip: tc(`跳过牌空位：每观看 ${SKIP_CARD_EVERY_MS / 60000} 分钟发一张`, `Room for a skip card: one comes every ${SKIP_CARD_EVERY_MS / 60000} min watched`) });
+    for (const t of hand.tags) {
+      const left = tagReadyIn(t, w);
+      out.push(left ? { g: "tag", wait: true, f: clamp(1 - left / CARD_RECHARGE_MS), tip: tc(`${t.name}：${minTxt(left)} 后恢复`, `${t.name}: back in ${minTxt(left)}`) } : { g: "tag", on: true, tip: tc(`${t.name}：可以打出`, `${t.name}: ready to play`) });
+    }
+    return out;
+  }
+  // The slots in words, for the button's name and tooltip: "1 running, 2 hold cards, 1 skip card, 2 tag cards ready"
+  function handWords(slots) {
+    const n = (f) => slots.filter(f).length, on = (g) => n((s) => s.g === g && s.on && !s.live);
+    const parts = [n((s) => s.live) ? tc(`${n((s) => s.live)} 张进行中`, `${n((s) => s.live)} running`) : "", on("race") ? tc("竞赛牌", "the Race card") : "", on("hold") ? tc(`${on("hold")} 张坚持牌`, plural(on("hold"), "hold card", "hold cards")) : "",
+      on("skip") ? tc(`${on("skip")} 张跳过牌`, plural(on("skip"), "skip card", "skip cards")) : "", on("tag") ? tc(`${on("tag")} 张标签牌可用`, `${plural(on("tag"), "tag card", "tag cards")} ready`) : ""].filter(Boolean);
+    return parts.length ? parts.join(tc("、", ", ")) : tc("还没有牌", "No cards yet");
+  }
+  // The newest card of a kind wears `fresh` until the cards are opened or `until[g]` passes
+  function slotsFresh(slots, until, now) {
+    return slots.map((s, i) => ({ ...s, fresh: !!s.on && !s.live && (until[s.g] || 0) > now && !slots.slice(i + 1).some((x) => x.g === s.g && x.on && !x.live) }));
+  }
   const handReady = (hand, w) => (hand ? hand.holds.length + hand.tags.filter((t) => !tagReadyIn(t, w)).length + (hand.race && hand.race.st === "held" ? 1 : 0) : 0);
 
   // ── 2.17: the new layout's pure parts (setup steps, run page, bar) ──
@@ -1109,6 +1409,15 @@
   }
   // "Away 3× · 1 min 20 s · −40 points", or "clean" for a run with the
   // condition never broken; "" for a run without it.
+  // 2.21 (user: "stayin away should also change the header bg color so I know it is dangerous"): how the bar looks
+  // while away: `since` when it began (0: not away), `pts` whether points are at stake (Eyes on screen; a hold card
+  // alone is only lost). Inside the grace a warning, past it the danger.
+  function awayBar(since, now, pts) {
+    if (!since) return null;
+    const ms = Math.max(0, now - since), over = ms - EYES_GRACE_MS;
+    if (over <= 0) return { lv: "warn", text: tc(`快回来：${Math.ceil((EYES_GRACE_MS - ms) / 1000) || 1} 秒`, `Come back: ${Math.ceil((EYES_GRACE_MS - ms) / 1000) || 1} s`) };
+    return { lv: "away", text: pts ? tc(`离开 ${fmtAway(over)}${awayPts(over) ? ` · −${awayPts(over)}` : ""}`, `Away ${fmtAway(over)}${awayPts(over) ? ` · −${awayPts(over)}` : ""}`) : tc("离开中", "Away") };
+  }
   function awayText(e) {
     if (!e || !e.away) return "";
     const ms = awayMsOf(e);
@@ -1207,7 +1516,7 @@
       const set = L.goal.watchMs;
       L.goal = { ...L.goal, about: set, watchMs: hiddenTarget(set / 60000, rnd === undefined ? Math.random() : rnd) * 60000 };
     }
-    if (rules.toy) L.toy = { ...normaliseToy(setup.toy), ms: 0, edges: 0, cools: 0, starts: 0 };
+    if (rules.toy) L.toy = { ...normaliseToy(setup.toy), ...(setup.conds && setup.conds.blindj ? { blind: true } : {}), ms: 0, edges: 0, cools: 0, starts: 0 };
     if (target.kind === "tag" && target.tags && target.tags.length > 1 && groups && groups.length === target.tags.length) {
       L.tags = target.tags.map((t) => ({ id: String(t.id), name: t.name }));
       L.mode = target.mode === "or" ? "or" : "and";
@@ -1680,6 +1989,63 @@
   // The same lock as two devices saw it: whatever only grows takes the
   // larger, per scene too (watched parts are joined). The writer's baseline
   // wins (it just read the sum).
+  // 2.23.0 (audit 2026-11-03): two devices changing the hand at the same
+  // `rev` kept only one change (the higher rev, whole: a card play could be
+  // lost). The copy that changed last (local on a tie) is the base; from
+  // the other come what only grows: points, counts, the deals, the Race by
+  // its state (held < on < won/lost, with its points), tag plays (a union by
+  // `at`, a marker bonus either found) and tag recharges; a skip card the
+  // other played comes off its count, one it was dealt is added; a hold the
+  // other played (or settled) that the base has not is taken up.
+  const RACE_ORDER = { held: 1, on: 2, won: 3, lost: 3 };
+  function mergeHand(remote, local) {
+    if (!remote || !local) return local || remote || null;
+    const base = (local.rev || 0) >= (remote.rev || 0) ? local : remote, other = base === local ? remote : local;
+    const h = { ...base };
+    for (const k of ["pts", "stayPts", "passed", "failed", "dealt", "sdealt", "skUsed", "stayKept", "stayBroke"]) {
+      if (base[k] != null || other[k] != null) h[k] = Math.max(Number(base[k]) || 0, Number(other[k]) || 0);
+    }
+    if (base.race || other.race) {
+      const oa = base.race ? RACE_ORDER[base.race.st] || 0 : 0, ob = other.race ? RACE_ORDER[other.race.st] || 0 : 0;
+      const from = ob > oa ? other : base;
+      h.race = from.race;
+      if (from.racePts != null) h.racePts = from.racePts; else delete h.racePts;
+    }
+    if (base.sk != null || other.sk != null) {
+      const used = Math.max(0, (other.skUsed || 0) - (base.skUsed || 0)), dealt = Math.max(0, (other.sdealt || 0) - (base.sdealt || 0));
+      h.sk = Math.max(0, Math.min(SKIP_CARD_MAX, (base.sk || 0) + dealt - used));
+    }
+    if (Array.isArray(base.tags) && Array.isArray(other.tags)) {
+      const at = new Map(other.tags.filter(Boolean).map((t) => [t.id, t.at || 0]));
+      h.tags = base.tags.map((t) => (t && (at.get(t.id) || 0) > (t.at || 0) ? { ...t, at: at.get(t.id) } : t));
+    }
+    if (Array.isArray(base.plays) || Array.isArray(other.plays)) {
+      const key = (p) => `${p.at || 0}|${p.tag}|${p.scene}`;
+      const m = new Map(), baseDone = new Set((base.plays || []).filter((p) => p && p.done).map(key));
+      for (const p of [...(other.plays || []), ...(base.plays || [])]) {
+        if (!p) continue;
+        const was = m.get(key(p));
+        m.set(key(p), was ? { ...was, ...p, ...(p.done || was.done ? { done: p.done || was.done } : {}) } : p);
+      }
+      const plays = [...m.values()].sort((a, b) => (a.at || 0) - (b.at || 0)).slice(-TAG_PLAYS_KEEP);
+      const extra = plays.filter((p) => p.done && !baseDone.has(key(p))).length;
+      h.plays = plays;
+      if (extra || base.tagPts != null || other.tagPts != null) h.tagPts = Math.max((base.tagPts || 0) + extra * TAG_MATCH_PTS, other.tagPts || 0);
+    }
+    const settled = (x) => (x.passed || 0) + (x.failed || 0);
+    const takeHold = settled(other) > settled(base) || (settled(other) === settled(base) && !base.hold && other.hold);
+    if (takeHold) {
+      h.hold = other.hold || null;
+      // the card the other played leaves the base's hand too
+      if (other.hold && Array.isArray(base.holds) && Array.isArray(other.holds)) {
+        const theirs = new Set(other.holds.filter(Boolean).map((c) => `${c.k}|${c.until}`));
+        const i = base.holds.findIndex((c) => c && c.k === other.hold.k && !theirs.has(`${c.k}|${c.until}`));
+        if (i >= 0) h.holds = base.holds.filter((_, j) => j !== i);
+      }
+    }
+    if (JSON.stringify(h) !== JSON.stringify(base)) h.rev = Math.max(local.rev || 0, remote.rev || 0) + 1;
+    return h;
+  }
   function mergeLock(remote, local) {
     if (!remote || !local || remote.id !== local.id) return local || remote || null;
     const out = { ...remote, ...local };
@@ -1722,8 +2088,9 @@
       scenes[id] = m;
     }
     out.scenes = scenes;
-    // 2.16: the hand that changed last (each change counts `rev` up)
-    if (remote.hand || local.hand) out.hand = local.hand && (!remote.hand || (local.hand.rev || 0) >= (remote.hand.rev || 0)) ? local.hand : remote.hand;
+    // 2.16: the hand that changed last (each change counts `rev` up); 2.23.0:
+    // with what only grows taken from both (mergeHand)
+    if (remote.hand || local.hand) out.hand = mergeHand(remote.hand, local.hand);
     // 2.15: Roulette's rounds: the later start of each side's round
     if (remote.deck || local.deck) {
       out.deck = { ...(remote.deck || {}) };
@@ -2114,10 +2481,11 @@
       if (!ty.earned) {
         const conds = { ...(e.conds || {}) };
         delete conds.toy;
+        delete conds.blindj;                 // 2.22: it stands on Toy in charge
         e.conds = conds;
         if (typeof e.heat === "number") e.heat = heatOf(conds, e.goal);
-        if (e.novK && e.novK.includes("toy")) {
-          e.novK = e.novK.filter((k) => k !== "toy");
+        if (e.novK && e.novK.some((k) => k === "toy" || k === "blindj")) {
+          e.novK = e.novK.filter((k) => k !== "toy" && k !== "blindj");
           e.nov = Math.min(NOV_MAX, Math.round(e.novK.length * NOV_STEP * 100) / 100);
           if (!(e.nov > 0)) { delete e.nov; delete e.novK; }
         }
@@ -2139,10 +2507,12 @@
   // when Goon mode ran for less than TOY_SHARE of the watching, "(no heat)".
   function toyText(e) {
     const t = e.toy || {};
-    const bits = [toyStyleName(t.style || TOY_DEFAULT.style), tc(`${fmtMinutes((t.ms || 0) / 60000)} / ${fmtMinutes((e.watchedMs || 0) / 60000)} 在 Goon 下`, `${fmtMinutes((t.ms || 0) / 60000)} of ${fmtMinutes((e.watchedMs || 0) / 60000)} under Goon`)];
-    if (t.edges) bits.push(tc(`${t.edges} 次边缘`, `${plural(t.edges, "edge", "edges")}`));
-    if (t.cools) bits.push(tc(`${t.cools} 次冷却`, `${plural(t.cools, "cool-down", "cool-downs")}`));
-    return tc(`玩具主导：${bits.join(", ")}${t.earned ? "" : ` （不计热度：低于 ${Math.round(TOY_SHARE * 100)}%）`}`, `toy in charge: ${bits.join(", ")}${t.earned ? "" : ` (no heat: under ${Math.round(TOY_SHARE * 100)}%)`}`);
+    const bits = [tc(`${toyName(t)}${t.blind ? "（盲抽）" : ""}`, `${toyName(t)}${t.blind ? " (blind)" : ""}`),
+                  tc(`${fmtMinutes((t.ms || 0) / 60000)} / ${fmtMinutes((e.watchedMs || 0) / 60000)} 在 Goon 下`, `${fmtMinutes((t.ms || 0) / 60000)} of ${fmtMinutes((e.watchedMs || 0) / 60000)} under Goon`)];
+    if (t.edges) bits.push(tc(`${t.edges} 次边缘`, plural(t.edges, "edge", "edges")));
+    if (t.cools) bits.push(tc(`${t.cools} 次冷却`, plural(t.cools, "cool-down", "cool-downs")));
+    return tc(`玩具主导：${bits.join("、")}${t.earned ? "" : `（不计热度：低于 ${Math.round(TOY_SHARE * 100)}%）`}`,
+              `toy in charge: ${bits.join(", ")}${t.earned ? "" : ` (no heat: under ${Math.round(TOY_SHARE * 100)}%)`}`);
   }
 
   // undefined: none stored yet (build from history); null: stored but
@@ -2471,9 +2841,9 @@
     return ws.map((w) => ({ ...w.x, score: Math.exp(w.lw - top) })).sort((a, b) => b.score - a.score).slice(0, REC_SPIN);
   }
   // "worked out 6 h ago"
+  // 2.23.0: the suite's one wording (RT.ago)
   function agoText(at, now) {
-    const m = Math.max(0, Math.round((now - at) / 60000));
-    return m < 1 ? tc("刚刚", "just now") : m < 60 ? tc(`${m} 分钟前`, `${m} min ago`) : m < 1440 ? tc(`${Math.round(m / 60)} 小时前`, `${Math.round(m / 60)} h ago`) : tc(`${Math.round(m / 1440)} 天前`, `${Math.round(m / 1440)} days ago`);
+    return RT.ago(at, now);
   }
 
   // Ratings Toolkit's overall on 1-5 (its overall(): the weighted mean of the
@@ -3172,12 +3542,24 @@
   // The wait before try n (1, 2, ...): base, doubling, at most max.
   const backoffMs = (n, base, max) => (n > 0 ? Math.min(max, base * Math.pow(2, n - 1)) : 0);
 
+  // 2.23.0: the ids of runs that ended with no history entry, the last
+  // GONE_MAX, kept in the totals (`stats.gone`, which every totals writer
+  // spreads through), so a device still holding one ends it instead of
+  // pushing it back (syncDecision)
+  const GONE_MAX = 30;
+  function withGone(stats, ...runIds) {
+    const add = runIds.filter((x) => x !== undefined && x !== null && x !== "").map(String);
+    const g = (Array.isArray(stats && stats.gone) ? stats.gone : []).map(String).filter((x) => !add.includes(x));
+    return { ...(stats || {}), gone: g.concat(add).slice(-GONE_MAX) };
+  }
+  const goneSet = (stats) => new Set(Array.isArray(stats && stats.gone) ? stats.gone.map(String) : []);
+
   // The end of a run, as one change to Stash's copy (recordEnd and its
   // retries): the entry, the totals and the pictures, unless the history
   // already has this run (another device, or an earlier try that landed:
   // never counted twice), and the active lock cleared when it is this run.
   function endChange(cur, done, found, result, now) {
-    const { list, stats, active, pics, picsBad } = cur;
+    const { list, stats, active, pics, picsBad, bad } = cur;
     const M = active && active.id === done.id ? mergeLock(active, done) : done;
     const L = M.moments ? { ...M, moments: keepMoments(M.moments, found) } : M;
     const out = {};
@@ -3190,6 +3572,9 @@
       // them again (a given-up run scored nothing for them, so they stay new)
       if (entry.result === "done" && L.pics && L.pics.length && !picsBad) out.pics = addPicsChunk(pics, done.id, L.pics, now);
     }
+    // 2.23.0: a cancel leaves no entry, so its id is noted (never over totals
+    // that did not parse)
+    if (result === "cancelled" && !bad) out.stats = withGone(stats, done.id);
     if (!active || active.id === done.id) out.active = null;
     return out;
   }
@@ -3213,7 +3598,14 @@
   // cleared (`clear`); none here: adopt Stash's; gone from Stash: ended
   // elsewhere when Stash had it (or the history has it), else push it; a
   // different run: adopt it; the same: merge. `list` null: not read.
-  function syncDecision(local, remote, list, ended, confirmedId) {
+  // 2.23.0 `gone`: run ids known to have ended with no history entry (a
+  // cancel, a ghost cleared, an entry removed), from the totals (`stats.gone`).
+  // Stash had our lock and has neither it nor an entry: without Suite Data a
+  // stale Settings tab re-saving every plugin's config rolls `active` back,
+  // and every device then ended the run as "ended on another device" with
+  // nothing recorded. That is now pushed back, unless the id is in `gone`
+  // (or the history was not read: as before).
+  function syncDecision(local, remote, list, ended, confirmedId, gone) {
     const inList = (id) => !!list && list.some((e) => e && e.id === id);
     let r = remote || null, ghost = null;
     if (r && ((ended && ended.has(r.id)) || inList(r.id))) { ghost = r.id; r = null; }
@@ -3221,7 +3613,10 @@
     if (!local) return { act: r ? "adopt" : "none", remote: r, clear };
     if (!r) {
       const entry = (list && list.find((e) => e && e.id === local.id)) || null;
-      return { act: confirmedId === local.id || entry ? "ended" : "push", entry, remote: null, clear };
+      if (entry) return { act: "ended", entry, remote: null, clear };
+      if (confirmedId !== local.id) return { act: "push", entry: null, remote: null, clear };
+      const known = !list || (gone && (typeof gone.has === "function" ? gone.has(local.id) : gone.includes(local.id)));
+      return { act: known ? "ended" : "push", entry: null, remote: null, clear, ...(known ? {} : { rolledBack: true }) };
     }
     return { act: r.id !== local.id ? "adopt" : "merge", remote: r, clear };
   }
@@ -3289,6 +3684,7 @@
     const g = I && I.goon;
     return g && ["available", "start", "end", "state", "on"].every((f) => typeof g[f] === "function") ? g : null;
   }
+  const blindApi = () => { const g = goonApi(); return !!(g && g.features && g.features.blind); };   // 2.22
   // One per page: which run the toy was started for, whether Goon mode is
   // running for it, the event subscriptions. `getApi` is goonApi (a stub in
   // the tests). `cb`: { isCurrent(id), edge(), cool(), stage(x), ended(x) }.
@@ -3325,7 +3721,9 @@
       let p;
       // a start that did not happen leaves nothing to end later
       const failed = (why) => { if (!running) { unsubAll(); runId = null; } return { ok: false, why }; };
-      try { p = g.start({ style: L.toy.style, level: L.toy.level, pace: L.toy.pace, base: null, source: "lockdown", userGesture: true }); }
+      // `style` and `level` for an Intiface Sync from before Journeys
+      const t = normaliseToy(L.toy);
+      try { p = g.start({ journey: t.journey, length: t.length, power: t.level, pace: t.pace, blind: !!t.blind, style: TOY_JOURNEY_STYLE[t.journey], level: t.level, source: "lockdown", userGesture: true }); }
       catch (e) { return Promise.resolve(failed((e && e.message) || tc("Goon 模式未启动", "Goon mode did not start"))); }
       pending = Promise.resolve(p).then((r) => {
         if (!r || !r.ok) return failed((r && r.why) || tc("Goon 模式未启动", "Goon mode did not start"));
@@ -3349,6 +3747,9 @@
     // Each tick: the run gone or replaced ends the toy; Goon mode ended
     // without an event (an older build, a missed one) stops the count.
     function follow(L) {
+      // 2.22.1: a Blind run is blind however Goon began, Start the toy or the player
+      const gb = api();
+      try { if (gb && typeof gb.setBlind === "function") gb.setBlind(!!(L && L.toy && L.toy.blind)); } catch (_) {}
       if (runId && (!L || L.id !== runId)) return stop();
       if (running) {
         const g = api();
@@ -3363,8 +3764,8 @@
     return { status, start, stop, follow, live, state, get runId() { return runId; } };
   }
 
-  if (window.__LOCKDOWN_I18N_TEST__) {
-    window.__LockdownI18nTest = { suiteData, DATA_KEYS, unpack, packConfig, toastKind, toastHost, modalKey, TOAST_MS, routeCheck, enumOf, toGraphQLFilter, spinSchedule, fmtDuration, fmtClock, fmtMinutes,
+  if (window.__LOCKDOWN_TEST__) {
+    window.__LockdownI18nTest = { RT, mergeHand, withGone, goneSet, GONE_MAX, suiteData, DATA_KEYS, unpack, packConfig, toastKind, toastHost, modalKey, TOAST_MS, routeCheck, enumOf, toGraphQLFilter, spinSchedule, fmtDuration, fmtClock, fmtMinutes,
                               addToStats, statsFromHistory, completeStats, parseStats, fmtWhen, entryKey,
                               removeFromStats, mostLocked, groupByMonth, filterEntries, streaksOf,
                               parseHistory, parseActive, cardItem, stripRules, stripPerformerRules,
@@ -3390,19 +3791,19 @@
                               belongVerdict, backoffMs, endChange, pendingAdd, pendingDrop, syncPlan, syncDecision, pollOwner, pollIntervals,
                               oCheckPlan, oSceneMoved, fetchWithin, SYNC_IDLE_MS, SYNC_LOCKED_MS, SYNC_FOLLOW_MS, SYNC_FULL_MS, OWNER_TTL_MS, GQL_TIMEOUT_MS,
                               // 2.12
-                              isSettingsPath, overtimeScored, hiddenTarget, HIDE_LO, HIDE_HI, TOY_SHARE, TOY_STYLES, TOY_PACES, TOY_DEFAULT, TOY_NEEDS,
+                              isSettingsPath, overtimeScored, hiddenTarget, HIDE_LO, HIDE_HI, TOY_SHARE, toyStyles, toyJourneys, TOY_LENGTHS, toyPaces, TOY_DEFAULT, TOY_NEEDS, BLIND_NEEDS,
                               normaliseToy, toyEarned, toyText, edgeHint, liveGoalLabel, goonApi, toyController,
                               // 2.12.1
                               hiddenPast, dragStep, holdSeek, heldSeek, barLinks, SEEK_SLACK, SKIPS_AT,
                               // 2.13.0
                               inputKind, gate0, gateInput, gateLoad, gateUser, loadIsSeek, settling, SETTLE_MS, INPUT_MS, toyLevelPrefs, previewGuardIn, PREVIEW_SEL,
-                              EYES_GRACE_MS, EYES_PT_MS, awayAdd, awayPts, awayMsOf, awayNowLock, fmtAway, awayText, goalReached,
+                              EYES_GRACE_MS, EYES_PT_MS, awayAdd, awayPts, awayMsOf, awayNowLock, fmtAway, awayText, awayBar, goalReached,
                               // 2.14
                               duoOf, duoName, duoMembers, duoIds, setOf, recDuos, mateCards, mateWhy, REC_MATES, DUO_RANDOM,
                               // 2.15
                               deckPick,
                               // 2.16
-                              handTick, handPlayHold, handBreakHold, handPlayTag, handReady, tagReadyIn, newHand, normaliseCardTags, HOLD_KINDS,
+                              handTick, handPlayHold, handBreakHold, handPlayTag, handReady, handSlots, handWords, slotsFresh, tagReadyIn, newHand, normaliseCardTags, HOLD_KINDS,
                               HOLD_DEAL, dealKind, raceDue, handPlayRace, raceWon, RACE_MS, RACE_WIN, RACE_LOSE, RACE_GRACE_MS, RACE_FINISH_AFTER_MS,
                               staysText, raceText, cardsText, handPlaySkip, SKIP_CARD_EVERY_MS, SKIP_CARD_MAX, SKIP_CARD_PTS,
                               CARD_RECHARGE_MS, HOLD_EVERY_MS, HOLD_LASTS_MS, HOLD_HAND, CARD_TAGS_MAX, paceBest, milestonesDue, cancelResult, CANCEL_MS, lastShown,
@@ -3423,18 +3824,11 @@
   // 2.11: every request has a time limit (fetchWithin, GQL_TIMEOUT_MS; the
   // recommendations' scene pages 60 s). Suite Data's calls go through here
   // too (the shared client's `o.gql`), so they have it as well.
+  // 2.23.0: RT.gql with the same limit (it aborts the request and fails with
+  // the same "Stash did not answer in N s"); fetchWithin stays for the one
+  // request that is not GraphQL (the recommendations' scene pages)
   async function gql(query, variables, ms) {
-    const json = await fetchWithin(async (signal) => {
-      const res = await fetch("/graphql", {
-        method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, variables }), signal,
-      });
-      try { return await res.json(); }
-      catch { throw new Error(`Stash returned ${res.status}${res.status === 401 ? ": logged out?" : ""}`); }
-    }, ms || GQL_TIMEOUT_MS);
-    if (json?.errors?.length) throw new Error(json.errors[0].message);
-    return json?.data ?? null;
+    return RT.gql(query, variables, { timeout: ms || GQL_TIMEOUT_MS });
   }
 
   // Per kind: the list query, its result key, its filter argument and type,
@@ -4117,14 +4511,16 @@
       const i = list.findIndex((e) => isEntry(e) && entryKey(e) === key);
       if (i < 0) return {};
       const rest = list.slice(0, i).concat(list.slice(i + 1));
-      return { list: rest, stats: removeFromStats(stats, list[i], rest) };
+      // 2.23.0: its id noted, so a device still holding that run does not push it back
+      return { list: rest, stats: withGone(removeFromStats(stats, list[i], rest), list[i].id) };
     }, false, true);
   }
 
   // A fresh start: the list and the totals. The active lock and other keys
   // are kept.
   function clearHistory() {
-    return updateConfig(() => ({ list: [], stats: { ...EMPTY_STATS, perf: {}, wins: {} } }), false, true);
+    // 2.23.0: the noted ids stay, with the cleared runs' (syncDecision)
+    return updateConfig(({ list, stats }) => ({ list: [], stats: withGone({ ...EMPTY_STATS, perf: {}, wins: {}, gone: (stats && stats.gone) || [] }, ...list.filter(isEntry).map((e) => e.id).slice(-GONE_MAX)) }), false, true);
   }
 
   async function readConfig() {
@@ -4523,7 +4919,7 @@
   // row armed for removal (red), the glows of a landed or won spin and of
   // the watched parts (red, blue); exact with Flexoki on.
   const THEME = suiteTheme({ id: "lockdown",
-    scope: ".ld-nav, #ld-bar, #ld-veil, .ld-modal-back, .ld-modal, #ld-over, #ld-tip, #ld-toast, .ld-watched, .vjs-progress-holder[data-ld-free], .ld-holdchip",
+    scope: ".ld-nav, #ld-bar, #ld-veil, .ld-modal-back, .ld-modal, #ld-over, #ld-tip, #ld-toast, #sx-toasts, .ld-watched, .vjs-progress-holder[data-ld-free], .ld-holdchip",
     extra: (X) => {
       const fx = X.mode === "flexoki";
       const a = (h, al) => { const n = (i) => parseInt(h.slice(i, i + 2), 16); return "rgba(" + n(1) + "," + n(3) + "," + n(5) + "," + al + ")"; };
@@ -5162,6 +5558,10 @@ body.ld-on .video-js .vjs-play-progress { background: transparent !important; }
    inline by previewGuard, in case a later Stash draws them its own way. */
 body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrapper {
   display: none !important; opacity: 0 !important; background: none !important; }
+/* 2.23.0: and a scene card's hover preview video and its sprite scrubber
+   (Stash's ScenePreview and HoverScrubber), frames ahead as well; the
+   card's still picture stays */
+body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber { display: none !important; }
 @media (max-width: 560px) {
   .ld-choices.ld-four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ld-choice small { white-space: normal; }
@@ -5867,6 +6267,44 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
   background: var(--sx-ma); color: var(--sx-on); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
 #ld-bar .ld-handn[hidden] { display: none; }
 #ld-bar .ld-handbtn.ld-pulse .ld-handn { animation: ld-flashin .5s ease-out; }
+/* 2.21: the hand beside the skips: a well of card-shaped slots, kind by kind.
+   Filled in the kind's colour, dashed for the room left, as the skip tokens */
+#ld-bar .ld-handbtn { gap: 6px; height: 38px; padding: 0 8px; border-radius: 8px; background: var(--sx-bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--sx-ui2);
+  box-shadow: inset 0 2px 5px rgba(0,0,0,calc(.5*var(--sx-k))); }
+#ld-bar .ld-handbtn:hover { background: var(--sx-ui); }
+#ld-bar .ld-handbtn > .ld-ico, #ld-bar .ld-handbtn > .ld-handn { display: none; }
+#ld-bar .ld-handbtn.ld-open { background: color-mix(in srgb, var(--sx-ma) 22%, var(--sx-bg2)); }
+#ld-bar .ld-slots { display: inline-flex; align-items: center; gap: 3px; }
+#ld-bar .ld-slotgap { width: 5px; flex: none; }
+#ld-bar .ld-slot { --c: var(--sx-cy); position: relative; width: 22px; height: 28px; border-radius: 5px; flex: none; box-sizing: border-box; overflow: hidden; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px dashed var(--sx-ui3); color: var(--sx-tx3); font-style: normal; }
+#ld-bar .ld-slot.ld-sskip, #ld-bar .ld-slot.ld-srace { --c: var(--sx-or); }
+#ld-bar .ld-slot.ld-stag { --c: var(--sx-ma); }
+#ld-bar .ld-slot.ld-soon { --c: var(--sx-ye); }
+#ld-bar .ld-slot .ld-ico { width: 13px; height: 13px; }
+#ld-bar .ld-slot.ld-on { border: 1px solid color-mix(in srgb, var(--c) 65%, transparent); color: var(--c); background: color-mix(in srgb, var(--c) 26%, var(--sx-ui)); }
+#ld-bar .ld-slot.ld-sskip.ld-on, #ld-bar .ld-slot.ld-stag.ld-on { color: var(--sx-hi); }
+#ld-bar .ld-slot.ld-wait { border: 1px solid var(--sx-ui3); color: var(--sx-tx3); background: var(--sx-ui); }
+#ld-bar .ld-slot.ld-live { border-color: var(--c); box-shadow: 0 0 0 1px var(--c); color: var(--sx-hi); }
+#ld-bar .ld-slot u { display: none; position: absolute; left: 0; bottom: 0; height: 2px; width: calc(var(--f, 0) * 100%); background: var(--c); }
+#ld-bar .ld-slot.ld-on u, #ld-bar .ld-slot.ld-wait u { display: block; }
+/* a new card: it blinks, then stays lit until the cards are opened */
+#ld-bar .ld-slot.ld-new { z-index: 1; box-shadow: 0 0 0 2px var(--c), 0 0 10px var(--c); color: var(--sx-hi); animation: ld-slotnew 1.1s ease-in-out 6; }
+@keyframes ld-slotnew { 50% { transform: scale(1.18); background: var(--c); color: var(--sx-on); box-shadow: 0 0 0 3px var(--c), 0 0 16px 2px var(--c); } }
+#ld-bar .ld-handbtn.ld-pulse { animation: ld-handpulse 1.1s ease-in-out 3; }
+@keyframes ld-handpulse { 50% { border-color: var(--sx-ma); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sx-ma) 55%, transparent), 0 0 14px color-mix(in srgb, var(--sx-ma) 40%, transparent); } }
+/* 2.21: away: the whole bar turns, yellow inside the grace, red past it */
+#ld-bar { transition: background-color .2s ease-out, border-color .2s ease-out; }
+#ld-bar.ld-awarn { background: color-mix(in srgb, var(--sx-ye) 34%, var(--sx-bg2)); border-bottom-color: var(--sx-ye); }
+#ld-bar.ld-awayed { background: color-mix(in srgb, var(--sx-re) 62%, var(--sx-bg2)); border-bottom-color: var(--sx-re); animation: ld-awaybeat 1.5s ease-in-out infinite; }
+@keyframes ld-awaybeat { 50% { background: color-mix(in srgb, var(--sx-re) 40%, var(--sx-bg2)); } }
+#ld-bar.ld-awarn .ld-who small, #ld-bar.ld-awayed .ld-who small, #ld-bar.ld-awarn .ld-prog span, #ld-bar.ld-awayed .ld-prog span, #ld-bar.ld-awarn .ld-pace, #ld-bar.ld-awayed .ld-pace { color: var(--sx-hi); }
+#ld-bar .ld-awaytag { flex: none; padding: 4px 9px; border-radius: 6px; font-size: 13px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--sx-on); background: var(--sx-ye); }
+#ld-bar .ld-awaytag[hidden] { display: none; }
+#ld-bar.ld-awayed .ld-awaytag { color: var(--sx-re); background: var(--sx-paper); }
+@media (prefers-reduced-motion: reduce) {
+  #ld-bar .ld-slot.ld-new, #ld-bar .ld-handbtn.ld-pulse, #ld-bar.ld-awayed { animation: none; }
+}
 /* the popover's rows */
 #ld-bar .ld-pophead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 #ld-bar .ld-pophead b { color: var(--sx-hi); white-space: nowrap; flex: none; }
@@ -5896,10 +6334,27 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
 @media (max-width: 1240px) { #ld-bar .ld-pace { display: none; } }
 @media (max-width: 1080px) { #ld-bar .ld-who small { display: none; } #ld-bar .ld-pics span { display: none; } #ld-bar .ld-pics .ld-ico { margin-right: 0; } }
 @media (max-width: 960px) { #ld-bar .ld-picn, #ld-bar a.ld-runbtn span { display: none; } }
+/* 2.21: narrower, the slots give way before the name does: no caption, then
+   only the cards themselves, then (no room left) the icon and its count */
+@media (max-width: 1680px) {
+  /* (a caption beside its tokens only: "No skipping" is all that box says) */
+  #ld-bar .ld-handbtn .ld-skcap, #ld-bar .ld-skcap:has(+ .ld-sktoks), #ld-bar .ld-pmeter, #ld-bar .ld-pbest, #ld-bar .ld-pics span { display: none; }
+  #ld-bar .ld-pics .ld-ico { margin-right: 0; }
+}
+@media (max-width: 1280px) {
+  #ld-bar .ld-slot:not(.ld-on):not(.ld-wait), #ld-bar .ld-slotgap { display: none; }
+  #ld-bar .ld-slot { width: 19px; height: 26px; }
+}
+@media (max-width: 1180px) {
+  #ld-bar .ld-handbtn { height: 32px; padding: 0 10px; }
+  #ld-bar .ld-handbtn .ld-slots { display: none; }
+  #ld-bar .ld-handbtn > .ld-ico { display: inline-block; }
+  #ld-bar .ld-handbtn > .ld-handn { display: inline-flex; }
+  #ld-bar .ld-handbtn > .ld-handn[hidden] { display: none; }
+}
 @media (max-width: 760px) {
   #ld-bar { gap: 10px; }
-  #ld-bar .ld-who, #ld-bar .ld-bdiv, #ld-bar .ld-skips, #ld-bar a.ld-runbtn, #ld-bar .ld-blinks { display: none; }
-  #ld-bar .ld-pf-b, #ld-bar .ld-pf2-b > .ld-pf { height: min(38px, calc(var(--ld-barh, 56px) - 16px)); width: calc(min(38px, calc(var(--ld-barh, 56px) - 16px)) * 2 / 3); }
+  #ld-bar .ld-who, #ld-bar .ld-bdiv, #ld-bar .ld-skips, #ld-bar a.ld-runbtn, #ld-bar .ld-blinks { display: none; }  #ld-bar .ld-pf-b, #ld-bar .ld-pf2-b > .ld-pf { height: min(38px, calc(var(--ld-barh, 56px) - 16px)); width: calc(min(38px, calc(var(--ld-barh, 56px) - 16px)) * 2 / 3); }
   #ld-bar .ld-prog { flex: 1 1 auto; }
   #ld-bar .ld-pgt b { font-size: 14px; }
   #ld-bar .ld-pgt .ld-pgof { display: none; }
@@ -5966,6 +6421,9 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
       } else if (kind === "bell") {
         // 2.16: a milestone, a hold passed: one soft struck note
         tone(c, 784, t, 1.4, 0.06); tone(c, 1568, t, 0.6, 0.015);
+      } else if (kind === "card") {
+        // 2.21: a card dealt: two quick notes, up, not the bell of a hold kept
+        tone(c, 988, t, 0.5, 0.05); tone(c, 1319, t + 0.12, 0.8, 0.05);
       } else if (kind === "thud") {
         // 2.16: a slip, a hold broken
         const a = tone(c, 150, t, 0.45, 0.16, "triangle");
@@ -6067,6 +6525,7 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
 
   function closeModal() {
     document.querySelector(".ld-modal-back")?.remove();
+    RT.releaseKeys();              // 2.23.0: only while the mark is still Lockdown's
   }
 
   // sticky: no closing by clicking outside (the spin must play out).
@@ -6082,12 +6541,13 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     // card went unseen): the dialog leaves fullscreen first
     if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
     document.body.appendChild(back);
+    RT.claimKeys();                // 2.23.0: <html data-owns-keys="Lockdown"> while a dialog is open
     setTimeout(() => (back.querySelector(".ld-close") || back.querySelector(".ld-start, button"))?.focus({ preventScroll: true }), 0);
     return back.querySelector(".ld-modal");
   }
 
   function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));   // 2.22.2: null is nothing, not "null"
   }
 
   // ── Shared pieces ─────────────────────────────────────────────────────────
@@ -6187,6 +6647,7 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     // 2.12: a flag behind a veil (the target you can't see), a wave (Goon mode)
     hide: line('<path d="M4 14V2.5M4 3h7l-1.5 2.5L11 8H4"/><path d="M2 11.5h12" stroke-dasharray="1.5 1.5"/>'),
     toy: line('<path d="M1.5 8c1.2-3 2.4-3 3.6 0s2.4 3 3.6 0 2.4-3 3.6 0 1.4 2.2 2.2 1.2"/>'),
+    blindj: line('<path d="M1.5 8s2.4-4 6.5-4 6.5 4 6.5 4-2.4 4-6.5 4-6.5-4-6.5-4zM3 13L13 3"/>'),
     // 2.13.0: an eye
     eyes: line('<path d="M1.5 8S3.9 3.5 8 3.5 14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>'),
   };
@@ -7107,20 +7568,22 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     // 2.12: the conditions a run would start with: Toy in charge needs
     // Intiface Sync 1.49 (kept in the setup, so it comes back once it is there)
     const setupConds = () => {
-      if (!S.conds.toy || goonApi()) return S.conds;
+      if (!S.conds.toy || (goonApi() && (!S.conds.blindj || blindApi()))) return S.conds;
       const c = { ...S.conds };
-      delete c.toy;
+      delete c.blindj;
+      if (!goonApi()) delete c.toy;
       return c;
     };
-    // Goon mode's style, level and pace for Toy in charge, and whether
+    // Goon mode's Journey, length, start and pace for Toy in charge, and whether
     // Intiface Sync can drive the toy now (the run can start either way)
     const toyOptsHtml = () => {
       const t = normaliseToy(S.toy), st = toyCtl.status();
       const sel = (k, opts, v) => `<select data-toy="${k}" aria-label="${tc(`Goon 模式 ${k}`, `Goon mode ${k}`)}">${opts.map(([o, l]) =>
         `<option value="${o}"${String(v) === String(o) ? " selected" : ""}>${escapeHtml(l)}</option>`).join("")}</select>`;
-      return `<div class="ld-toyopts" data-a="toyopts"><label>${tc("风格", "Style")} ${sel("style", TOY_STYLES, t.style)}</label>` +
-        `<label>${tc("等级", "Level")} ${sel("level", Array.from({ length: 10 }, (_, i) => [i + 1, String(i + 1)]), t.level)}</label>` +
-        `<label>${tc("节奏", "Pace")} ${sel("pace", TOY_PACES, t.pace)}</label>` +
+      return `<div class="ld-toyopts" data-a="toyopts"><label>${tc("旅程", "Journey")} ${sel("journey", toyJourneys(), t.journey)}</label>` +
+        `<label>${tc("时长", "Length")} ${sel("length", TOY_LENGTHS.map((m) => [m, tc(`${m} 分钟`, `${m} min`)]), t.length)}</label>` +
+        `<label>${tc("起始功率", "Starts at Power")} ${sel("level", Array.from({ length: 10 }, (_, i) => [i + 1, String(i + 1)]), t.level)}</label>` +
+        `<label>${tc("节奏", "Pace")} ${sel("pace", toyPaces(), t.pace)}</label>` +
         `<span class="ld-hint ld-toyst${st.ok ? "" : " ld-toyno"}">${st.ok
           ? tc("Intiface Sync 已就绪。对局开始后，按 <b>启动玩具</b>（在顶栏或对局页）。", "Intiface Sync is ready. Once the run begins, press <b>Start the toy</b> (in the bar or on the run page).")
           : tc(`Intiface Sync 现在无法驱动玩具：${escapeHtml(st.why)}。对局仍可开始；玩具只能从「启动玩具」启动，且只有 Goon 模式运行达到观看时间的 ${Math.round(TOY_SHARE * 100)}% 时热度才计入。`, `Intiface Sync can't drive the toy now: ${escapeHtml(st.why)}. The run can still start; the toy starts only from Start the toy, and the heat counts only if Goon mode runs for ${Math.round(TOY_SHARE * 100)}% of your watched time.`)}</span></div>`;
@@ -7181,12 +7644,14 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
       const heat = io ? 0 : heatOf(C, S.goal);
       const covered = (c) => c.k === "stay" && S.goal === "timer" && !!S.conds.one;   // One scene does it already
       const free = conditions().filter((c) => c.noHeat && condApplies(c, S.goal));
-      $("conds").innerHTML = conditions().filter((c) => !c.noHeat && condApplies(c, S.goal)).map((c) => {
-        const na = c.needs === "goon" && !goonApi();
+      $("conds").innerHTML = conditions().filter((c) => !c.noHeat && condApplies(c, S.goal) && (!c.with || S.conds[c.with])).map((c) => {
+        // 2.22: Blind Journey only with Toy in charge on, and an Intiface Sync that can
+        const na = c.needs === "goon" && (!goonApi() || (c.k === "blindj" && !blindApi()));
+        const needText = tc(c.k === "blindj" ? "需要 Intiface Sync 1.67 或更高版本" : "需要 Intiface Sync 1.49 或更高版本", c.k === "blindj" ? BLIND_NEEDS : TOY_NEEDS);
         const r = na ? 0 : S.conds[c.k] || 0;
-        return `<div class="ld-cond${r ? " ld-on" : ""}${na ? " ld-condna" : ""}" data-cond="${c.k}"${na ? ` aria-disabled="true" title="${TOY_NEEDS}"` : ""}>` +
+        return `<div class="ld-cond${r ? " ld-on" : ""}${na ? " ld-condna" : ""}" data-cond="${c.k}"${na ? ` aria-disabled="true" title="${needText}"` : ""}>` +
           `<span class="ld-condico">${COND_ICON[c.k]}</span>` +
-          `<span class="ld-condtxt"><b>${escapeHtml(c.name)}</b>${r ? `<em>${escapeHtml(c.ranks[r - 1])}</em>` : na ? `<em class="ld-na">${TOY_NEEDS}</em>` : ""}<small title="${escapeHtml(c.text)}">${escapeHtml(c.text)}</small></span>` +
+          `<span class="ld-condtxt"><b>${escapeHtml(c.name)}</b>${r ? `<em>${escapeHtml(c.ranks[r - 1])}</em>` : na ? `<em class="ld-na">${needText}</em>` : ""}<small title="${escapeHtml(c.text)}">${escapeHtml(c.text)}</small></span>` +
           `<span class="ld-pips">${c.ranks.map((rk, i) => `<button class="ld-pip${i < r ? " ld-on" : ""}" data-pip="${i + 1}" ` +
             `title="${escapeHtml(rk)} · +${c.heat[i]} ${tc("热度", "heat")}" aria-label="${escapeHtml(c.name)}: ${escapeHtml(rk)}"${na ? " disabled" : ""}></button>`).join("")}</span>` +
           `<span class="ld-condheat"${covered(c) && r ? ` title="${tc("单一场景已经让你停在同一个场景上", "One scene already keeps you on one scene")}"` : ""}>${r ? (covered(c) ? "+0" : `+${c.heat[r - 1]}`) : "0"}</span></div>` +
@@ -7276,9 +7741,10 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
         const r = S.conds[c.k] || 0;
         const next = pip ? (+pip.dataset.pip === r ? r - 1 : +pip.dataset.pip) : (r + 1) % (c.ranks.length + 1);
         // 2.12: Toy in charge needs Intiface Sync 1.49 (one left on in a preset can still be turned off)
-        if (c.needs === "goon" && !goonApi() && next > 0) { err(tc(`玩具主导需要 ${TOY_NEEDS} 或更新版本，已安装并开启。`, `Toy in charge ${TOY_NEEDS} or later, installed and on.`)); return; }
+        if (c.needs === "goon" && !goonApi() && next > 0) { err(tc("玩具主导需要 Intiface Sync 1.49 或更高版本，且已安装并开启。", `Toy in charge ${TOY_NEEDS} or later, installed and on.`)); return; }
+        if (c.k === "blindj" && !blindApi() && next > 0) { err(tc("盲抽旅程需要 Intiface Sync 1.67 或更高版本。", `Blind Journey ${BLIND_NEEDS} or later.`)); return; }
         S.conds = { ...S.conds, [c.k]: next };
-        if (!next) delete S.conds[c.k];
+        if (!next) { delete S.conds[c.k]; for (const d of conditions()) if (d.with === c.k) delete S.conds[d.k]; }
         err("");
         render();
         return;
@@ -7313,7 +7779,7 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     });
     box.addEventListener("change", (ev) => {
       const tk = ev.target.dataset && ev.target.dataset.toy;
-      if (tk) { S.toy = normaliseToy({ ...S.toy, [tk]: tk === "level" ? Number(ev.target.value) : ev.target.value }); render(); return; }
+      if (tk) { S.toy = normaliseToy({ ...S.toy, [tk]: tk === "level" || tk === "length" ? Number(ev.target.value) : ev.target.value }); render(); return; }
       const k = ev.target.dataset && ev.target.dataset.time;
       if (!k) return;
       const v = parseMinutes(ev.target.value);
@@ -7880,12 +8346,13 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     if (!el) return;
     if (!lock || !lock.toy) { if (el.innerHTML) { el.innerHTML = ""; el.dataset.k = ""; } return; }
     const t = lock.toy, live = toyCtl.live(lock), av = live ? { ok: true } : toyCtl.status();
-    const k = `${live}|${av.ok}|${av.why || ""}|${t.style}|${t.level}|${t.pace}`;
+    const n = normaliseToy(t);
+    const k = `${live}|${av.ok}|${av.why || ""}|${n.journey}|${n.length}|${n.level}|${n.pace}|${!!t.blind}`;
     if (el.dataset.k !== k) {
       el.dataset.k = k;
-      const pace = (TOY_PACES.find(([p]) => p === t.pace) || [t.pace, t.pace])[1];
+      const pace = (toyPaces().find(([p]) => p === n.pace) || [n.pace, n.pace])[1];
       el.innerHTML = `<div class="ld-toycard${live ? " ld-on" : ""}"><div class="ld-toyhead">${COND_ICON.toy}<b>${tc("玩具主导", "Toy in charge")}</b>` +
-          `<span>${escapeHtml(toyStyleName(t.style))} · ${tc("等级", "level")} ${t.level} · ${escapeHtml(pace)}</span></div>` +
+          `<span>${tc(`${escapeHtml(toyJourneyName(n.journey))} · ${n.length} 分钟 · 起始功率 ${n.level} · ${escapeHtml(pace)}${t.blind ? " · 盲抽" : ""}`, `${escapeHtml(toyJourneyName(n.journey))} · ${n.length} min · from Power ${n.level} · ${escapeHtml(pace)}${t.blind ? " · blind" : ""}`)}</span></div>` +
         `<p data-a="toyline"></p><p class="ld-toynums" data-a="toynums"></p>` +
         (live ? "" : `<div class="ld-toyact"><button class="ld-start ld-toygo" data-a="toygo">${COND_ICON.toy} ${tc("启动玩具", "Start the toy")}</button>` +
           (av.ok ? "" : `<span class="ld-hint ld-toyno">${escapeHtml(av.missing ? tc("玩具主导需要 Intiface Sync 1.49。", `Toy in charge ${TOY_NEEDS}.`) : tc(`Intiface Sync 现在无法驱动玩具：${av.why}。`, `Intiface Sync can't drive the toy now: ${av.why}.`))}</span>`) + `</div>`) +
@@ -7894,8 +8361,10 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     }
     const set = (a, x) => { const n = el.querySelector(`[data-a="${a}"]`); if (n && n.textContent !== x) n.textContent = x; };
     const s = live ? toyCtl.state() : null;
-    set("toyline", live ? tc(`Goon 模式正在推进蓄力${s && s.stage ? ` · ${String(s.stage)}` : ""}${s && s.level ? ` · ${tc("等级", "level")} ${s.level}` : ""}。`, `Goon mode is driving the build-up${s && s.stage ? ` · ${String(s.stage)}` : ""}${s && s.level ? ` · level ${s.level}` : ""}.`)
-      : t.starts ? tc("Goon 模式没有在这里运行：重新启动它，玩具才会继续主导。", "Goon mode isn't running here: start it again to keep the toy in charge.") : tc("还没开始：准备好后按「启动玩具」。", "Not started yet: press Start the toy when you're ready."));
+    set("toyline", live ? tc(`Goon 模式正在推进蓄力${s && s.stageName ? ` · ${String(s.stageName)}` : s && s.stage ? ` · ${String(s.stage)}` : ""}${s && s.level ? ` · 功率 ${s.level}` : ""}。`,
+        `Goon mode is driving the build-up${s && s.stageName ? ` · ${String(s.stageName)}` : s && s.stage ? ` · ${String(s.stage)}` : ""}${s && s.level ? ` · Power ${s.level}` : ""}.`)
+      : t.starts ? tc("Goon 模式不在这里运行：要保留玩具主导，请重新启动。", "Goon mode isn't running here: start it again to keep the toy in charge.")
+        : tc("尚未启动：准备好了就按「启动玩具」。", "Not started yet: press Start the toy when you're ready."));
     const ty = toyEarned(lock) || { share: 0, earned: false };
     set("toynums", tc(`玩具主导下已观看 ${fmtDuration(t.ms || 0)}，共观看 ${fmtDuration(lock.watchedMs || 0)}（${Math.round(ty.share * 100)}%；` +
       `+2 热度需要 ${Math.round(TOY_SHARE * 100)}%）${t.edges ? ` · ${t.edges} 次边缘` : ""}${t.cools ? ` · ${t.cools} 次冷却` : ""}`,
@@ -8395,7 +8864,8 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     // (the time, its meter, pace, the skips as tokens), then "Your run" on
     // its own (user: "this should be separate from these 3"), the links, the
     // icon buttons (Pictures, Start the toy, the cards, Stash settings) and
-    // Give up last. The menu keeps every link.
+    // Give up last. The menu keeps every link. 2.21: the cards moved beside the
+    // skips as slots (drawSlots); on a phone the icon and its count, as before.
     const links = barLinks(lock, hasPage);
     const run = links.find((l) => l.href === PAGE_PATH), gear = links.find((l) => l.icon);
     const plain = links.filter((l) => l !== run && l !== gear);
@@ -8408,15 +8878,16 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
       `<span class="ld-who"><b>${escapeHtml(lock.name)}</b><small>${escapeHtml(sub)}</small></span></span>` +
       `<span class="ld-bdiv" aria-hidden="true"></span>` +
       `<span class="ld-prog"></span><span class="ld-pace"></span>` +
-      `<span class="ld-skips" hidden></span><span class="ld-picn"></span>` +
+      `<span class="ld-skips" hidden></span>` +
+      // 2.16: the hand of cards; 2.17: its popover opens right under it
+      (lock.hand ? `<button data-a="hand" class="ld-handbtn" aria-haspopup="dialog" aria-expanded="false" title="${tc("你的牌", "Your cards")}" aria-label="${tc("你的牌", "Your cards")}"><span class="ld-skcap">${tc("牌", "Cards")}</span><span class="ld-slots"></span>${CARDS_ICON}<b class="ld-handn" hidden></b></button>` : "") +
+      `<span class="ld-awaytag" role="status" hidden></span><span class="ld-picn"></span>` +
       `<span class="ld-bgrow"></span>` +
       (run ? `<a href="${escapeHtml(run.href)}" data-a="link" class="ld-runbtn" title="${tc("你的对局：对局页", "Your run: the run page")}">${LOCK_SVG}<span>${tc("你的对局", "Your run")}</span></a>` : "") +
       `<span class="ld-links">` +
         (plain.length ? `<span class="ld-blinks">${plain.map(linkHtml).join("")}</span>` : "") +
-        (pics ? `<button data-a="pics" class="ld-pics" title="${tc("把本局的图片当作幻灯片播放", "Play the pictures of this run as a slideshow")}" aria-label="${tc("播放图片", "Play pictures")}">${PICS_ICON}<span>${tc("图片", "Pictures")}</span></button>` : "") +
-        (toyBtn ? `<button data-a="toy" class="ld-toybtn" title="${tc("玩具主导：让 Intiface Sync 的 Goon 模式推进蓄力", "Toy in charge: let Intiface Sync's Goon mode drive the build-up")}">${COND_ICON.toy}<span>${tc("启动玩具", "Start the toy")}</span></button>` : "") +
-        // 2.16: the hand of cards; 2.17: its popover opens right under it
-        (lock.hand ? `<button data-a="hand" class="ld-handbtn" aria-haspopup="dialog" aria-expanded="false" title="${tc("你的牌", "Your cards")}" aria-label="${tc("你的牌", "Your cards")}">${CARDS_ICON}<b class="ld-handn" hidden></b></button>` : "") +
+        (pics ? `<button data-a="pics" class="ld-pics" title="${tc("把本盘图片当幻灯片播放", "Play the pictures of this run as a slideshow")}" aria-label="${tc("播放图片", "Play pictures")}">${PICS_ICON}<span>${tc("图片", "Pictures")}</span></button>` : "") +
+        (toyBtn ? `<button data-a="toy" class="ld-toybtn" title="${tc("玩具主导：由 Intiface Sync 的 Goon 模式推进蓄力", "Toy in charge: let Intiface Sync's Goon mode drive the build-up")}">${COND_ICON.toy}<span>${tc("启动玩具", "Start the toy")}</span></button>` : "") +
         (gear ? linkHtml(gear) : "") +
         `<button data-a="menu" class="ld-menubtn" title="${tc(`更多：${escapeHtml(links.map((l) => l.label).join(", "))}`, `More: ${escapeHtml(links.map((l) => l.label).join(", "))}`)}" aria-label="${tc("更多", "More")}" aria-haspopup="true" aria-expanded="false">${MORE_ICON}</button>` +
       `</span>` +
@@ -8472,13 +8943,9 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
   // green, broken; a tag card ready with its picture and counts, recharging
   // with a fill, its round done and still playable); in the popover as rows
   // with the tag's thumbnail. `st`: the tag cards' scenes (cardStatsFor).
-  const HOLD_SHOW_MS = 20000, SOON_MS = 2 * 60000;
+  const HOLD_SHOW_MS = 20000;
   let holdDone = null;                 // { t: "kept" | "broken", at, pts, k }: shown a little while
   let raceDone = null;                 // 2.19: { t: "won" | "lost", at }: the same for the Race
-  const minTxt = (ms) => tc(`${Math.max(1, Math.ceil(ms / 60000))} 分钟`, `${Math.max(1, Math.ceil(ms / 60000))} min`);
-  // the hold cards' names and tooltips (HOLD_KINDS, above) in the page's words
-  const holdName = (k) => tc(k.stay ? k.name.replace("Stay ", "停留 ") : "盯着画面", k.name);
-  const holdText = (k) => tc(k.stay ? `在本场景游玩 ${Math.round(k.ms / 60000)} 分钟；打开别的场景会失去它` : `游玩 ${Math.round(k.ms / 60000)} 分钟，期间不切换标签页或应用`, k.text);
   function handNote(hand, w) {
     if (!hand) return "";
     const n = handReady(hand, w);
@@ -8641,7 +9108,34 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     pop.hidden = !on;
     bar.querySelector('[data-a="hand"]')?.setAttribute("aria-expanded", on ? "true" : "false");
     bar.querySelector('[data-a="hand"]')?.classList.toggle("ld-open", !!on);
-    if (on) { pop.dataset.k = ""; drawHand(); placeHand(); }
+    if (on) { cardNew = {}; pop.dataset.k = ""; drawHand(); placeHand(); }
+  }
+  // 2.21: the slots. Drawn again only when one changes kind, or a blink would
+  // start over with every tick; the lines under them and the tooltips are
+  // patched in place. A new card blinks, then stays lit until the cards are
+  // opened or CARD_NEW_MS has passed: a blink is easy to miss during a scene.
+  const CARD_NEW_MS = 2 * 60000;
+  let cardNew = {};
+  const SLOT_ICON = { hold: (s) => holdIcon(s.k), skip: () => COND_ICON.skip, tag: () => TAG_ICON, race: () => CARD_ICON.race };
+  const slotCls = (s) => `ld-slot ld-s${s.g}${s.on ? " ld-on" : ""}${s.wait ? " ld-wait" : ""}${s.live ? " ld-live" : ""}${s.soon ? " ld-soon" : ""}${s.fresh ? " ld-new" : ""}`;
+  function drawSlots(w) {
+    const box = bar.querySelector(".ld-slots"), btn = bar.querySelector('[data-a="hand"]');
+    if (!box || !btn) return;
+    const now = Date.now(), raw = handSlots(lock.hand, w, { skips: skipBudget() !== null && lock.media !== "images", now }), list = slotsFresh(raw, cardNew, now);
+    const k = list.map((s) => `${slotCls(s)}|${s.on || s.wait ? s.k || "" : ""}`).join(",");
+    if (box.dataset.k !== k) {
+      box.dataset.k = k;
+      box.innerHTML = list.map((s, i) => `${i && list[i - 1].g !== s.g ? `<span class="ld-slotgap"></span>` : ""}<i class="${slotCls(s)}">${s.on || s.wait ? SLOT_ICON[s.g](s) : ""}<u></u></i>`).join("");
+    }
+    const els = box.querySelectorAll(".ld-slot");
+    list.forEach((s, i) => {
+      const el = els[i];
+      if (!el) return;
+      if (el.title !== s.tip) el.title = s.tip;
+      if (s.f != null) el.style.setProperty("--f", s.f.toFixed(3));
+    });
+    const words = handWords(raw);
+    if (btn.dataset.w !== words) { btn.dataset.w = words; btn.title = tc(`你的牌：${words}`, `Your cards: ${words}`); btn.setAttribute("aria-label", tc(`你的牌：${words}`, `Your cards: ${words}`)); }
   }
   function drawHand() {
     if (!bar || !lock || !lock.hand) return;
@@ -8651,6 +9145,7 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     const t = lock.hand.hold || racing ? "•" : n ? String(n) : "";
     if (b && b.textContent !== t) { b.textContent = t; b.hidden = !t; }
     bar.querySelector('[data-a="hand"]')?.classList.toggle("ld-hasready", !!n || !!lock.hand.hold || racing);
+    drawSlots(w);
     const pop = bar.querySelector(".ld-handpop");
     if (pop && !pop.hidden) { const hh = handHtml(lock.hand, w, false, cardStatsFor(lock)); if (pop.dataset.k !== hh) { pop.dataset.k = hh; pop.innerHTML = hh; } }
     holdChip();
@@ -8778,11 +9273,14 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
       else if (ev.t === "race-lost") { raceDone = { t: "lost", at: now }; sound("thud"); flash(tc(`竞赛失败：时间到了 · −${RACE_LOSE}`, `Race lost: time ran out · −${RACE_LOSE}`)); }
       else if (ev.t === "dealt") {
         flash(ev.k === "race" ? tc(`竞赛牌：打出它，然后在 ${RACE_MS / 60000} 分钟内完成可得 +${RACE_WIN}`, `The Race card: play it, then finish within ${RACE_MS / 60000} minutes for +${RACE_WIN}`)
-          : ev.k === "skip" ? tc(`跳过牌：场景跳过用完后可再跳一次，留到最后每张 +${SKIP_CARD_PTS}`, `A skip card: one more skip when a scene is out of them, or +${SKIP_CARD_PTS} if you keep it`)
-          : tc(`坚持牌${HOLD_KINDS[ev.k] && HOLD_KINDS[ev.k].stay ? `（${holdName(HOLD_KINDS[ev.k])}）` : ""}：想用时再打`, `A hold card${HOLD_KINDS[ev.k] && HOLD_KINDS[ev.k].stay ? `, ${HOLD_KINDS[ev.k].name}` : ""}: play it when you like`));
-        // 2.17: the cards button's count pulses once
+          : ev.k === "skip" ? tc(`跳过牌：场景的跳过配额用完后可再跳一次，留到最后每张 +${SKIP_CARD_PTS}`, `A skip card: one more skip when a scene is out of them, or +${SKIP_CARD_PTS} if you keep it`)
+          : tc(`坚持牌${HOLD_KINDS[ev.k] && HOLD_KINDS[ev.k].stay ? `（${HOLD_KINDS[ev.k].name}）` : ""}：想用时再打`, `A hold card${HOLD_KINDS[ev.k] && HOLD_KINDS[ev.k].stay ? `, ${HOLD_KINDS[ev.k].name}` : ""}: play it when you like`));
+        // 2.21: the new slot blinks and stays lit (drawSlots), the box around
+        // them pulses, and a card now makes a sound
+        cardNew[ev.k === "skip" ? "skip" : ev.k === "race" ? "race" : "hold"] = now + CARD_NEW_MS;
+        sound("card");
         const hb = bar && bar.querySelector('[data-a="hand"]');
-        if (hb) { hb.classList.add("ld-pulse"); setTimeout(() => hb.classList.remove("ld-pulse"), 1200); }
+        if (hb) { hb.classList.add("ld-pulse"); setTimeout(() => hb.classList.remove("ld-pulse"), 3400); }
       }
     }
     if (r.hand !== lock.hand) handSet(r.hand, r.events.some((e) => e.t === "passed" || e.t === "race-lost") || hand !== lock.hand);
@@ -8896,6 +9394,9 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     };
     const frame = () => {
       if (!started) return;
+      // 2.22.2 (audit): a bar redrawn during the hold takes this button away with
+      // the release; its timer must not give the run up 5 s later
+      if (!btn.isConnected) { stop(); return; }
       const t = (Date.now() - started) / HOLD_MS;
       fill.style.width = Math.min(100, t * 100) + "%";
       btn.querySelector("span").textContent = t < 1 ? tc(`继续按住… ${Math.ceil((1 - t) * HOLD_MS / 1000)}`, `Keep holding… ${Math.ceil((1 - t) * HOLD_MS / 1000)}`) : btn.dataset.cancel ? tc("已取消", "Cancelled") : tc("已放弃", "Given up");
@@ -8929,6 +9430,7 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     if (prefs().barTipSeen || document.getElementById("ld-tip") || !lock) return;
     const tip = document.createElement("div");
     tip.id = "ld-tip";
+    tip.setAttribute("role", "tooltip");   // 2.22.2: a role keeps it solid under see-through panels
     tip.style.top = navHeight() + 8 + "px";
     tip.innerHTML = `${tc("只有 ", "Only ")}<b>${escapeHtml(lock.name)}</b> ${tc("直到你出局，所有设备同步。用这条顶栏里的链接", "until you get out, on every device. Use the links in this bar")} ` +
       `${tc("四处移动；长按", "to move around; hold")} <b>${tc("放弃", "Give up")}</b> ${tc("5 秒即可退出。", "for 5 seconds to quit.")} <button>${tc("知道了", "Got it")}</button>`;
@@ -9001,6 +9503,7 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     }
     guard("hand", () => handStep(now));
     guard("pace", () => paceStep(now));
+    guard("away", () => drawAway(now));
     // 2.9: new pictures viewed this run
     const pn = bar.querySelector(".ld-picn"), np = (lock.pics || []).length;
     if (pn && pn.textContent !== (np ? `${tc("图片 " + np, "Pictures " + np)}` : "")) { pn.textContent = np ? tc(`图片 ${np}`, `Pictures ${np}`) : ""; pn.title = np ? tc(`本次新看了 ${np} 张图片：热度前 +${np}`, `${np} new pictures viewed: +${np} before heat`) : ""; }
@@ -9294,8 +9797,13 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     // announced while away past the grace does not count
     lastShowAt = Date.now();
     if (eyesOn() && eyesAway(Date.now())) return;
-    lock.watchedMs = (lock.watchedMs || 0) + ms;
-    if (lock.toy && toyCtl.live(lock)) lock.toy = { ...lock.toy, ms: (lock.toy.ms || 0) + ms };   // 2.12
+    // 2.22.2 (audit): a picture left paused counted as watching, so a run could run
+    // out with nobody there; Slideshow 0.8.1 says how much of it was playing
+    const live = typeof ev.detail.liveMs === "number" ? Math.min(Math.max(0, ev.detail.liveMs), ms) : ms;
+    if (live > 0) {
+      lock.watchedMs = (lock.watchedMs || 0) + live;
+      if (lock.toy && toyCtl.live(lock)) lock.toy = { ...lock.toy, ms: (lock.toy.ms || 0) + live };   // 2.12
+    }
     dirty = true;
     writeState(lock);
     // 2.9: and the picture it was, toward the pictures' points
@@ -9556,8 +10064,14 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
   // with none.
   let eyesAt = 0, lastShowAt = 0;
   function eyesOn() { return !!(lock && lock.rules && lock.rules.eyes && lock.media !== "images"); }
+  // 2.21.1: Intiface Sync's pad in its own window (1.53) is the same page: a
+  // click on it takes the focus from this window, and that is not looking away
+  function padWindowFocused() {
+    try { const s = window.IntifaceSync; return !!(s && typeof s.padFocused === "function" && s.padFocused()); }
+    catch (_) { return false; }
+  }
   function awayHere() {
-    try { return document.visibilityState === "hidden" || (typeof document.hasFocus === "function" && !document.hasFocus()); }
+    try { return document.visibilityState === "hidden" || (typeof document.hasFocus === "function" && !document.hasFocus() && !padWindowFocused()); }
     catch (_) { return false; }
   }
   function playingHere() {
@@ -9566,6 +10080,16 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     return Date.now() - lastShowAt < 10000;
   }
   const eyesAway = (now) => !!eyesAt && now - eyesAt > EYES_GRACE_MS;
+  // 2.21: the bar while away: yellow inside the grace, red past it, for Eyes
+  // on screen and for a hold card that would break. Only the window beside
+  // this one shows it (another monitor, a window not in front): a hidden tab
+  // cannot paint.
+  function drawAway(now) {
+    const a = awayBar(eyesAt || (lock.hand && lock.hand.hold ? holdAway : 0), now, !!eyesAt), tag = bar.querySelector(".ld-awaytag");
+    bar.classList.toggle("ld-awarn", !!a && a.lv === "warn");
+    bar.classList.toggle("ld-awayed", !!a && a.lv === "away");
+    if (tag && tag.textContent !== (a ? a.text : "")) { tag.textContent = a ? a.text : ""; tag.hidden = !a; }
+  }
   function eyesCheck() {
     if (!eyesOn()) { eyesAt = 0; return; }
     if (awayHere()) { if (!eyesAt && playingHere()) eyesAt = Date.now(); return; }
@@ -10083,7 +10607,7 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
   // (syncDecision). 2.11: with Suite Data the read is `active` alone unless
   // the history is needed (syncPlan); a finished run still waiting for its
   // write is tried again here.
-  let lastSync = 0, syncing = false, lastFull = 0;
+  let lastSync = 0, syncing = false, lastFull = 0, lastStats = null;
   async function sync(force) {
     if (syncing) return;
     const iv = pollIntervals(!!lock, lock ? pollOwnerNow() : true, !!sceneHere());
@@ -10101,17 +10625,19 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
         lastFull = Date.now();
         remote = cfg.active;
         list = cfg.list;
+        lastStats = cfg.stats;
       }
-      const d = syncDecision(lock, remote, list, endedIds, confirmedId);
+      const d = syncDecision(lock, remote, list, endedIds, confirmedId, list ? goneSet(lastStats) : null);
       // A run that already ended (in the history, or ended here moments ago
       // while this read was out) is not taken up again: a write that raced
       // the end could leave it in `active` (review, 2.2). Clear it instead,
       // unless its own end write is still to land (that write clears it).
       const ghost = d.clear;
-      if (ghost && !pendingRead().some((p) => p.id === ghost)) updateConfig(({ active }) => (active && active.id === ghost ? { active: null } : {})).catch(() => {});
+      // 2.23.0: and noted as gone, so a device still holding it ends it rather than pushing it back
+      if (ghost && !pendingRead().some((p) => p.id === ghost)) updateConfig(({ active, stats, bad }) => (active && active.id === ghost ? { active: null, ...(bad ? {} : { stats: withGone(stats, ghost) }) } : {})).catch(() => {});
       if (d.act === "adopt") adopt(d.remote);
       else if (d.act === "ended") endedElsewhere(d.entry && d.entry.result);
-      else if (d.act === "push") pushLock();
+      else if (d.act === "push") { if (d.rolledBack) log(`The lock was gone from Stash with no record (a stale Settings save?); put back`); pushLock(); }
       else if (d.act === "merge") {
         confirmedId = lock.id;
         lock = mergeLock(d.remote, lock);
@@ -10166,7 +10692,9 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
   window.addEventListener("keydown", (ev) => {
     const back = document.querySelector(".ld-modal-back");
     const t = ev.target;
-    const typing = !!t && (t.isContentEditable || (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || "") && t.type !== "checkbox"));
+    const typing = RT.isTextEntry(t);   // 2.23.0: text entry only (a slider or a button is not typing)
+    // 2.22.2 (audit): another plugin's panel that owns the keys (Ratings, Todo...) keeps them
+    if (!RT.keysFree() && !back) return;
     if (!back) {
       // 2.16: Escape closes the bar's "..." menu and the hand
       if (ev.key === "Escape" && bar) {
@@ -10197,6 +10725,9 @@ body.ld-noff .video-js .vjs-vtt-thumbnail-display, body.ld-noff .scrubber-wrappe
     if (ev.key !== STATE_KEY) return;
     const next = readState();
     const changed = !next || !lock || next.id !== lock.id;
+    // 2.22.2 (audit): ended in another tab of this browser is ended here too; a later
+    // sync could adopt it again from Stash before the end's write landed
+    if (!next && lock) endedIds.add(lock.id);
     lock = changed ? next : mergeLock(next, lock);
     toyCtl.follow(lock);            // 2.12: ended or replaced in another tab: so is the toy started here
     if (changed) { resetChecks(); confirmedId = null; pagePrefill = null; renderPage(); }
