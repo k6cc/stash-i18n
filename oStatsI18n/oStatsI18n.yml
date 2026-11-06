@@ -1,6 +1,6 @@
 name: O Stats I18n
-description: "Stash 统计页的 O 统计增强：今日与本周、全部时间与纪录、亮点、活动图表（含 O 日历与观看日历热力图）、表现最佳（演员/标签/工作室按 O 数或观看次数排名）、当日回顾（含 24 小时时间线与图片 O）与媒体库分区，并跨设备追踪观看时长。中文/英文跟随 Stash 界面语言。"
-version: 2.2.0-3
+description: "Stash 统计页的 O 统计增强：今日与本周、全部时间与纪录、亮点、活动图表（含 O 日历与观看日历热力图）、表现最佳（演员/标签/工作室按 O 数或观看次数排名）、当日回顾（含 24 小时时间线、会话与图片 O）与媒体库分区（含媒体库增长），并跨设备追踪观看时长与会话。中文/英文跟随 Stash 界面语言。"
+version: 2.3.0-1
 url: https://discourse.stashapp.cc/t/o-stats/4766/7
 ui:
   javascript:
@@ -13,7 +13,7 @@ settings:
   00_hideImageOs:
     displayName: 隐藏图片 O
     type: BOOLEAN
-    description: 不计入图片上的 O。开启显示时，图片 O 会计入今日 O 数、连续天数、单日最多 O、O 次数图表和 O 日历，在「当日回顾」时间线上显示为橙色标记并出现在其「查看的内容」列表中，另有专属的「最 O 图片」亮点。平均分钟/O 只统计场景上的 O，因为图片没有观看时长。即使开启本项，每张图片上每次 O 的时间仍会被记录。默认关闭。
+    description: 不计入图片上的 O。开启显示时，图片 O 会计入今日 O 数、连续天数、单日最多 O、O 次数图表和 O 日历，在「当日回顾」时间线上显示为蓝色标记并出现在其「查看的内容」列表中，另有专属的「最 O 图片」亮点。平均分钟/O 只统计场景上的 O，因为图片没有观看时长。即使开启本项，每张图片上每次 O 的时间仍会被记录。默认关闭。
   01_hideTopStats:
     displayName: 隐藏今日与本周统计行
     type: BOOLEAN
@@ -118,10 +118,26 @@ settings:
     displayName: '[当日回顾] 隐藏统计'
     type: BOOLEAN
     description: 隐藏「当日回顾」区块底部的统计（O 总数、观看时长、观看视频数和平均分钟/O）。默认关闭。
+  20a_hideSessions:
+    displayName: 隐藏会话
+    type: BOOLEAN
+    description: 隐藏「当日回顾」中的会话（时间线上的会话条、当日会话列表与会话统计）。会话根据 Stash 场景播放器的实际播放自动记录，开启本项后仍会保存。默认关闭。
+  20b_sessionBreakMinutes:
+    displayName: '[会话] 会话间隔（分钟）'
+    type: NUMBER
+    description: 前一段播放停止后，需空闲多久，下一个视频才会开始新会话。按观看时间计算，不看视频长度，因此长视频或短暂停顿仍属同一会话。默认 30。
+  20c_sessionMinVideos:
+    displayName: '[会话] 构成会话所需视频数'
+    type: NUMBER
+    description: 会话至少包含多少个视频才会出现在「当日回顾」中。视频更少的会话仍计入观看时长。默认 2。
   21_showLibraryStats:
     displayName: 显示媒体库统计
     type: BOOLEAN
     description: 在页面底部显示「媒体库」分区（场景、图片、图库、演员、工作室、合集和标签）。默认关闭。
+  21a_hideLibraryGrowth:
+    displayName: 隐藏媒体库增长
+    type: BOOLEAN
+    description: 隐藏页面底部的「媒体库增长」图表，它按视频数、存储或 O 数，以月或年展示媒体库随时间的增长。该图表最后加载，因为需要媒体库中的全部场景。默认关闭。
   22_hideExportImportButtons:
     displayName: 隐藏导出/导入按钮
     type: BOOLEAN

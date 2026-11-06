@@ -4,7 +4,7 @@
   if (window.__oStatsI18nLoaded) return
   window.__oStatsI18nLoaded = true
 
-  var PLUGIN_VERSION = '2.2.0-3'
+  var PLUGIN_VERSION = '2.3.0-1'
   var PLUGIN_ID = 'oStatsI18n'
   console.log('[oStatsI18n] O Stats I18n v' + PLUGIN_VERSION + ' loaded')
 
@@ -73,7 +73,13 @@
     return `${h}:${mm}${ampm}`
   }
 
-  // ===== UTILITY FUNCTIONS (Replaces CommunityScriptsUILibrary dependency) =====
+  // Reloading plugins in Stash runs this again without reloading the page.
+  // The newest copy takes over, so the old one doesn't count watch time or
+  // save image O's a second time.
+  const instanceId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`
+  window.__oStatsI18nInstance = instanceId
+  const isCurrentInstance = () => window.__oStatsI18nInstance === instanceId
+
   // ===== UTILITY FUNCTIONS =====
 
   // Extra console output for troubleshooting; turn on by running
@@ -196,7 +202,12 @@
       studio: scene.studio
         ? { id: scene.studio.id, name: scene.studio.name }
         : null,
-      files: [{ basename: scene.files?.[0]?.basename || '' }],
+      files: [
+        {
+          basename: scene.files?.[0]?.basename || '',
+          duration: scene.files?.[0]?.duration || 0,
+        },
+      ],
       paths: { screenshot: scene.paths?.screenshot || '' },
     }
   }
@@ -217,7 +228,7 @@
             performers { id name image_path }
             tags { id name }
             studio { id name }
-            files { basename }
+            files { basename duration }
             paths { screenshot }
           }
         }
@@ -338,11 +349,152 @@
   // sleeping mid-video aren't counted. Seconds are collected here and sent
   // every minute, and whenever playback stops or the page is left; the
   // server adds them to the day's total (osaver.py).
+  //
+  // What played when is saved too, as playback stretches: one scene played
+  // with no break longer than a minute, with its start, end and the time
+  // actually watched. Sessions are worked out from them. Each stretch has
+  // an id, so saving it again as it grows (or after a failed save) just
+  // updates it.
+  //
+  // A video's first 30 seconds are held, and dropped if another video
+  // starts before then, unless Stash counts it as played (or it gets an O)
+  // first. That keeps out videos that start on their own after another
+  // ends, or that are clicked through. Everything else that plays is
+  // saved; sessions only use the ones Stash counted as watched (see
+  // buildSessions).
 
   const SAVE_INTERVAL_MS = 60000
+  const STRETCH_BREAK_MS = 60000
 
   let pendingSeconds = 0 // watched but not saved yet
   let pendingDay = null // the day those seconds belong to
+  let currentStretch = null // the stretch playing now
+  const unsavedStretches = new Map() // id -> stretch, changed since saved
+
+  function getPlayingSceneId() {
+    return /^\/scenes\/(\d+)/.exec(window.location.pathname)?.[1] || null
+  }
+
+  // The scene the player is actually playing, from its stream address
+  // (/scene/606/stream...). When a video ends and the next one starts, the
+  // page moves on a moment before the player does, so the page's scene
+  // would get the last second of the old video.
+  function getVideoSceneId(video) {
+    return (
+      /\/scene\/(\d+)\/stream/.exec(video.currentSrc || '')?.[1] ||
+      getPlayingSceneId()
+    )
+  }
+
+  const MIN_SAVED_SECONDS = 30
+  let visitSceneId = null // the video playing now
+  let visitSaving = false // past its first 30 seconds, or counted
+  let heldSeconds = 0
+  const heldStretches = new Map()
+  const countedScenes = new Set() // counted by Stash before playing here
+
+  // A different video: what was held for the last one is dropped
+  function startVisit(sceneId) {
+    if (sceneId === visitSceneId) return
+    if (heldSeconds > 0) {
+      debugLog(
+        `Scene ${visitSceneId} played ${Math.round(heldSeconds)}s: not saved`,
+      )
+    }
+    visitSceneId = sceneId
+    // Carrying on after a reload, or already counted
+    const recalled = recallStretch()
+    visitSaving =
+      countedScenes.delete(sceneId) ||
+      (recalled?.scene === sceneId && !!recalled.saving)
+    heldSeconds = 0
+    heldStretches.clear()
+  }
+
+  function startSaving() {
+    visitSaving = true
+    if (heldSeconds > 0) addPlayedSeconds(heldSeconds)
+    heldStretches.forEach((stretch, id) => {
+      stretch.saving = true
+      unsavedStretches.set(id, stretch)
+    })
+    heldSeconds = 0
+    heldStretches.clear()
+    // So a reload carries on saving
+    if (currentStretch?.saving) rememberStretch(currentStretch)
+  }
+
+  // Stash counted a play of (or an O on) a scene
+  function countScene(sceneId) {
+    if (sceneId !== visitSceneId) {
+      countedScenes.add(sceneId)
+    } else if (!visitSaving) {
+      debugLog(`Scene ${sceneId} counted by Stash: saving it`)
+      startSaving()
+    }
+  }
+
+  function addPlayed(seconds, sceneId) {
+    if (!sceneId) return
+    startVisit(sceneId)
+    const stretch = addPlayedStretch(seconds, sceneId)
+    if (visitSaving) {
+      addPlayedSeconds(seconds)
+      if (!stretch.saving) {
+        stretch.saving = true
+        rememberStretch(stretch)
+      }
+      unsavedStretches.set(stretch.id, stretch)
+      return
+    }
+    heldSeconds += seconds
+    heldStretches.set(stretch.id, stretch)
+    if (heldSeconds >= MIN_SAVED_SECONDS) startSaving()
+  }
+
+  // The stretch playing now is remembered in this tab (sessionStorage), so
+  // reloading the page carries on with it instead of starting a new one
+  const STRETCH_KEY = 'oStatsI18n_current_stretch'
+  let stretchRememberedAt = 0
+  function rememberStretch(stretch) {
+    try {
+      sessionStorage.setItem(STRETCH_KEY, JSON.stringify(stretch))
+    } catch (e) {}
+  }
+  function recallStretch() {
+    try {
+      return JSON.parse(sessionStorage.getItem(STRETCH_KEY) || 'null')
+    } catch (e) {
+      return null
+    }
+  }
+
+  function addPlayedStretch(seconds, sceneId) {
+    if (!sceneId) return
+    const now = Date.now()
+    if (!currentStretch) currentStretch = recallStretch()
+    const isNew =
+      !currentStretch ||
+      currentStretch.scene !== sceneId ||
+      now - currentStretch.endMs > STRETCH_BREAK_MS
+    if (isNew) {
+      currentStretch = {
+        id: `${now.toString(36)}${Math.random().toString(36).slice(2, 7)}`,
+        scene: sceneId,
+        startMs: now - seconds * 1000,
+        endMs: now,
+        seconds: 0,
+      }
+    }
+    currentStretch.endMs = now
+    currentStretch.seconds += seconds
+    // Every few seconds is plenty to carry on after a reload
+    if (isNew || now - stretchRememberedAt > 5000) {
+      rememberStretch(currentStretch)
+      stretchRememberedAt = now
+    }
+    return currentStretch
+  }
 
   function getTodayDate() {
     return getLocalDateString(new Date())
@@ -388,25 +540,54 @@
     pendingSeconds += seconds
   }
 
-  // Send the whole seconds collected so far; the rest stays for next time
+  // Send the whole seconds collected so far (the rest stays for next time)
+  // and the stretches that changed
   function saveWatchTime({ keepalive = false } = {}) {
+    // Up to date for a reload, which saves first
+    if (currentStretch) rememberStretch(currentStretch)
     const seconds = Math.floor(pendingSeconds)
-    if (seconds <= 0) return
-    const day = pendingDay
-    pendingSeconds -= seconds
+    const stretches = [...unsavedStretches.values()]
+    if (seconds <= 0 && stretches.length === 0) return
+    const day = pendingDay || getTodayDate()
+    pendingSeconds -= Math.max(0, seconds)
+    unsavedStretches.clear()
 
-    runPluginOperation({ mode: 'add', day, seconds }, { keepalive })
-      .then((total) => debugLog(`Saved ${seconds}s for ${day} (${total}s)`))
+    const playback = stretches.map((stretch) => ({
+      id: stretch.id,
+      scene: stretch.scene,
+      start: Math.floor(stretch.startMs / 1000),
+      end: Math.ceil(stretch.endMs / 1000),
+      seconds: Math.round(stretch.seconds),
+    }))
+    runPluginOperation(
+      {
+        mode: 'add',
+        day,
+        seconds: Math.max(0, seconds),
+        playback: JSON.stringify(playback),
+      },
+      { keepalive },
+    )
+      .then((total) =>
+        debugLog(
+          `Saved ${seconds}s for ${day} (${total}s), ${playback.length} stretch(es)`,
+        ),
+      )
       .catch((err) => {
         console.error('[OStats] Failed to save watch time:', err)
-        // Keep the seconds to try again with the next save
-        if (pendingDay === day) pendingSeconds += seconds
+        // Keep the seconds and stretches to try again with the next save
+        if (pendingDay === day && seconds > 0) pendingSeconds += seconds
+        stretches.forEach((stretch) => {
+          if (!unsavedStretches.has(stretch.id)) {
+            unsavedStretches.set(stretch.id, stretch)
+          }
+        })
       })
   }
 
   function trackPlayer(video) {
-    if (video.dataset.ostatsTracking) return
-    video.dataset.ostatsTracking = 'true'
+    if (video.dataset.ostatsTracking === instanceId) return
+    video.dataset.ostatsTracking = instanceId
     debugLog('Tracking scene player')
 
     let lastMediaTime = video.currentTime
@@ -418,6 +599,7 @@
     }
 
     video.addEventListener('timeupdate', () => {
+      if (!isCurrentInstance()) return
       const now = performance.now()
       const played =
         (video.currentTime - lastMediaTime) / (video.playbackRate || 1)
@@ -427,7 +609,7 @@
       // Normal playback moves forward about as fast as the clock. Seeks
       // jump further (or backwards), so they're left out.
       if (played > 0 && played <= elapsed + 1 && isOnScenePage()) {
-        addPlayedSeconds(played)
+        addPlayed(played, getVideoSceneId(video))
       }
     })
     video.addEventListener('seeking', resetBaseline)
@@ -518,11 +700,28 @@
     }
   }
 
+  // Stash counting a play of (or an O on) a scene; until then a video's
+  // first 30 seconds are held (see Watch Time Tracking)
+  const SCENE_COUNTED_MUTATION =
+    /\bscene(AddPlay|IncrementPlayCount|AddO|IncrementO)\b/
+
   const originalFetch = window.fetch
   window.fetch = function (input, init) {
     const request = originalFetch.apply(this, arguments)
+    // The newest copy (wrapping this one) handles it
+    if (!isCurrentInstance()) return request
     try {
       const body = typeof init?.body === 'string' ? init.body : ''
+      if (body.includes('scene') && SCENE_COUNTED_MUTATION.test(body)) {
+        const sceneId = String(JSON.parse(body).variables?.id || '')
+        if (sceneId) {
+          request
+            .then((response) => {
+              if (response.ok) countScene(sceneId)
+            })
+            .catch(() => {})
+        }
+      }
       const match = body.includes('image') && IMAGE_O_MUTATION.exec(body)
       if (match) {
         const { variables } = JSON.parse(body)
@@ -576,13 +775,14 @@
           ? {
               watchTime: data.watch_time || {},
               imageOHistory: data.image_o_history || {},
+              playback: Array.isArray(data.playback) ? data.playback : [],
             }
-          : { watchTime: data, imageOHistory: {} }
+          : { watchTime: data, imageOHistory: {}, playback: [] }
       }
     } catch (e) {
       console.error('[OStats] Failed to load O Stats data:', e)
     }
-    return { watchTime: {}, imageOHistory: {} }
+    return { watchTime: {}, imageOHistory: {}, playback: [] }
   }
 
   // ===== UI BUILDING BLOCKS =====
@@ -684,7 +884,11 @@
   }
 
   function getImageTitle(image) {
-    return image.title || image.files[0]?.basename || `Image ${image.id}`
+    return (
+      image.title ||
+      image.files[0]?.basename ||
+      tc(`图片 ${image.id}`, `Image ${image.id}`)
+    )
   }
 
   // "1h 5m", "12m", "40s"
@@ -696,6 +900,15 @@
     if (seconds > 0)
       return tc(`${Math.floor(seconds)}秒`, `${Math.floor(seconds)}s`)
     return tc('0分', '0m')
+  }
+
+  // A video's or session's time watched: past a minute, more than 30
+  // seconds into the next one counts as a whole one (1m 33s is 2m, 1m 20s
+  // is 1m)
+  function formatWatched(seconds) {
+    if (seconds < 60) return formatDuration(seconds)
+    const minutes = Math.floor(seconds / 60) + (seconds % 60 > 30 ? 1 : 0)
+    return formatDuration(minutes * 60)
   }
 
   // Longer spans get days: "1d 17h 41m"
@@ -951,7 +1164,11 @@
       jsonBtn.innerText = tc('⏳ 导出中...', '⏳ Exporting...')
 
       try {
-        const { watchTime: watchTimeData, imageOHistory } = await loadOData()
+        const {
+          watchTime: watchTimeData,
+          imageOHistory,
+          playback,
+        } = await loadOData()
 
         // Watch time and scene O count per day
         const cleanedData = {}
@@ -965,12 +1182,13 @@
           })
 
         // Create JSON with metadata. Image O's are saved even with Hide
-        // Image O's on.
+        // Image O's on; playback is what sessions are worked out from.
         const exportData = {
-          version: '4.0',
+          version: '5.0',
           exported: new Date().toISOString(),
           data: cleanedData,
           image_o_history: imageOHistory,
+          playback,
           totalDays: Object.keys(cleanedData).length,
           totalSeconds: Object.values(cleanedData).reduce(
             (sum, dayData) => sum + dayData.seconds,
@@ -1017,8 +1235,8 @@
     // Help icon with tooltip (on the right)
     const helpIcon = createEl('div', 'os-help', '?')
     helpIcon.title = tc(
-      '观看时长与图片 O 的时间存储在您的 Stash 服务器上，并在所有设备间同步。使用导出可将数据备份为 JSON 文件，使用导入可恢复数据。',
-      "Watch time and the times of image O's are stored on your Stash server and sync across all devices. Use Export to backup your data to a JSON file and Import to restore it.",
+      '观看时长、会话与图片 O 的时间存储在您的 Stash 服务器上，并在所有设备间同步。使用导出可将数据备份为 JSON 文件，使用导入可恢复数据。',
+      "Watch time, sessions and the times of image O's are stored on your Stash server and sync across all devices. Use Export to backup your data to a JSON file and Import to restore it.",
     )
     container.appendChild(helpIcon)
 
@@ -1051,26 +1269,32 @@
             throw new Error('Invalid file format')
           }
 
-          // Replaces all watch time with the file's, and the image O's too
-          // when the file has them (older exports don't)
+          // Replaces all watch time with the file's, and the image O's and
+          // playback too when the file has them (older exports don't)
           const imported = await runPluginOperation({
             mode: 'save',
             o_data: JSON.stringify(importData),
           })
-          if (!imported?.days && !imported?.image_os) {
+          if (!imported?.days && !imported?.image_os && !imported?.stretches) {
             throw new Error('Nothing to import found in the file')
           }
 
-          importBtn.innerText =
-            imported.image_os === null
-              ? tc(
-                  `✓ 已导入 ${imported.days} 天`,
-                  `✓ Imported ${imported.days} days`,
-                )
-              : tc(
-                  `✓ 已导入 ${imported.days} 天、图片 O ${imported.image_os} 次`,
-                  `✓ Imported ${imported.days} days, ${imported.image_os} image O's`,
-                )
+          const extrasZh = [
+            imported.image_os === null || imported.image_os === undefined
+              ? null
+              : `${imported.image_os} 次图片 O`,
+            imported.stretches ? '会话' : null,
+          ].filter(Boolean)
+          const extrasEn = [
+            imported.image_os === null || imported.image_os === undefined
+              ? null
+              : `${imported.image_os} image O's`,
+            imported.stretches ? 'sessions' : null,
+          ].filter(Boolean)
+          importBtn.innerText = tc(
+            `✓ 已导入 ${imported.days} 天${extrasZh.length ? `，${extrasZh.join('、')}` : ''}`,
+            `✓ Imported ${imported.days} days${extrasEn.length ? `, ${extrasEn.join(', ')}` : ''}`,
+          )
           // Reload to show the imported data
           setTimeout(() => window.location.reload(), 1000)
         } catch (error) {
@@ -1964,6 +2188,805 @@
     render()
   }
 
+  // ===== LIBRARY GROWTH =====
+  // How the library has grown: the total at the end of each month (or
+  // year), as bars like the O and watch time graphs. Videos and storage
+  // come from when each scene was added to Stash, so scenes since deleted
+  // aren't counted; O's come from the O history, and watch time from what
+  // O Stats has tracked.
+
+  // Every scene in the library, just when it was added and its files' size
+  async function getLibraryGrowthScenes() {
+    const data = await callGQL({
+      query: `query {
+        findScenes(filter: { per_page: -1 }) {
+          scenes { created_at files { size } }
+        }
+      }`,
+    })
+    return data.findScenes?.scenes || []
+  }
+
+  function createLibraryGrowth(
+    parent,
+    libraryScenes,
+    oHistoryCache,
+    watchTimeData,
+  ) {
+    // Added per month: 'YYYY-MM' -> amount
+    const addedByMonth = { videos: {}, storage: {}, os: {}, watch: {} }
+    const addTo = (totals, month, amount) => {
+      totals[month] = (totals[month] || 0) + amount
+    }
+    libraryScenes.forEach((scene) => {
+      const added = new Date(scene.created_at)
+      if (isNaN(added.getTime())) return
+      const month = getLocalDateString(added).slice(0, 7)
+      addTo(addedByMonth.videos, month, 1)
+      addTo(
+        addedByMonth.storage,
+        month,
+        (scene.files || []).reduce((sum, file) => sum + (Number(file.size) || 0), 0),
+      )
+    })
+    Object.keys(oHistoryCache.dayTotals).forEach((day) => {
+      addTo(addedByMonth.os, day.slice(0, 7), oHistoryCache.dayTotals[day])
+    })
+    Object.keys(watchTimeData).forEach((day) => {
+      const seconds = getWatchSeconds(watchTimeData[day])
+      if (seconds > 0) addTo(addedByMonth.watch, day.slice(0, 7), seconds)
+    })
+
+    const metrics = {
+      videos: {
+        label: tc('视频', 'Videos'),
+        accent: 'var(--os-blue)',
+        format: formatNumber,
+        total: (n) =>
+          tc(
+            `${formatNumber(n)} 个视频`,
+            `${formatNumber(n)} video${n === 1 ? '' : 's'}`,
+          ),
+      },
+      storage: {
+        label: tc('存储', 'Storage'),
+        accent: 'var(--os-gray)',
+        format: formatBytes,
+        total: formatBytes,
+      },
+      os: {
+        label: tc("O 数", "O's"),
+        accent: 'var(--os-blue)',
+        format: formatNumber,
+        total: (n) =>
+          tc(
+            `${formatNumber(n)} 次 O`,
+            `${formatNumber(n)} O${n === 1 ? '' : "'s"}`,
+          ),
+      },
+      watch: {
+        label: tc('观看时长', 'Watch Time'),
+        accent: 'var(--os-green)',
+        format: formatDuration,
+        total: (n) =>
+          tc(
+            `${formatLongDuration(n)} 观看`,
+            `${formatLongDuration(n)} watched`,
+          ),
+      },
+    }
+    const firstMonth = Object.keys(addedByMonth.videos)
+      .concat(Object.keys(addedByMonth.os))
+      .sort()[0]
+    if (!firstMonth) return
+
+    const card = createEl('div', 'os-card os-chart os-growth')
+    parent.appendChild(card)
+
+    // Header: the metric and its total on the left, switchers on the right
+    const head = createEl('div', 'os-chart-head')
+    card.appendChild(head)
+    const titleWrap = createEl('div')
+    const title = createEl('h4', 'os-chart-title')
+    titleWrap.appendChild(title)
+    const totalEl = createEl('div', 'os-chart-total')
+    titleWrap.appendChild(totalEl)
+    head.appendChild(titleWrap)
+    const actions = createEl('div', 'os-chart-actions')
+    head.appendChild(actions)
+
+    let metric = 'videos'
+    let view = 'month'
+    // The year shown in the month view
+    const thisYear = new Date().getFullYear()
+    let year = thisYear
+    // Each metric starts at its own first year (O's often start later)
+    const firstYearOf = () => {
+      const first = Object.keys(addedByMonth[metric]).sort()[0]
+      return first ? Number(first.slice(0, 4)) : thisYear
+    }
+
+    function addSwitcher(options, isActive, onPick) {
+      const switcher = createEl('div', 'os-segmented')
+      const buttons = options.map(([value, label]) => {
+        const button = createEl('button', '', label)
+        button.type = 'button'
+        button.addEventListener('click', () => {
+          onPick(value)
+          render()
+        })
+        switcher.appendChild(button)
+        return [value, button]
+      })
+      actions.appendChild(switcher)
+      return () =>
+        buttons.forEach(([value, button]) =>
+          button.classList.toggle('is-active', isActive(value)),
+        )
+    }
+    const showMetric = addSwitcher(
+      Object.keys(metrics).map((key) => [key, metrics[key].label]),
+      (value) => value === metric,
+      (value) => (metric = value),
+    )
+    const showView = addSwitcher(
+      [
+        ['month', tc('月', 'Months')],
+        ['year', tc('年', 'Years')],
+      ],
+      (value) => value === view,
+      (value) => {
+        view = value
+        year = thisYear
+      },
+    )
+
+    const plot = createEl('div', 'os-chart-plot')
+    card.appendChild(plot)
+
+    // Footer: previous / year / next, for the month view
+    const foot = createEl('div', 'os-chart-foot')
+    const pager = createEl('div', 'os-pager')
+    const prevBtn = createEl('button', 'os-btn os-btn-icon', '‹')
+    prevBtn.title = tc('上一年', 'Previous year')
+    const periodLabel = createEl('span', 'os-pager-label')
+    const nextBtn = createEl('button', 'os-btn os-btn-icon', '›')
+    nextBtn.title = tc('下一年', 'Next year')
+    pager.append(prevBtn, periodLabel, nextBtn)
+    foot.appendChild(pager)
+    card.appendChild(foot)
+    prevBtn.addEventListener('click', () => {
+      if (year > firstYearOf()) {
+        year--
+        render()
+      }
+    })
+    nextBtn.addEventListener('click', () => {
+      if (year < thisYear) {
+        year++
+        render()
+      }
+    })
+
+    // The total at the end of a month, and what was added in it
+    const monthKey = (y, m) => `${y}-${String(m + 1).padStart(2, '0')}`
+    function totalThrough(key) {
+      const totals = addedByMonth[metric]
+      return Object.keys(totals).reduce(
+        (sum, month) => sum + (month <= key ? totals[month] : 0),
+        0,
+      )
+    }
+
+    function render() {
+      const { label, accent, format, total } = metrics[metric]
+      card.style.setProperty('--os-accent', accent)
+      title.innerText = tc(`${label} 走势`, `${label} Over Time`)
+      showMetric()
+      year = Math.max(year, firstYearOf())
+      showView()
+
+      const now = new Date()
+      const currentKey = monthKey(now.getFullYear(), now.getMonth())
+      const grandTotal = totalThrough(currentKey)
+      const addedThisYear = grandTotal - totalThrough(`${thisYear - 1}-12`)
+      totalEl.innerHTML = ''
+      totalEl.append(
+        createEl('strong', '', total(grandTotal)),
+        tc(
+          ` · 今年 ${addedThisYear > 0 ? '+' : ''}${format(addedThisYear)}`,
+          ` · ${addedThisYear > 0 ? '+' : ''}${format(addedThisYear)} this year`,
+        ),
+      )
+
+      // Bars: the total at the end of each month of the year, or of each
+      // year; months still to come stay empty
+      const bars = []
+      if (view === 'month') {
+        for (let m = 0; m < 12; m++) {
+          const key = monthKey(year, m)
+          const isFuture = key > currentKey
+          bars.push({
+            label: new Date(year, m, 1).toLocaleDateString(fmtDateLocale(), {
+              month: 'short',
+            }),
+            long: new Date(year, m, 1).toLocaleDateString(fmtDateLocale(), {
+              month: 'long',
+              year: 'numeric',
+            }),
+            value: isFuture ? null : totalThrough(key),
+            added: isFuture ? null : addedByMonth[metric][key] || 0,
+            isCurrent: key === currentKey,
+          })
+        }
+        periodLabel.innerText = String(year)
+        prevBtn.disabled = year <= firstYearOf()
+        nextBtn.disabled = year >= thisYear
+        foot.style.display = ''
+      } else {
+        for (let y = firstYearOf(); y <= thisYear; y++) {
+          const end = y === thisYear ? currentKey : `${y}-12`
+          bars.push({
+            label: String(y),
+            long: String(y),
+            year: y,
+            value: totalThrough(end),
+            added: totalThrough(end) - totalThrough(`${y - 1}-12`),
+            isCurrent: y === thisYear,
+          })
+        }
+        foot.style.display = 'none'
+      }
+
+      const maxValue = Math.max(1, ...bars.map((bar) => bar.value || 0))
+      plot.innerHTML = ''
+      plot.classList.toggle('is-dense', bars.length > 12)
+      const grid = createEl('div', 'os-chart-grid')
+      for (let i = 0; i < 4; i++) grid.appendChild(createEl('span'))
+      plot.appendChild(grid)
+
+      bars.forEach((bar) => {
+        const col = createEl('div', 'os-chart-col')
+        if (bar.isCurrent) col.classList.add('is-current')
+        plot.appendChild(col)
+        const barArea = createEl('div', 'os-chart-bar-area')
+        col.appendChild(barArea)
+        if (bar.value) {
+          barArea.appendChild(createEl('div', 'os-chart-value', format(bar.value)))
+        }
+        const barEl = createEl('div', 'os-chart-bar')
+        barEl.style.height = `${((bar.value || 0) / maxValue) * 100}%`
+        barEl.style.minHeight = bar.value ? '4px' : '0'
+        barArea.appendChild(barEl)
+        col.appendChild(createEl('div', 'os-chart-label', bar.label))
+        if (bar.value !== null) {
+          barEl.title = tc(
+            `${bar.long}：${total(bar.value)}（+${format(bar.added)}）`,
+            `${bar.long}: ${total(bar.value)} (+${format(bar.added)})`,
+          )
+        }
+        // A year's bar opens its months
+        if (view === 'year' && bar.value) {
+          col.classList.add('is-clickable')
+          barEl.title += tc(' · 查看月份', ' · Show months')
+          barEl.addEventListener('click', () => {
+            view = 'month'
+            year = bar.year
+            render()
+          })
+        }
+      })
+    }
+    render()
+  }
+
+  // ===== SESSIONS =====
+  // Sessions are worked out from the playback stretches: playing with no
+  // break longer than the session break (30 minutes unless changed in the
+  // settings) is one session, however long each video is or wherever you
+  // stopped in it. An O counts toward the session it happens in, or one
+  // that ended at most 10 minutes before.
+  //
+  // A session lists only the videos Stash counted as watched in it (a play
+  // in its play history during the session) or that got an O, and its time
+  // watched is theirs alone; a session with nothing listed isn't shown.
+  const DEFAULT_SESSION_BREAK_MINUTES = 30
+  const SESSION_O_GRACE_MS = 10 * 60 * 1000
+  // Leeway for a play Stash logs a little before or after its stretch
+  const SESSION_PLAY_GRACE_MS = 5 * 60 * 1000
+  const SESSIONS_PER_PAGE = 5
+  const SHOW_RECENT_SESSIONS = false
+  const SESSION_MIN_STRETCH_SECONDS = 5
+  // Only sessions with at least this many videos are shown (a setting).
+  // The others still count toward watch time and Content Viewed.
+  const DEFAULT_SESSION_MIN_VIDEOS = 2
+  let sessionMinVideos = DEFAULT_SESSION_MIN_VIDEOS
+  const isShownSession = (session) => session.videos.size >= sessionMinVideos
+
+  // scenes need their play history (addPlayHistory), to tell which videos
+  // Stash counted as watched
+  function buildSessions(playback, oHistoryCache, breakMinutes, scenes) {
+    const breakMs = breakMinutes * 60 * 1000
+    const stretches = playback
+      .map((stretch) => ({
+        id: String(stretch.id),
+        scene: String(stretch.scene),
+        startMs: stretch.start * 1000,
+        endMs: stretch.end * 1000,
+        seconds: stretch.seconds || 0,
+      }))
+      // A few seconds is a blip, like the end of a video saved under the
+      // next one before O Stats read the scene from the player
+      .filter(
+        (stretch) =>
+          stretch.endMs >= stretch.startMs &&
+          stretch.seconds >= SESSION_MIN_STRETCH_SECONDS,
+      )
+      .sort((a, b) => a.startMs - b.startMs)
+
+    // Viewings: one watch of a video. Playing it again (or an O on it) more
+    // than its length after the viewing started, plus some leeway for
+    // pauses, is watching it again, a viewing of its own. A video with no
+    // known length is one viewing.
+    const lengths = new Map(
+      scenes.map((scene) => [
+        String(scene.id),
+        (scene.files[0]?.duration || 0) * 1000,
+      ]),
+    )
+    // O's, scene and image
+    const oEvents = []
+    oHistoryCache.dayMap.forEach((events) =>
+      events.forEach(({ scene, time }) => oEvents.push({ scene, time })),
+    )
+    oHistoryCache.imageDayMap.forEach((events) =>
+      events.forEach(({ image, time }) => oEvents.push({ image, time })),
+    )
+    oEvents.sort((a, b) => a.time - b.time)
+    const playTimes = new Map()
+    scenes.forEach((scene) => {
+      playTimes.set(
+        String(scene.id),
+        scene.play_history
+          .map((timestamp) => new Date(timestamp).getTime())
+          .filter((t) => !isNaN(t)),
+      )
+    })
+    const oTimes = new Map()
+    oEvents.forEach(({ scene, time }) => {
+      if (!scene) return
+      const sceneId = String(scene.id)
+      if (!oTimes.has(sceneId)) oTimes.set(sceneId, [])
+      oTimes.get(sceneId).push(time.getTime())
+    })
+    // Each viewing needs its own play from Stash (or an O)
+    const isCounted = (viewing) =>
+      viewing.os > 0 ||
+      (playTimes.get(viewing.sceneId) || []).some(
+        (t) =>
+          t >= viewing.firstMs - SESSION_PLAY_GRACE_MS &&
+          t <= viewing.lastMs + SESSION_PLAY_GRACE_MS,
+      )
+
+    // The stretches of a viewing from when Stash counted it on. A viewing
+    // is split where it stopped for a while; parts before the first one
+    // with a play (or an O) are dropped, like a video that started on its
+    // own after another ended and played a bit before you watched it
+    // properly later. Parts after it are resuming, so they're kept.
+    function countedStretches(viewing) {
+      const parts = []
+      viewing.stretches.forEach((stretch) => {
+        const last = parts[parts.length - 1]
+        if (last && stretch.startMs - last.endMs <= SESSION_PLAY_GRACE_MS) {
+          last.endMs = Math.max(last.endMs, stretch.endMs)
+          last.stretches.push(stretch)
+        } else {
+          parts.push({
+            startMs: stretch.startMs,
+            endMs: stretch.endMs,
+            stretches: [stretch],
+          })
+        }
+      })
+      const plays = playTimes.get(viewing.sceneId) || []
+      const os = oTimes.get(viewing.sceneId) || []
+      const kept = []
+      let counted = false
+      parts.forEach((part, i) => {
+        // An O goes with the part it came during or soon after
+        const oUntilMs = Math.min(
+          parts[i + 1]?.startMs ?? Infinity,
+          part.endMs + SESSION_O_GRACE_MS,
+        )
+        counted =
+          counted ||
+          plays.some(
+            (t) =>
+              t >= part.startMs - SESSION_PLAY_GRACE_MS &&
+              t <= part.endMs + SESSION_PLAY_GRACE_MS,
+          ) ||
+          os.some(
+            (t) => t >= part.startMs - SESSION_PLAY_GRACE_MS && t <= oUntilMs,
+          )
+        if (counted) kept.push(...part.stretches)
+      })
+      return kept
+    }
+
+    // Grouped once from everything that played, to find what Stash
+    // counted, then again from just that, so videos clicked through don't
+    // stretch a session, join two together or add to its time
+    const counted = new Set()
+    groupSessions(stretches).forEach((session) =>
+      session.viewings.forEach((viewing) =>
+        countedStretches(viewing).forEach((stretch) => counted.add(stretch)),
+      ),
+    )
+    const sessions = groupSessions(
+      stretches.filter((stretch) => counted.has(stretch)),
+    )
+
+    function groupSessions(stretches) {
+      const sessions = []
+      stretches.forEach((stretch) => {
+        const last = sessions[sessions.length - 1]
+        if (last && stretch.startMs - last.endMs <= breakMs) {
+          last.endMs = Math.max(last.endMs, stretch.endMs)
+          last.stretches.push(stretch)
+        } else {
+          sessions.push({
+            id: stretch.id,
+            startMs: stretch.startMs,
+            endMs: stretch.endMs,
+            stretches: [stretch],
+          })
+        }
+      })
+      sessions.forEach((session) => {
+        session.start = new Date(session.startMs)
+        session.end = new Date(session.endMs)
+        session.viewings = []
+        session.os = []
+        session.stretches.forEach((stretch) => {
+          const viewing = viewingAt(session, stretch.scene, stretch.startMs)
+          viewing.seconds += stretch.seconds
+          viewing.lastMs = Math.max(viewing.lastMs, stretch.endMs)
+          viewing.stretches.push(stretch)
+        })
+      })
+      // Each O to the session it belongs to. Both are in time order, so
+      // this walks along them together instead of searching every session.
+      let next = 0
+      oEvents.forEach((event) => {
+        const t = event.time.getTime()
+        while (
+          next < sessions.length &&
+          sessions[next].endMs + SESSION_O_GRACE_MS < t
+        ) {
+          next++
+        }
+        const session = sessions[next]
+        if (!session || t < session.startMs) return
+        session.os.push(event)
+        // An O on a scene played elsewhere (another player), or long after
+        // it started, is a viewing of its own
+        if (event.scene) {
+          const viewing = viewingAt(session, String(event.scene.id), t)
+          viewing.os++
+          viewing.lastMs = Math.max(viewing.lastMs, t)
+        }
+      })
+      return sessions
+    }
+
+    function viewingAt(session, sceneId, t) {
+      const length = lengths.get(sceneId) || 0
+      const viewing = session.viewings
+        .filter(
+          (v) => v.sceneId === sceneId && v.firstMs <= t + SESSION_PLAY_GRACE_MS,
+        )
+        .pop()
+      if (
+        viewing &&
+        (!length || t - viewing.firstMs <= length + SESSION_PLAY_GRACE_MS)
+      ) {
+        return viewing
+      }
+      const fresh = {
+        sceneId,
+        seconds: 0,
+        os: 0,
+        firstMs: t,
+        lastMs: t,
+        stretches: [],
+      }
+      session.viewings.push(fresh)
+      session.viewings.sort((a, b) => a.firstMs - b.firstMs)
+      return fresh
+    }
+
+    sessions.forEach((session) => {
+      session.os.sort((a, b) => a.time - b.time)
+      session.viewings = session.viewings.filter(isCounted)
+      session.seconds = session.viewings.reduce((sum, v) => sum + v.seconds, 0)
+      // Each video once, in the order first watched, with all its viewings
+      // added up
+      session.videos = new Map()
+      session.viewings.forEach((viewing) => {
+        const video = session.videos.get(viewing.sceneId)
+        if (video) {
+          video.seconds += viewing.seconds
+          video.os += viewing.os
+        } else {
+          session.videos.set(viewing.sceneId, { ...viewing })
+        }
+      })
+    })
+    return sessions.filter(
+      (session) => session.videos.size > 0 || session.os.length > 0,
+    )
+  }
+
+  // "9:42pm"; a range drops the first am/pm when both match: "9:42–11:15pm"
+  function formatClock(date) {
+    const hour = date.getHours()
+    const minute = String(date.getMinutes()).padStart(2, '0')
+    if (isZh()) return `${hour}:${minute}`
+    return `${hour % 12 || 12}:${minute}${hour < 12 ? 'am' : 'pm'}`
+  }
+
+  function formatClockRange(start, end) {
+    const from = formatClock(start)
+    const to = formatClock(end)
+    if (isZh()) return `${from}–${to}`
+    return from.slice(-2) === to.slice(-2)
+      ? `${from.slice(0, -2)}–${to}`
+      : `${from}–${to}`
+  }
+
+  // "Today", "Yesterday", "Fri, Oct 31" (with the year if not this year)
+  function formatSessionDay(date) {
+    const today = getTodayDate()
+    const day = getLocalDateString(date)
+    const yesterday = new Date()
+    yesterday.setDate(yesterday.getDate() - 1)
+    if (day === today) return tc('今天', 'Today')
+    if (day === getLocalDateString(yesterday)) return tc('昨天', 'Yesterday')
+    return date.toLocaleDateString(fmtDateLocale(), {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      ...(date.getFullYear() === new Date().getFullYear()
+        ? {}
+        : { year: 'numeric' }),
+    })
+  }
+
+  // Fills the Sessions section (made in setupStats, so it keeps its place
+  // while play history loads)
+  function createSessionsSection(section, sessions, scenes) {
+    const card = createEl('div', 'os-card os-chart os-sessions')
+    card.style.setProperty('--os-accent', 'var(--os-green)')
+    section.appendChild(card)
+
+    const head = createEl('div', 'os-chart-head')
+    const titleWrap = createEl('div')
+    titleWrap.appendChild(createEl('h4', 'os-chart-title', tc('最近会话', 'Recent Sessions')))
+    const totalEl = createEl('div', 'os-chart-total')
+    titleWrap.appendChild(totalEl)
+    head.appendChild(titleWrap)
+    card.appendChild(head)
+
+    if (sessions.length === 0) {
+      card.appendChild(
+        createEl(
+          'div',
+          'os-empty',
+          tc(
+            '暂无会话。从现在起，只要在 Stash 播放器中观看，就会自动记录。',
+            "No sessions yet. They're recorded automatically from now on, whenever you watch in Stash's player.",
+          ),
+        ),
+      )
+      return
+    }
+
+    // This week, the average and the longest, all from watched time
+    const monday = new Date()
+    monday.setHours(0, 0, 0, 0)
+    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7))
+    const thisWeek = sessions.filter((s) => s.startMs >= monday.getTime())
+    const average =
+      sessions.reduce((sum, s) => sum + s.seconds, 0) / sessions.length
+    const longest = sessions.reduce((a, b) => (b.seconds > a.seconds ? b : a))
+    totalEl.append(
+      createEl('strong', '', String(thisWeek.length)),
+      tc(' 本周 · ', ' this week · '),
+      createEl('strong', '', formatDuration(average)),
+      tc(' 平均 · ', ' on average · '),
+      createEl('strong', '', formatDuration(longest.seconds)),
+      tc(' 最长', ' longest'),
+    )
+
+    createSessionList(card, sessions.slice().reverse(), scenes)
+  }
+
+  // Sessions as rows, each opening to the videos watched in it; shows
+  // perPage at a time with a Show more button. Returns open(id), which
+  // shows a session (loading more if needed), opens it and scrolls to it.
+  function createSessionList(
+    container,
+    sessions,
+    scenes,
+    { perPage = SESSIONS_PER_PAGE } = {},
+  ) {
+    const scenesById = new Map(scenes.map((scene) => [String(scene.id), scene]))
+    const plural = (n, word) =>
+      `${n} ${word}${n === 1 ? '' : word === 'O' ? "'s" : 's'}`
+
+    const list = createEl('div', 'os-session-list')
+    container.appendChild(list)
+    const more = createEl('button', 'os-btn os-session-more', tc('显示更多', 'Show more'))
+    more.type = 'button'
+    container.appendChild(more)
+
+    const rows = new Map()
+    let shown = 0
+
+    function videoItem({ scene, image, sceneId, seconds, os, time }) {
+      const item = scene || image ? highlightOf({ scene, image }) : null
+      const row = createEl('div', os > 0 ? 'os-video has-o' : 'os-video')
+      if (item) {
+        row.addEventListener('click', () =>
+          window.open(item.href, '_blank', 'noopener,noreferrer'),
+        )
+      }
+      const thumbnail = createEl('img', image ? 'is-image' : '')
+      thumbnail.src = item?.cover || ''
+      thumbnail.loading = 'lazy'
+      thumbnail.alt = ''
+      row.appendChild(thumbnail)
+      const info = createEl('div', 'os-video-info')
+      info.appendChild(
+        createEl(
+          'div',
+          'os-video-title',
+          item?.title || tc(`已删除的场景 ${sceneId}`, `Deleted scene ${sceneId}`),
+        ),
+      )
+      info.appendChild(
+        createEl(
+          'div',
+          'os-video-meta',
+          image
+            ? tc(`${formatClock(time)} · 图片`, `${formatClock(time)} · Image`)
+            : tc(
+                `${formatClock(time)} · ${seconds > 0 ? `观看 ${formatWatched(seconds)}` : '仅 O'}`,
+                `${formatClock(time)} · ${seconds > 0 ? `${formatWatched(seconds)} watched` : 'O only'}`,
+              ),
+        ),
+      )
+      row.appendChild(info)
+      if (os > 0) {
+        row.appendChild(
+          createEl('span', 'os-video-emoji', os > 1 ? `💦 ${os}×` : '💦'),
+        )
+      }
+      return row
+    }
+
+    function addRow(session) {
+      // Blue, like an O in Content Viewed, when the session had one
+      const wrap = createEl(
+        'div',
+        session.os.length > 0 ? 'os-session-wrap has-o' : 'os-session-wrap',
+      )
+      const row = createEl('button', 'os-session')
+      row.type = 'button'
+
+      const when = createEl('div', 'os-session-when')
+      when.appendChild(createEl('div', 'os-session-day', formatSessionDay(session.start)))
+      when.appendChild(
+        createEl(
+          'div',
+          'os-session-time',
+          formatClockRange(session.start, session.end),
+        ),
+      )
+      row.appendChild(when)
+
+      const stats = createEl('div', 'os-session-stats')
+      const addStat = (value, text) => {
+        const stat = createEl('span')
+        stat.append(createEl('strong', '', value), ` ${text}`)
+        stats.appendChild(stat)
+      }
+      addStat(formatWatched(session.seconds), tc('观看', 'watched'))
+      const videoCount = session.videos.size
+      addStat(String(videoCount), tc('个视频', videoCount === 1 ? 'video' : 'videos'))
+      row.appendChild(stats)
+
+      // Up to four thumbnails, then how many more
+      const thumbs = createEl('div', 'os-session-thumbs')
+      const sceneIds = [...session.videos.keys()]
+      sceneIds.slice(0, 4).forEach((id) => {
+        const scene = scenesById.get(id)
+        const thumb = createEl('img')
+        thumb.src = scene?.paths.screenshot || ''
+        thumb.loading = 'lazy'
+        thumb.alt = ''
+        thumbs.appendChild(thumb)
+      })
+      if (sceneIds.length > 4) {
+        thumbs.appendChild(createEl('span', 'os-session-extra', `+${sceneIds.length - 4}`))
+      }
+      row.appendChild(thumbs)
+      // 💦, with 2×, 3× … for more than one
+      const os = session.os.length
+      row.appendChild(
+        createEl('span', 'os-session-o', os > 1 ? `💦 ${os}×` : os ? '💦' : ''),
+      )
+      row.appendChild(createEl('span', 'os-session-chevron', '▾'))
+
+      // Every viewing (and image O) in the order watched, so a video
+      // watched again shows again; filled in when opened
+      const detail = createEl('div', 'os-videos os-session-detail')
+      detail.hidden = true
+      function fillDetail() {
+        if (detail.children.length > 0) return
+        const items = session.viewings.map((viewing) => ({
+          scene: scenesById.get(viewing.sceneId),
+          sceneId: viewing.sceneId,
+          seconds: viewing.seconds,
+          os: viewing.os,
+          time: new Date(viewing.firstMs),
+        }))
+        session.os
+          .filter((event) => event.image)
+          .forEach((event) =>
+            items.push({ image: event.image, os: 1, time: event.time }),
+          )
+        items
+          .sort((a, b) => a.time - b.time)
+          .forEach((item) => detail.appendChild(videoItem(item)))
+      }
+
+      function setOpen(open) {
+        if (open) fillDetail()
+        detail.hidden = !open
+        wrap.classList.toggle('is-open', open)
+        row.setAttribute('aria-expanded', String(open))
+      }
+      row.addEventListener('click', () => setOpen(detail.hidden))
+      row.setAttribute('aria-expanded', 'false')
+      row.title = tc(
+        `${videoCount} 个视频，${session.os.length} 次 O，观看 ${formatWatched(session.seconds)}，时间 ${formatClockRange(session.start, session.end)}`,
+        `${plural(videoCount, 'video')}, ${plural(session.os.length, 'O')}, ${formatWatched(session.seconds)} watched between ${formatClockRange(session.start, session.end)}`,
+      )
+
+      wrap.append(row, detail)
+      list.appendChild(wrap)
+      rows.set(session.id, { wrap, setOpen })
+    }
+
+    function showMore() {
+      sessions.slice(shown, shown + perPage).forEach(addRow)
+      shown = Math.min(sessions.length, shown + perPage)
+      more.style.display = shown >= sessions.length ? 'none' : ''
+    }
+    more.addEventListener('click', showMore)
+    showMore()
+
+    return function open(id) {
+      const index = sessions.findIndex((session) => session.id === id)
+      if (index === -1) return
+      while (shown <= index) showMore()
+      const row = rows.get(id)
+      row.setOpen(true)
+      row.wrap.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }
+
   // ===== CALENDARS =====
   // A calendar year as a grid: one column per week (Monday first), one
   // square per day, darker for more. Used for O's and for watch time.
@@ -2826,7 +3849,55 @@
       hideStats = false,
       hideTimelineOs = false,
       showTimelineWatches = false,
+      sessions = [],
+      hideSessionBars = false,
+      playback = [],
     } = options
+
+    // Time watched per scene per day, like in Sessions: only the videos
+    // Stash counted as watched (each stretch counted on the day it
+    // started): day -> scene id -> seconds
+    const watchedByDay = new Map()
+    sessions.forEach((session) =>
+      session.viewings.forEach((viewing) =>
+        viewing.stretches.forEach((stretch) => {
+          const day = getLocalDateString(new Date(stretch.startMs))
+          if (!watchedByDay.has(day)) watchedByDay.set(day, new Map())
+          const scenesWatched = watchedByDay.get(day)
+          scenesWatched.set(
+            stretch.scene,
+            (scenesWatched.get(stretch.scene) || 0) + stretch.seconds,
+          )
+        }),
+      ),
+    )
+    // The viewing (from Sessions) a play or O at time t belongs to
+    const viewings = sessions.flatMap((session) => session.viewings)
+    // (the closest, when two are near each other)
+    function viewingOf(sceneId, t) {
+      const distance = (viewing) =>
+        Math.max(viewing.firstMs - t, t - viewing.lastMs, 0)
+      return viewings
+        .filter(
+          (viewing) =>
+            viewing.sceneId === sceneId &&
+            distance(viewing) <= SESSION_PLAY_GRACE_MS,
+        )
+        .sort((a, b) => distance(a) - distance(b))[0]
+    }
+
+    // Days from before playback was saved only have their total
+    const playbackDays = new Set(
+      playback.map((stretch) =>
+        getLocalDateString(new Date(stretch.start * 1000)),
+      ),
+    )
+    function getDayWatchSeconds(day) {
+      if (!playbackDays.has(day)) return getWatchSeconds(watchTimeData[day])
+      let seconds = 0
+      watchedByDay.get(day)?.forEach((s) => (seconds += s))
+      return seconds
+    }
 
     // Plays by day, built once instead of on every day change
     const playDayMap = new Map()
@@ -2849,6 +3920,7 @@
     let selectedDayOffset = 0
     // Whether the Content Viewed list is expanded, remembered in this browser
     let isExpanded = loadLayoutChoice('oStatsI18n_content_list_expanded')
+    let sessionsExpanded = loadLayoutChoice('oStatsI18n_sessions_list_expanded')
 
     // Function to render the day
     async function renderDay(dayOffset) {
@@ -2867,14 +3939,22 @@
         .slice()
         .sort((a, b) => a.time - b.time)
 
-      // Everything watched that day: each O, plus plays that aren't within
-      // 30 minutes of an O or another play of the same scene
+      // Everything watched that day: each O, plus plays that aren't part of
+      // the same viewing (like in Sessions) as an O or another play of the
+      // same scene, so watching it again shows again. Without playback,
+      // as on older days, that's within 30 minutes of one.
       const daySceneEvents = dayOs.map(({ scene, time }) => ({
         scene,
         time,
         hasO: true,
       }))
       const NEARBY_MS = 30 * 60 * 1000
+      const sameViewing = (sceneId, a, b) => {
+        const viewingA = viewingOf(sceneId, a.getTime())
+        const viewingB = viewingOf(sceneId, b.getTime())
+        if (viewingA && viewingB) return viewingA === viewingB
+        return Math.abs(a - b) < NEARBY_MS
+      }
       ;(playDayMap.get(targetDay) || [])
         .slice()
         .sort((a, b) => a.time - b.time)
@@ -2882,7 +3962,7 @@
           const isNearby = daySceneEvents.some(
             (event) =>
               event.scene.id === scene.id &&
-              Math.abs(event.time - time) < NEARBY_MS,
+              sameViewing(String(scene.id), event.time, time),
           )
           if (!isNearby) daySceneEvents.push({ scene, time, hasO: false })
         })
@@ -3012,6 +4092,79 @@
       })
       timelineViz.appendChild(centerLine)
 
+      // Sessions as bars along the center line, from start to end (cut off
+      // at midnight); click one to open it in Sessions
+      const dayStartMs = new Date(
+        targetDate.getFullYear(),
+        targetDate.getMonth(),
+        targetDate.getDate(),
+      ).getTime()
+      const dayEndMs = new Date(
+        targetDate.getFullYear(),
+        targetDate.getMonth(),
+        targetDate.getDate() + 1,
+      ).getTime()
+      // Where a time goes, by the clock like the hour labels and markers,
+      // so a day when the clocks change (23 or 25 hours long) lines up
+      function clockPercent(ms) {
+        if (ms >= dayEndMs) return 100
+        const time = new Date(Math.max(ms, dayStartMs))
+        const minutes =
+          time.getHours() * 60 + time.getMinutes() + time.getSeconds() / 60
+        return (minutes / (24 * 60)) * 100
+      }
+      const sessionMarkers = []
+      // The day's sessions, listed under the timeline; opened from there
+      const daySessions = hideSessionBars
+        ? []
+        : sessions.filter(
+            (s) =>
+              isShownSession(s) &&
+              s.startMs < dayEndMs &&
+              s.endMs >= dayStartMs,
+          )
+      let openSession = null
+      daySessions.forEach((session) => {
+          const from = clockPercent(session.startMs)
+          const to = Math.max(from, clockPercent(session.endMs))
+          const bar = createEl(
+            'div',
+            session.os.length > 0 ? 'os-session-bar has-o' : 'os-session-bar',
+          )
+          // The bar is thin and the hour labels sit on top of it, so a
+          // wider, invisible area above them takes the hover and clicks
+          const hitArea = createEl('div', 'os-session-hit')
+          // Placed by their middle, so a short session made taller by the
+          // minimum height grows evenly around its marker
+          ;[hitArea, bar].forEach((el) => {
+            el.style.top = `${(from + to) / 2}%`
+            el.style.height = `${to - from}%`
+          })
+          const videos = session.videos.size
+          const title = tc(
+            `${formatClockRange(session.start, session.end)} · ${videos} 个视频 · 观看 ${formatWatched(session.seconds)} · ${session.os.length} 次 O`,
+            `${formatClockRange(session.start, session.end)} · ${videos} video${videos === 1 ? '' : 's'} · ${formatWatched(session.seconds)} watched · ${session.os.length} O${session.os.length === 1 ? '' : "'s"}`,
+          )
+          hitArea.title = title
+          hitArea.classList.add('is-clickable')
+          hitArea.addEventListener('click', () => openSession?.(session.id))
+          timelineViz.append(hitArea, bar)
+          // A green marker from the middle of the bar, with the markers
+          // below, so it's easy to spot
+          const sessionScenes = [...session.videos.keys()]
+            .map((id) => scenes.find((scene) => String(scene.id) === id))
+            .filter(Boolean)
+          sessionMarkers.push({
+            time: new Date((session.startMs + session.endMs) / 2),
+            percent: (from + to) / 2,
+            session,
+            scene: sessionScenes[0],
+            sessionScenes,
+            title,
+            bar,
+          })
+        })
+
       // Hour markers (every 3 hours) with faint guide lines
       for (let hour = 0; hour <= 24; hour += 3) {
         const top = `${(hour / 24) * 100}%`
@@ -3030,10 +4183,11 @@
 
         const hourLabel = createEl('span', '', formatHourLabel(hour))
         Object.assign(hourLabel.style, {
+          // At the left edge, clear of the session bars and the markers
           position: 'absolute',
-          left: '50%',
+          left: '8px',
           top,
-          transform: 'translate(-50%, -50%)',
+          transform: 'translateY(-50%)',
           fontSize: '0.72rem',
           fontWeight: hour === 0 || hour === 12 || hour === 24 ? '700' : '500',
           color: 'var(--os-muted)',
@@ -3041,14 +4195,17 @@
           padding: '1px 6px',
           borderRadius: '999px',
           zIndex: '6',
+          // Clicks go through to a session bar underneath
+          pointerEvents: 'none',
         })
         timelineViz.appendChild(hourLabel)
       }
 
-      // Timeline markers: blue for O's, orange for image O's, gray for
-      // watches without an O. All are sorted together so they alternate
-      // sides by time.
+      // Timeline markers: blue for O's (on scenes and images), gray for
+      // watches without an O, green for sessions. All are sorted together
+      // so they alternate sides by time.
       const timelineEvents = [
+        ...sessionMarkers,
         ...(hideTimelineOs
           ? []
           : dayOs.map((o) => ({ time: o.time, scene: o.scene, isO: true }))),
@@ -3071,20 +4228,22 @@
       ].sort((a, b) => a.time - b.time)
 
       timelineEvents.forEach((event, index) => {
-        const color = event.image
-          ? 'var(--os-orange)'
+        const color = event.session
+          ? 'var(--os-green)'
           : event.isO
             ? 'var(--os-blue)'
             : 'var(--os-gray)'
-        const glow = event.image
-          ? 'rgba(255, 138, 61, 0.55)'
+        const glow = event.session
+          ? 'rgba(52, 195, 143, 0.55)'
           : event.isO
             ? 'rgba(76, 141, 255, 0.55)'
             : 'rgba(138, 148, 166, 0.45)'
-        const item = highlightOf(event)
+        // A session shows its first video
+        const item = event.scene || event.image ? highlightOf(event) : null
         const hour = event.time.getHours()
         const minute = event.time.getMinutes()
-        const timePercent = ((hour * 60 + minute) / (24 * 60)) * 100
+        const timePercent =
+          event.percent ?? ((hour * 60 + minute) / (24 * 60)) * 100
         const onRight = index % 2 === 0
 
         // Connector line from center to marker
@@ -3124,7 +4283,9 @@
           : event.isO
             ? ''
             : tc('（已观看）', ' (watched)')
-        marker.title = `${formatClockTime(hour, minute)} - ${item.title}${note}`
+        marker.title = event.session
+          ? tc(`会话 ${event.title}`, `Session ${event.title}`)
+          : `${formatClockTime(hour, minute)} - ${item.title}${note}`
 
         // Thumbnail preview shown on hover, on the same side as the marker
         const thumbnailPreview = createEl('div')
@@ -3143,30 +4304,51 @@
           overflow: 'hidden',
           background: '#000',
         })
-        const thumbnailImg = createEl('img')
-        thumbnailImg.src = item.cover
-        Object.assign(thumbnailImg.style, {
-          width: '100%',
-          height: '100%',
-          // Images are shown whole, so portrait ones aren't cropped
-          objectFit: event.image ? 'contain' : 'cover',
-          display: 'block',
+        // A session shows up to 4 of its videos, in a grid
+        const covers = event.session
+          ? event.sessionScenes
+              .slice(0, 4)
+              .map((scene) => highlightOf({ scene }).cover)
+          : item
+            ? [item.cover]
+            : []
+        if (covers.length > 1) {
+          thumbnailPreview.classList.add('os-thumb-grid')
+          thumbnailPreview.dataset.count = covers.length
+        }
+        covers.forEach((cover) => {
+          const thumbnailImg = createEl('img')
+          thumbnailImg.src = cover
+          Object.assign(thumbnailImg.style, {
+            width: '100%',
+            height: '100%',
+            // Images are shown whole, so portrait ones aren't cropped
+            objectFit: event.image ? 'contain' : 'cover',
+            display: 'block',
+            minWidth: '0',
+            minHeight: '0',
+          })
+          thumbnailPreview.appendChild(thumbnailImg)
         })
-        thumbnailPreview.appendChild(thumbnailImg)
         timelineViz.appendChild(thumbnailPreview)
 
         marker.addEventListener('mouseenter', () => {
           marker.style.transform = 'scale(1.3)'
           marker.style.boxShadow = `0 0 0 5px ${glow}`
-          thumbnailPreview.style.display = 'block'
+          if (covers.length > 0) {
+            thumbnailPreview.style.display = covers.length > 1 ? 'grid' : 'block'
+          }
+          event.bar?.classList.add('is-hover')
         })
         marker.addEventListener('mouseleave', () => {
           marker.style.transform = 'scale(1)'
           marker.style.boxShadow = `0 0 0 3px ${glow.replace(/[\d.]+\)$/, '0.18)')}`
           thumbnailPreview.style.display = 'none'
+          event.bar?.classList.remove('is-hover')
         })
         marker.addEventListener('click', () => {
-          window.open(item.href, '_blank', 'noopener,noreferrer')
+          if (event.session) openSession?.(event.session.id)
+          else window.open(item.href, '_blank', 'noopener,noreferrer')
         })
 
         timelineViz.appendChild(marker)
@@ -3211,8 +4393,9 @@
       )
       videoListContainer.appendChild(videoList)
 
-      const targetDayWatchData = watchTimeData[targetDay]
-      const watchTimeSeconds = getWatchSeconds(targetDayWatchData)
+      const watchTimeSeconds = getDayWatchSeconds(targetDay)
+
+      const shownViewings = new Set()
 
       // Add videos and images to list
       if (viewedItems.length === 0) {
@@ -3251,24 +4434,17 @@
           // Format time in the interface locale (24h for Chinese)
           const timeStr = formatClockTime(time.getHours(), time.getMinutes())
 
-          // Check if this scene has watch time on this day
           let watchTimeText = image
             ? `${timeStr}${tc(' · 图片', ' · Image')}`
             : timeStr
-          if (scene && targetDayWatchData && targetDayWatchData.videos) {
-            const videoData = targetDayWatchData.videos.find(
-              (v) => String(v.id) === String(scene.id),
-            )
-            if (videoData && videoData.watchTime > 0) {
-              watchTimeText = isToday
-                ? tc(
-                    `${timeStr} · 今日观看 ${formatDuration(videoData.watchTime)}`,
-                    `${timeStr} · ${formatDuration(videoData.watchTime)} watched today`,
-                  )
-                : tc(
-                    `${timeStr} · 当日观看 ${formatDuration(videoData.watchTime)}`,
-                    `${timeStr} · ${formatDuration(videoData.watchTime)} watched on this day`,
-                  )
+          const viewing = scene && viewingOf(String(scene.id), time.getTime())
+          if (viewing && !shownViewings.has(viewing)) {
+            shownViewings.add(viewing)
+            if (viewing.seconds >= 1) {
+              watchTimeText = tc(
+                `${timeStr} · 观看 ${formatWatched(viewing.seconds)}`,
+                `${timeStr} · ${formatWatched(viewing.seconds)} watched`,
+              )
             }
           }
           infoContainer.appendChild(
@@ -3279,6 +4455,43 @@
             videoItem.appendChild(createEl('span', 'os-video-emoji', '💦'))
           }
         })
+      }
+
+      // The day's sessions, first to last
+      if (daySessions.length > 0) {
+        const sessionsPanel = createEl('div', 'os-otd-sessions')
+        mainContainer.appendChild(sessionsPanel)
+        const sessionsHead = createEl('div', 'os-panel-head')
+        const sessionsTitle = createEl('h5', 'os-panel-title', tc('会话', 'Sessions'))
+        sessionsTitle.appendChild(
+          createEl('span', 'os-count', String(daySessions.length)),
+        )
+        sessionsHead.appendChild(sessionsTitle)
+        // Like Content Viewed: room for three, scrolling for more, or all
+        // of them with Expand (remembered in this browser)
+        const canCollapse = daySessions.length > 3
+        if (canCollapse) {
+          const sessionsExpandButton = createEl(
+            'button',
+            'os-btn',
+            sessionsExpanded ? tc('收起 ▲', 'Collapse ▲') : tc('展开 ▼', 'Expand ▼'),
+          )
+          sessionsExpandButton.addEventListener('click', () => {
+            sessionsExpanded = !sessionsExpanded
+            saveLayoutChoice('oStatsI18n_sessions_list_expanded', sessionsExpanded)
+            renderDay(selectedDayOffset)
+          })
+          sessionsHead.appendChild(sessionsExpandButton)
+        }
+        sessionsPanel.appendChild(sessionsHead)
+        openSession = createSessionList(sessionsPanel, daySessions, scenes, {
+          perPage: Infinity,
+        })
+        if (canCollapse && !sessionsExpanded) {
+          sessionsPanel
+            .querySelector('.os-session-list')
+            .classList.add('is-collapsed')
+        }
       }
 
       // Summary strip at the bottom
@@ -3309,6 +4522,13 @@
         tc('观看的视频', 'Videos Watched'),
         'var(--os-amber)',
       )
+      if (!hideSessionBars) {
+        addSummaryStat(
+          daySessions.length,
+          tc('会话', 'Sessions'),
+          'var(--os-purple)',
+        )
+      }
 
       // Average minutes per O for this day; only when there are O's. Image
       // O's have no watch time, so only scene O's count.
@@ -3612,6 +4832,33 @@
       onThisDaySection.appendChild(loading)
     }
 
+    // Sessions, from the playback stretches. The break that ends one is a
+    // setting (minutes); anything that isn't a positive number uses 30.
+    // So is how many videos one needs to be shown; anything that isn't a
+    // positive number uses 2. They need play history (to list only the
+    // videos Stash counted as watched), so they're worked out once it has
+    // loaded, below.
+    const sessionBreak =
+      Number(settings.sessionBreakMinutes) > 0
+        ? Number(settings.sessionBreakMinutes)
+        : DEFAULT_SESSION_BREAK_MINUTES
+    sessionMinVideos =
+      Number(settings.sessionMinVideos) > 0
+        ? Number(settings.sessionMinVideos)
+        : DEFAULT_SESSION_MIN_VIDEOS
+    // Recent Sessions is hidden for now; On This Day lists each day's
+    let sessionsSection = null
+    if (SHOW_RECENT_SESSIONS && !settings.hideSessions) {
+      sessionsSection = createSection(root, tc('会话', 'Sessions'))
+      sessionsSection.appendChild(
+        createEl(
+          'div',
+          'os-card os-otd-loading',
+          tc('正在加载会话…', 'Loading sessions…'),
+        ),
+      )
+    }
+
     if (settings.showLibraryStats && libraryStats) {
       const section = createSection(root, tc('媒体库', 'Library'))
       const grid = createEl('div', 'os-grid os-grid-compact')
@@ -3619,13 +4866,46 @@
       createLibraryStats(grid, libraryStats)
     }
 
+    // Library Growth needs every scene in the library, not just the ones
+    // watched, so it loads last and fills in when ready
+    if (!settings.hideLibraryGrowth) {
+      const section = createSection(root, tc('媒体库增长', 'Library Growth'))
+      const loading = createEl(
+        'div',
+        'os-card os-otd-loading',
+        tc('正在加载媒体库增长…', 'Loading library growth…'),
+      )
+      section.appendChild(loading)
+      getLibraryGrowthScenes()
+        .then((libraryScenes) => {
+          loading.remove()
+          createLibraryGrowth(
+            section,
+            libraryScenes,
+            oHistoryCache,
+            watchTimeData,
+          )
+          // An empty library has nothing to show
+          if (section.children.length === 1) section.remove()
+        })
+        .catch((err) => {
+          console.error('[OStats] Failed loading library growth:', err)
+          loading.innerText = tc(
+            '加载媒体库增长失败。',
+            'Failed to load library growth.',
+          )
+        })
+    }
+
     if (!settings.hideExportImportButtons) {
       createWatchTimeExportButton(root, oHistoryCache)
     }
 
-    // Play history is loaded after everything else, for On This Day and the
-    // Videos Watched card's week
-    if (!onThisDaySection && afterPlayHistory.length === 0) return
+    // Play history is loaded after everything else, for On This Day, the
+    // Videos Watched card's week and Sessions
+    if (!onThisDaySection && afterPlayHistory.length === 0 && !sessionsSection) {
+      return
+    }
     const playHistoryLoaded = addPlayHistory(scenes)
     if (afterPlayHistory.length > 0) {
       playHistoryLoaded
@@ -3634,10 +4914,39 @@
           console.error('[OStats] Failed loading play history:', err),
         )
     }
+
+    // Sessions first, so On This Day can show them on its timeline and
+    // count its watch time the same way
+    // A problem here only affects Sessions; On This Day still loads
+    let sessions = []
+    const sessionsReady = playHistoryLoaded
+      .then(() => {
+        sessions = buildSessions(
+          oData.playback,
+          oHistoryCache,
+          sessionBreak,
+          scenes,
+        )
+        if (!sessionsSection) return
+        sessionsSection.querySelector('.os-otd-loading')?.remove()
+        createSessionsSection(
+          sessionsSection,
+          sessions.filter(isShownSession),
+          scenes,
+        )
+      })
+      .catch((err) => {
+        console.error('[OStats] Failed loading sessions:', err)
+        sessions = []
+        const loading = sessionsSection?.querySelector('.os-otd-loading')
+        if (loading)
+          loading.innerText = tc('加载会话失败。', 'Failed to load sessions.')
+      })
     if (!onThisDaySection) return
 
     const onThisDayBody = createEl('div')
     playHistoryLoaded
+      .then(() => sessionsReady)
       .then(async () => {
         onThisDaySection.querySelector('.os-otd-loading')?.remove()
         onThisDaySection.appendChild(onThisDayBody)
@@ -3646,6 +4955,9 @@
           hideStats: settings.hideOnThisDayStats,
           hideTimelineOs: settings.hideOnThisDayTimelineOs,
           showTimelineWatches: settings.showOnThisDayTimelineWatches,
+          sessions,
+          hideSessionBars: settings.hideSessions,
+          playback: oData.playback,
         })
       })
       .catch((err) => {
