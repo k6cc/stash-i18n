@@ -22,7 +22,7 @@
   window.__InsightsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '2.15.0-2';
+  var PLUGIN_VERSION = '2.15.3-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -2159,6 +2159,51 @@
     return { rows, done, total: rows.length, active: done < rows.length, current: current ? current.id : null };
   }
 
+  // ── 2.15.3 (audit 2026-11-10): pure helpers for the keyboard, the address and the checks ──
+  // The calendar's next cell: cells run down a week (7) then to the next
+  // week; `ok(k)`: a day that can be shown (not a future blank).
+  const CAL_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"];
+  function calStep(i, key, n, ok) {
+    if (!(i >= 0)) return i;
+    if (key === "Home" || key === "End") {
+      const order = key === "Home" ? [...Array(n).keys()] : [...Array(n).keys()].reverse();
+      const j = order.find((k) => ok(k));
+      return j === undefined ? i : j;
+    }
+    const d = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -7, ArrowRight: 7 }[key];
+    if (!d) return i;
+    const j = i + d;
+    return j >= 0 && j < n && ok(j) ? j : i;
+  }
+  // What finds a control again after a redraw: its data- attributes (and
+  // tag), as a selector; null for one with none (a text box, a link).
+  const FOCUS_ATTRS = ["data-tab", "data-set", "data-nav", "data-daynav", "data-day", "data-act", "data-hub", "data-id", "data-key", "data-n", "data-bar", "data-jump", "data-go"];
+  function focusKey(el) {
+    if (!el || !el.getAttribute) return null;
+    const q = (v) => String(v).replace(/["\\]/g, "\\$&");
+    const parts = FOCUS_ATTRS.filter((a) => el.getAttribute(a) !== null).map((a) => `[${a}="${q(el.getAttribute(a))}"]`);
+    if (el.id) parts.unshift(`#${String(el.id).replace(/[^\w-]/g, "")}`);
+    return parts.length ? String(el.tagName || "").toLowerCase() + parts.join("") : null;
+  }
+  // ?tab= written into a query string, every other parameter kept
+  function withTab(search, key) {
+    const p = new URLSearchParams(search || "");
+    p.set("tab", key);
+    return `?${p.toString()}`;
+  }
+  function tabOf(search, ids) {
+    let v = null;
+    try { v = new URLSearchParams(search || "").get("tab"); } catch (_) {}
+    return v && (ids || []).includes(v) ? v : null;
+  }
+  // An older Stash without the filters the check uses: that one reads everything
+  const CHECK_UNKNOWN = /unknown type|cannot query field|unknown argument|not defined|unknown field/i;
+  // The movies are read only while their tab is the one shown
+  const moviesDue = (shown) => shown === "movies";
+  function checkFailedText(at, now) {
+    return tc(`无法检查改动：显示上次读到的内容（${agoZh(at, now)}）`, `Could not check for changes: showing what was read ${RT.ago(at, now)}`);
+  }
+
   if (window.__INSIGHTS_I18N_TEST__) {
     window.__InsightsI18nTest = { suiteData, DATA_KEYS, oddDur, durOf, ODD_DUR, ODD_DUR_PS, uiLangOf, uiLang, regionName, prefsMerge, slideshowInstalled, parseSlideshow, picturesModel, moviesInstalled, parseMovieSetting, moviesShown, chapterCount, isFullMovieFile, numberedScene, indexGaps,
       compactGroup, movieModel, MOVIE_CHOICES, rankMovies, movieYears, FULL_MOVIE_SEC,
@@ -2176,7 +2221,7 @@
       codecTier, isPoor, tierColor, TIER_COLOR, audioColor, RES_COLOR, CODEC_RANK, nextConfig, withWatch, moviesRenamed,
       mvUrl, toolkitTab, refreshStash,
       HUB_KNOWN, hubPresent, hubNorm, hubTotals, hubOrder, hubQueue, hubQueueView, hubKeepLost, HUB_LOOK, hubLook, hubPick,
-      focusables, keyActs, ago, ACT_SEL, RT };
+      focusables, keyActs, ago, ACT_SEL, RT, calStep, CAL_KEYS, focusKey, withTab, tabOf, moviesDue, checkFailedText, statsOrLast, CHECK_UNKNOWN };
     return;
   }
 
@@ -2380,14 +2425,23 @@
   // Everything, once: the first visit, or Refresh. `at` is when it finished
   // (what the header shows); `since` when it began, so the next check asks
   // for anything changed after that.
-  async function loadLibrary(progress) {
+  // `prev`: what was read before (2.15.3), whose totals stand in when
+  // Stash's could not be read this time.
+  async function loadLibrary(progress, prev) {
     const started = Date.now();
     const scenes = await readScenes(null, progress);
     const performers = await readPerformers(progress);
     const studios = await readStudios();
     progress(tc("正在统计已填写的项目…", "Counting what is filled in…"));
-    const [counts, stats] = await Promise.all([loadCounts(), loadStats()]);
-    return { at: Date.now(), since: started, pv: PERF_V, scenes, performers, studios, counts, stats };
+    const [counts, read] = await Promise.all([loadCounts(), loadStats()]);
+    return { at: Date.now(), since: started, pv: PERF_V, scenes, performers, studios, counts, stats: statsOrLast(read, prev && prev.stats) };
+  }
+  // 2.15.3 (audit 2026-11-10): a failed totals read was stored as {} over
+  // good ones. Now the last good totals stay, and the toast says so.
+  function statsOrLast(read, last) {
+    if (read) return read;
+    try { RT.toast(tc("无法读取 Stash 的总计：沿用上次读到的数值", "Stash's totals could not be read: showing the last ones read"), "warn", { id: "ins-stats" }); } catch (_) {}
+    return last || {};
   }
 
   // Brings a cached read up to date by reading only what changed (2.3). Plays
@@ -2409,6 +2463,8 @@
       s: findScenes(scene_filter: {updated_at: $t}, filter: {per_page: 0}) { count }
       p: findPerformers(performer_filter: {updated_at: $t}, filter: {per_page: 0}) { count }
       st: findStudios(studio_filter: {updated_at: $t}, filter: {per_page: 0}) { count } }`, { t: after })]);
+    // 2.15.3: without Stash's totals the check cannot tell what moved
+    if (!stats) throw new Error(tc("无法读取 Stash 的总计", "Stash's totals could not be read"));
     const people = (probe?.p?.count || 0) + (probe?.st?.count || 0) || stats.performer_count !== data.performers.length ||
       stats.studio_count !== (data.studios || []).length || data.pv !== PERF_V;
     if (!probe?.s?.count && !people && totalsMatch(sceneTotals(data.scenes), stats)) {
@@ -2471,12 +2527,17 @@
     }));
     return out;
   }
+  // null when the read failed (2.15.3; it was {}, stored over good totals);
+  // {} only when this Stash reports none of them.
   async function loadStats() {
-    const f = pick(await fieldsOf("StatsResultType"), ["scene_count", "scenes_size", "scenes_duration", "image_count", "images_size",
-      "gallery_count", "performer_count", "studio_count", "group_count", "movie_count", "tag_count",
-      "total_o_count", "total_play_count", "total_play_duration"]);
-    if (!f) return {};
-    try { return (await gql(`query { stats { ${f} } }`))?.stats || {}; } catch (_) { return {}; }
+    try {
+      const f = pick(await fieldsOf("StatsResultType"), ["scene_count", "scenes_size", "scenes_duration", "image_count", "images_size",
+        "gallery_count", "performer_count", "studio_count", "group_count", "movie_count", "tag_count",
+        "total_o_count", "total_play_count", "total_play_duration"]);
+      if (!f) return {};
+      const st = (await gql(`query { stats { ${f} } }`))?.stats;
+      return st && typeof st === "object" ? st : null;
+    } catch (_) { return null; }
   }
 
   // Stash's own phash match, exact, run only when asked: it is the one
@@ -2535,6 +2596,7 @@
   // carried in `values`), then exactly the files that came from the copies
   // are deleted from disk. Without it, the copy scenes and their files are
   // deleted outright. Refuses if anything changed since the scan.
+  const ARM_MIN_MS = 400;              // click-again: a confirmation sooner than this is a double-click
   async function removeCopies(keep, drops, merge) {
     const fresh = await loadForMerge([keep.id].concat(drops.map((s) => s.id)));
     const [k, ...ds] = fresh;
@@ -2556,9 +2618,23 @@
     // fell short, the missing markers are made again from what was read
     // before the merge and the missing O's and plays added, so nothing the
     // copies had is lost even on a Stash that merges differently.
-    const fixed = await settleMerge(k, ds);
-    if (fileIds.length) await gql(`mutation ($ids: [ID!]!) { deleteFiles(ids: $ids) }`, { ids: fileIds });
-    await logMerge(k, ds, plan, fixed, fileIds.length);
+    // 2.15.2 (audit 2026-11-10, D1): from here the copies are merged away in
+    // Stash. A failure in the check or the file delete used to skip the
+    // record: the merge was in no history, the copies' files stayed on the
+    // kept scene, and a retry refused ("a copy is already gone"). The record
+    // is written whatever happens, with what failed; the error says the
+    // merge itself went through (`merged`), so the group still leaves the list.
+    let fixed = null, deleted = 0, after = null;
+    try {
+      fixed = await settleMerge(k, ds);
+      if (fileIds.length) { await gql(`mutation ($ids: [ID!]!) { deleteFiles(ids: $ids) }`, { ids: fileIds }); deleted = fileIds.length; }
+    } catch (e) { after = e; }
+    await logMerge(k, ds, plan, fixed, deleted, after ? String(after.message || after) : "");
+    if (after) {
+      const e = new Error(tc(`已合并，但 ${after.message || after}${deleted ? "" : "；副本的文件仍在保留的场景上（可在它的「文件」页删除）"}`, `merged, but ${after.message || after}; ${deleted ? "" : "the copies' files are still on the kept scene (delete them from its Files tab)"}`).replace(/；$/, ""));
+      e.merged = true;
+      throw e;
+    }
     return fileIds.length;
   }
 
@@ -2603,10 +2679,10 @@
 
   // One entry per group in the merge history (Suite Data key dupLog), so
   // the user can see later what moved where. Never fatal: the merge is done.
-  async function logMerge(k, ds, plan, fixed, files) {
+  async function logMerge(k, ds, plan, fixed, files, err) {
     const entry = { at: new Date().toISOString(), keep: { id: String(k.id), title: k.title || ((k.files || [])[0] || {}).basename || "" },
       gone: ds.map((s) => ({ id: String(s.id), title: s.title || ((s.files || [])[0] || {}).basename || "", file: ((s.files || [])[0] || {}).basename || "" })),
-      text: plan.text, moves: plan.moves, fixed, files };
+      text: plan.text, moves: plan.moves, fixed, files, ...(err ? { err } : {}) };
     try {
       const saved = await updateConfig((mine) => withDupLog(mine, [entry]));
       if (saved) app.config = saved;
@@ -2647,7 +2723,7 @@
   // QuickTools' D tag, so "Marked for Delete" here is the same tag there.
   async function deleteTagName() {
     try {
-      const p = (await gql(`query { configuration { plugins } }`))?.configuration?.plugins || {};
+      const p = (await gql(`query { configuration { plugins(include: ["QuickTools"]) } }`))?.configuration?.plugins || {};
       return (p.QuickTools && String(p.QuickTools.deleteTagName || "").trim()) || "Marked for Delete";
     } catch (_) { return "Marked for Delete"; }
   }
@@ -2740,6 +2816,12 @@
   // becomes one of its backups (Your data restores it).
   function suiteData(o) {
     const MARK = "suiteDataMirror", MIRROR_MS = o.mirrorMs || 5 * 60 * 1000, TRIES = 6;
+    // o.unmirrored: data keys (logs) left out of the copy in the config. Every
+    // plugin reads the config, and the logs made it 4 MB (review 2026-11-09).
+    // Their revision stays out of the copy's mark too, so a value written in
+    // the config while Suite Data was off is never taken for a continuation
+    // of the store's: the store keeps its log, the other becomes a backup.
+    const OUT = o.unmirrored || [];
     const name = o.label || o.id;
     const S = { inst: null, err: false, syncing: null, revs: {}, vals: {}, loaded: false, at: 0, mrevs: {}, timer: 0, told: "", chain: Promise.resolve() };
     const own = (k) => o.keys.indexOf(k) >= 0;
@@ -2826,8 +2908,11 @@
       return S.syncing;
     }
     // Rewrite the copy in the config when the store is ahead of it.
-    function plan(now) {
-      if (!o.keys.some((k) => S.revs[k] && S.revs[k] !== S.mrevs[k])) return;
+    // `mine`: the config as read; one still holding a key left out of the copy
+    // (written before 2026-11-09) is rewritten once without it
+    function plan(now, mine) {
+      const stale = !!mine && OUT.some((k) => mine[k] !== undefined && S.revs[k]);
+      if (!stale && !o.keys.some((k) => OUT.indexOf(k) < 0 && S.revs[k] && S.revs[k] !== S.mrevs[k])) return;
       const due = S.at + MIRROR_MS - Date.now();
       if (now || due <= 0) { if (S.timer) clearTimeout(S.timer); S.timer = 0; Promise.resolve().then(mirror); }
       else if (!S.timer) S.timer = setTimeout(() => { S.timer = 0; mirror(); }, due);
@@ -2837,7 +2922,8 @@
         if (!S.loaded || S.err) return;
         const next = over(await o.readConfig());
         const revs = { ...S.revs };
-        next[MARK] = JSON.stringify({ at: Date.now(), revs });
+        OUT.forEach((k) => { delete next[k]; delete revs[k]; });
+        next[MARK] = JSON.stringify({ at: Date.now(), revs, ...(OUT.length ? { out: OUT } : {}) });
         await o.writeConfig(next, { copy: true });   // the mirror itself: a plugin may skip its refetch
         S.at = Date.now();
         S.mrevs = revs;
@@ -2885,7 +2971,7 @@
         if (!S.loaded) await ensure(mine);
         else absorb((await op({ mode: "get", plugin: o.id, keys: JSON.stringify(o.keys) })).items);
         S.err = false;
-        plan(false);
+        plan(false, mine);
         return over(mine);
       } catch (e) {
         const had = Object.keys(S.revs).length > 0;
@@ -2923,7 +3009,7 @@
             changed.forEach((k) => { if (next[k] === undefined) delete fresh[k]; else fresh[k] = next[k]; });
             await o.writeConfig(fresh, opt || {});
           }
-          plan(!!(opt && opt.mirror));
+          plan(!!(opt && opt.mirror), mine);
           return { ...next };
         }
         throw new Error(tc("Suite Data：其他写入总是抢先；什么也没保存，请重试", "Suite Data: other writes kept getting in first; nothing was saved, try again"));
@@ -2980,7 +3066,7 @@
   // where Stash's Settings page cannot roll them back (MAINTENANCE §4.24);
   // the client (SD) runs the chain and keeps a copy in the config.
   async function readOwnConfig() {
-    const d = await gql(`query { configuration { plugins } }`);
+    const d = await gql(`query { configuration { plugins(include: ["${PLUGIN_ID}"]) } }`);
     const plugins = d?.configuration?.plugins;
     if (!plugins || typeof plugins !== "object") throw new Error("could not read the plugin config");
     return plugins[PLUGIN_ID] || {};
@@ -2990,7 +3076,7 @@
               { id: PLUGIN_ID, input: next });
   }
   let sdNote = "";                     // Suite Data's notice, on the Actions tab
-  const SD = suiteData({ id: PLUGIN_ID, keys: DATA_KEYS, gql, label: "Insights", readConfig: readOwnConfig, writeConfig: writeOwnConfig,
+  const SD = suiteData({ id: PLUGIN_ID, keys: DATA_KEYS, unmirrored: ["dupLog"], gql, label: "Insights", readConfig: readOwnConfig, writeConfig: writeOwnConfig,
                          notify: (t) => { sdNote = t; } });
   function updateConfig(fn) {
     let seen = null;
@@ -3005,7 +3091,7 @@
   async function readPlugins() {
     let p;
     try {
-      const d = (await gql(`query { configuration { plugins interface { language } } }`))?.configuration;
+      const d = (await gql(`query { configuration { plugins(include: ["${PLUGIN_ID}", "Lockdown", "Slideshow", "Movies"]) interface { language } } }`))?.configuration;
       p = d?.plugins || {};
       uiLang.v = uiLangOf(d?.interface?.language) || uiLang.v;
     }
@@ -3133,6 +3219,10 @@
     expand: '<path d="M3 6.5V3h3.5M13 6.5V3H9.5M3 9.5V13h3.5M13 9.5V13H9.5"/>',
     ruler: '<path d="M2 10.5 10.5 2 14 5.5 5.5 14zM5 7.5l1.5 1.5M7 5.5l1 1M9 3.5l1.5 1.5M3 9.5l1 1"/>',
     arrow: '<path d="M3 8h10M9 4l4 4-4 4"/>',
+    // 2.15.3: the earlier / later and back glyphs as line icons
+    back: '<path d="M13 8H3M7 4 3 8l4 4"/>',
+    left: '<path d="M10 3.5 5.5 8l4.5 4.5"/>',
+    right: '<path d="M6 3.5l4.5 4.5L6 12.5"/>',
     search: '<circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/>',
     movie: '<rect x="2" y="6.5" width="12" height="7" rx="1.2"/><path d="m2.2 6.3 11-3 .6 2.1-11 3zM5.6 4.4l1.5 2.3M9.2 3.4l1.5 2.3"/>',
     flag: '<path d="M3.5 14.5V2M3.5 2.5h8.5l-2 3 2 3H3.5"/>',
@@ -3559,7 +3649,10 @@
 .ins-chip:hover { color: var(--hi); }
 .ins-chip.on { color: var(--hi); background: color-mix(in srgb, var(--c, var(--acc)) 22%, var(--ui2)); border-color: color-mix(in srgb, var(--c, var(--acc)) 50%, transparent);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
-.ins-nav { background: var(--bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); color: var(--tx1b); border-radius: 8px; width: 28px; height: 26px; cursor: pointer; line-height: 1; }
+.ins-nav { background: var(--bg2); border: 1px solid var(--sx-deep); border-bottom-color: var(--ui2); color: var(--tx1b); border-radius: 8px; width: 28px; height: 26px; cursor: pointer; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0; vertical-align: middle; }
+.ins-nav .ins-ic { width: 14px; height: 14px; }
+.ins-chipic { display: inline-flex; align-items: center; gap: 4px; } .ins-chipic .ins-ic { width: 12px; height: 12px; }
 .ins-nav:disabled { opacity: .35; cursor: default; }
 
 /* bar charts: every bar carries its value and its label */
@@ -3643,6 +3736,11 @@
 .ins-cal i:hover:not(.f) { outline: 1.5px solid var(--sx-bl-l); outline-offset: -1.5px; }
 .ins-calm { display: grid; gap: 3px; font-size: 10.5px; color: var(--tx2); margin-bottom: 4px; }
 .ins-calm span { white-space: nowrap; overflow: visible; }
+/* 2.15.3 (IN3, audit 2026-11-10): wide things scroll inside their own box on a phone, never the page */
+.ins-scroll { overflow-x: auto; scrollbar-width: thin; }
+.ins-well.ins-con { overflow-x: auto; }
+.ins-gw { position: relative; }
+.ins-gl { position: absolute; font-size: 11px; line-height: 1; color: var(--sx-tx2); white-space: nowrap; pointer-events: none; }
 .ins-calm b { color: var(--tx); font-weight: 600; margin-left: 3px; }
 .ins-legend { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--tx2); }
 .ins-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
@@ -3767,7 +3865,7 @@
 .ins-dg .pick em { color: var(--tx3); font-style: normal; }
 .ins-dg .plan { color: var(--tx); margin-top: 4px; }
 .ins-dlog { margin-top: 10px; } .ins-dlog > div { font-size: 12px; color: var(--tx2); padding: 4px 0; } .ins-dlog > div + div { border-top: 1px solid var(--ins-div1); }
-@media (max-width: 576px) { .ins-dg .pick, .ins-dg .plan { margin-left: 30px; } }
+@media (max-width: 575.98px) { .ins-dg .pick, .ins-dg .plan { margin-left: 30px; } }
 .ins-k { display: inline-block; min-width: 54px; text-align: center; font-size: 10px; font-weight: 700; letter-spacing: .05em; padding: 1px 6px; border-radius: 6px; margin-right: 8px; }
 .ins-k.keep { background: var(--ins-up-bg); color: var(--up); } .ins-k.del { background: var(--ins-down-bg); color: var(--down); } .ins-k.look { background: var(--ins-warn-bg); color: var(--ye); }
 .ins-bx { width: 16px; height: 16px; border-radius: 5px; border: 1px solid var(--tx3); background: var(--bg2); cursor: pointer; padding: 0; position: relative;
@@ -3799,16 +3897,18 @@
 #ins-tip { position: fixed; z-index: 2000; pointer-events: none; background: var(--sx-bg2); border: 1px solid var(--sx-ui3); color: var(--sx-hi);
   border-radius: 8px; padding: 7px 10px; font-size: 12px; line-height: 1.5; max-width: 320px; box-shadow: 0 10px 28px rgba(0,0,0,calc(.6*var(--sx-k)));
   display: none; white-space: pre-line; }
-@media (max-width: 700px) { .ins-hero { grid-template-columns: minmax(0, 1fr); } .ins-hero .big { font-size: 32px; }
+@media (max-width: 767.98px) { .ins-hero { grid-template-columns: minmax(0, 1fr); } .ins-hero .big { font-size: 32px; }
   .ins-grid, .ins-grid3 { grid-template-columns: minmax(0, 1fr); } .ins-sub, .ins-stats { margin-left: 0; } }
 /* phones (THEME): the slab without an outer margin and 12px inside; the
-   tabs a grid that never leaves one alone on a line: two to a row, the
-   first three three to a row when there are seven */
-@media (max-width: 576px) { #insights { margin: 8px 0 24px; padding: 12px 12px 8px; }
+   tabs one row that scrolls sideways (2.15.3, the suite's phone tab bar;
+   it was a grid). The calendar, the heatmap and the growth chart keep a
+   readable width and scroll inside their box. */
+@media (max-width: 575.98px) { #insights { margin: 8px 0 24px; padding: 12px 12px 8px; }
   .ins-meta { width: 100%; } .ins-meta .ins-upd { flex: 1; min-width: 0; }
-  .ins-tabs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); width: 100%; margin-left: 0; }
-  .ins-tab { grid-column: span 3; justify-content: center; padding: 6px 8px; min-width: 0; white-space: nowrap; }
-  .ins-tabs:has(> .ins-tab:nth-child(7)) > .ins-tab:nth-child(-n+3) { grid-column: span 2; } }
+  .ins-tabs { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; width: 100%; margin-left: 0; box-sizing: border-box; }
+  .ins-tabs::-webkit-scrollbar { display: none; }
+  .ins-tab { flex: 0 0 auto; padding: 6px 10px; white-space: nowrap; }
+  .ins-calin { min-width: 600px; } .ins-scroll > .ins-hm { min-width: 520px; } .ins-gw { min-width: 520px; } }
 /* 2.8: Library to-do, the toolkits' hub at the top of Actions */
 .ins-pri { background: linear-gradient(180deg, var(--sx-gr), var(--sx-gr-d)); color: var(--sx-on); font-weight: 600; border-top-color: var(--sx-gr-tx); }
 .ins-pri:hover { color: var(--sx-on); filter: brightness(1.08); }
@@ -3876,7 +3976,7 @@
 .ins-hlink { background: none; border: 0; color: var(--sx-bl-tx); font-size: 12px; padding: 8px 6px; cursor: pointer; border-radius: 6px; }
 .ins-hlink:hover:not(:disabled) { color: var(--sx-bl-tx); } .ins-hlink:disabled { opacity: .5; cursor: default; }
 .ins-hpn { margin: 2px 0 12px; }
-@media (max-width: 576px) {
+@media (max-width: 575.98px) {
   .ins-hubgrid { grid-template-columns: minmax(0, 1fr); }
   .ins-hubs { width: 100%; } .ins-hubs .ins-btn { flex: 1; justify-content: center; }
   .ins-hki { grid-template-columns: 58px minmax(0, 1fr) auto; gap: 8px; } .ins-hki.run .ins-hka { grid-column: 2 / -1; justify-content: flex-start; }
@@ -4116,7 +4216,7 @@
   // refresh starts it over (the scan would describe the old library).
   function freshActs() {
     return { dups: null, state: "idle", err: "", mode: "best", merge: true, showLog: false, sharp: true, ticks: new Map(), armed: false,
-             run: null, showAll: false, scanned: 0, msg: "", tagMsg: "", phashMsg: "" };
+             run: null, showAll: false, scanned: 0, msg: "", tagMsg: "", phashMsg: "", msgErr: false, tagErr: false, phashErr: false };
   }
 
   // `set.hideO`: the You tab's activity (`act`) is plays instead of O's,
@@ -4226,7 +4326,28 @@
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
+  // 2.15.3 (audit 2026-11-10): every redraw rebuilt the page and the
+  // keyboard focus fell to the body. The control in use is found again by
+  // its data- attributes (focusKey) and focused.
   function render() {
+    const mark = app.root ? focusMark(app.root) : null;
+    renderAll();
+    focusBack(app.root, mark);
+  }
+  function focusMark(root) {
+    const a = document.activeElement;
+    if (!a || a === root || !root.contains || !root.contains(a)) return null;
+    const sel = focusKey(a);
+    return sel ? { sel, n: [...root.querySelectorAll(sel)].indexOf(a) } : null;
+  }
+  function focusBack(root, mark) {
+    if (!root || !mark) return;
+    const all = [...root.querySelectorAll(mark.sel)];
+    const el = all[mark.n] || all[0];
+    if (el && el !== document.activeElement) { try { el.focus({ preventScroll: true }); } catch (_) { el.focus(); } }
+  }
+
+  function renderAll() {
     const root = app.root;
     if (!root) return;
     CLICKS.length = 0;
@@ -4235,13 +4356,13 @@
     root.innerHTML = `
       <div class="ins-head"><span class="ins-title">${ic("spark")}Insights</span>
         <div class="ins-meta"><span class="ins-upd${app.syncing ? " busy" : ""}">${esc(metaText())}</span>
-          ${dataButton()}<button class="ins-btn" data-act="refresh" data-tip="${tc("重新读取媒体库", "Read the library again")}">${ic("refresh")} ${tc("刷新", "Refresh")}</button></div>
-        <div class="ins-tabs">${tabsShown().map((t) => `<button class="ins-tab${tab === t[0] ? " on" : ""}" style="--tc:var(--${t[3]})" data-tab="${t[0]}">${ic(t[2])}${tabLabel(t)}</button>`).join("")}</div></div>
+          ${dataButton()}<button class="ins-btn" data-act="refresh" data-tip="${tc("重新读取媒体库", "Read the library again")}">${ic("refresh")} ${tc("重新读取", "Read again")}</button></div>
+        <div class="ins-tabs" role="tablist" aria-label="Insights">${tabsShown().map((t) => `<button class="ins-tab${tab === t[0] ? " on" : ""}" role="tab" aria-selected="${tab === t[0] ? "true" : "false"}" style="--tc:var(--${t[3]})" data-tab="${t[0]}">${ic(t[2])}${tabLabel(t)}</button>`).join("")}</div></div>
       <div class="ins-body"></div>
       <div class="ins-foot">${tc("每根条形、每一行和每个磁贴都会在 Stash 中打开对应的列表。全部在你的浏览器中算出来；数据不会外传。", "Every bar, row and tile opens the matching list in Stash. Worked out in your browser; nothing leaves it.")}</div>`;
     const body = root.querySelector(".ins-body");
     if (app.error) { body.innerHTML = `<div class="ins-error">${tc(`Insights 无法载入你的媒体库：${esc(app.error)}。`, `Insights could not load your library: ${esc(app.error)}.`)} <button class="ins-btn" data-act="refresh">${tc("重试", "Try again")}</button></div>`; return; }
-    if (!app.model) { body.innerHTML = `<div class="ins-progress">${esc(app.progress || tc("正在准备…", "Getting ready…"))}<div class="bar"><i></i></div></div>`; return; }
+    if (!app.model) { body.innerHTML = `<div class="ins-progress">${esc(app.progress || tc("正在读取你的媒体库…", "Reading your library…"))}<div class="bar"><i></i></div></div>`; return; }
     ({ you: renderYou, actions: renderActions, library: renderLibrary, files: renderFiles, health: renderHealth, collection: renderCollection,
        movies: renderMovies }[tab] || renderYou)(body);
   }
@@ -4337,12 +4458,17 @@
       const k = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
       months += `<span>${first ? `${esc(d.toLocaleDateString(undefined, { month: "short" }))}<b>${monthTotals.get(k) || 0}</b>` : ""}</span>`;
     }
-    const cells = cal.cells.map((c) => c.future ? `<i class="f"></i>`
-      : `<i class="${c.key === today ? "today" : ""}" style="background:${heat(c.value, cal.max, RAMP[W.ramp])}" data-day="${c.key}" data-tip="${esc(fmtDate(c.from, { weekday: "short", month: "short", day: "numeric", year: "numeric" }))}: ${W.n(c.value)}"></i>`).join("");
+    // 2.15.3 (audit 2026-11-10): about 365 unnamed tab stops. Now one: the
+    // day shown below (or today), the arrow keys move along the weeks (calKey),
+    // and each day is named ("3 Nov: 4 plays").
+    const pick = cal.cells.some((c) => !c.future && c.key === app.you.day) ? app.you.day : today;
+    const cells = cal.cells.map((c) => c.future ? `<i class="f" aria-hidden="true"></i>`
+      : `<i class="${c.key === today ? "today" : ""}" style="background:${heat(c.value, cal.max, RAMP[W.ramp])}" data-day="${c.key}" role="button" tabindex="${c.key === pick ? "0" : "-1"}"
+          aria-label="${esc(fmtDate(c.from, { day: "numeric", month: "short" }))}: ${esc(W.n(c.value))}" data-tip="${esc(fmtDate(c.from, { weekday: "short", month: "short", day: "numeric", year: "numeric" }))}: ${W.n(c.value)}"></i>`).join("");
     const total = cal.cells.reduce((a, c) => a + c.value, 0);
     const legend = RAMP[W.ramp].map((col) => `<i style="background:${col}"></i>`).join("");
-    return `<div class="ins-calm" style="grid-template-columns:repeat(${weeks},1fr)">${months}</div>
-      <div class="ins-cal" style="grid-template-columns:repeat(${weeks},1fr)">${cells}</div>
+    return `<div class="ins-scroll"><div class="ins-calin"><div class="ins-calm" style="grid-template-columns:repeat(${weeks},1fr)" aria-hidden="true">${months}</div>
+      <div class="ins-cal" role="group" aria-label="${esc(tc(`一年的 ${W.many}，一天一格；方向键移动，Enter 打开当天`, `A year of ${W.many}, one square a day; arrow keys move, Enter opens the day`))}" style="grid-template-columns:repeat(${weeks},1fr)">${cells}</div></div></div>
       <div class="ins-legend" style="margin-top:10px"><span style="margin-right:auto">${tc(`${W.n(total)}，最近 12 个月${m.act.undated ? ` · 另有 ${fmtN(m.act.undated)} 次没有日期` : ""}`, `${W.n(total)} in the last 12 months${m.act.undated ? ` · ${fmtN(m.act.undated)} more without a date` : ""}`)}</span>
         ${tc(`少 ${legend} 多`, `less ${legend} more`)}</div>`;
   }
@@ -4458,16 +4584,16 @@
         ${card({ title: metric === "watch" ? tc("观看时长", "Watch time") : tc(`${W.Many} 随时间变化`, `${W.Many} over time`), icon: "trend", c: metric === "watch" ? "cy" : W.c,
           right: `${chips("metric", W.c)}
             ${chipFor("you", "kind", "week", tc("周", "Week"))}${chipFor("you", "kind", "month", tc("月", "Month"))}${chipFor("you", "kind", "year", tc("年", "Year"))}`,
-          sub: `<button class="ins-nav" data-nav="-1" aria-label="${tc("更早", "Earlier")}">‹</button> <b style="color:var(--hi);margin:0 8px">${esc(per.title)}</b>
-            <button class="ins-nav" data-nav="1" aria-label="${tc("更晚", "Later")}" ${y.offset >= 0 ? "disabled" : ""}>›</button>
+          sub: `<button class="ins-nav" data-nav="-1" aria-label="${tc("更早", "Earlier")}">${ic("left")}</button> <b style="color:var(--hi);margin:0 8px">${esc(per.title)}</b>
+            <button class="ins-nav" data-nav="1" aria-label="${tc("更晚", "Later")}" ${y.offset >= 0 ? "disabled" : ""}>${ic("right")}</button>
             <span style="margin-left:10px">${tc(`${metric === "watch" ? `看了 ${fmtDur(pTotal)}` : W.n(pTotal)} · ${y.kind === "year" ? "点击某个月可打开它" : "点击某天查看"}`, `${metric === "watch" ? `${fmtDur(pTotal)} watched` : W.n(pTotal)} · ${y.kind === "year" ? "click a month to open it" : "click a day to see it"}`)}</span>` },
           barChart(pBars, { fmt: fmtV, c: metric === "watch" ? "cy" : W.c }) +
           (metric === "watch" && !Object.keys(m.watch).length ? `<div class="ins-note">${tc("观看时长在场景播放器播放时累计；目前还没有记录。", "Watch time counts while a scene's player plays; nothing is counted yet.")}</div>` : ""))}
-        ${card({ title: tc("时间分布", "When"), icon: "clock", c: "pu", sub: tc(`按星期与小时的 ${W.Many}，并给出各项合计`, `${W.Many} by weekday and hour, with totals for each`) }, heatmapHtml(m))}
+        ${card({ title: tc("时间分布", "When"), icon: "clock", c: "pu", sub: tc(`按星期与小时的 ${W.Many}，并给出各项合计`, `${W.Many} by weekday and hour, with totals for each`) }, `<div class="ins-scroll">${heatmapHtml(m)}</div>`)}
       </div>
       <div class="ins-grid">
         ${card({ title: isToday ? tc("今天", "Today") : esc(fmtDate(parseDay(day), { weekday: "long", month: "long", day: "numeric", year: "numeric" })), icon: "calendar", c: "cy", id: "ins-otd",
-          right: `<button class="ins-nav" data-daynav="-1" aria-label="${tc("前一天", "Day before")}">‹</button><button class="ins-nav" data-daynav="1" aria-label="${tc("后一天", "Day after")}" ${isToday ? "disabled" : ""}>›</button>` },
+          right: `<button class="ins-nav" data-daynav="-1" aria-label="${tc("前一天", "Day before")}">${ic("left")}</button><button class="ins-nav" data-daynav="1" aria-label="${tc("后一天", "Day after")}" ${isToday ? "disabled" : ""}>${ic("right")}</button>` },
           `<div class="ins-stats"><span><b style="color:var(--${W.c})">${dayN}</b>${W.unit}</span><span><b style="color:var(--cy)">${fmtDur(m.watch[day] || 0)}</b>${tc("观看", "watched")}</span><span><b>${dayScenes}</b>${tc(" 个场景", "scenes")}</span></div>
           <div class="ins-day"><div class="axis"></div>${ev.map((e) => {
             const d = new Date(e.t), x = ((d.getHours() * 60 + d.getMinutes()) / 1440) * 100;
@@ -4713,7 +4839,7 @@
       ${L.odd ? `<div class="ins-note ins-oddnote">${ic("alert")}<span>${tc(`${plural(L.odd, "scene")}的时长异常（超过 6 小时，或 DVD 的 VOB 超过 4 小时：ffprobe 会误读部分文件），已从「最长」、总计与平均值中排除。`, `${plural(L.odd, "scene")} with an odd length (over 6 hours, or a DVD's VOB over 4 hours: ffprobe misreads some) left out of
         Longest, the totals and the averages.`)} <span class="ins-go" data-go="${esc(S([{ type: "duration", modifier: "GREATER_THAN", value: { value: ODD_DUR_PS } }], "duration"))}">${tc("列出最长的", "List the longest")}${ic("arrow")}</span></span></div>` : ""}
       ${card({ title: l.year === null ? (l.timeline === "added" ? tc("按年份看加入 Stash", "Added to Stash, by year") : tc("按年份看发行", "Released, by year")) : tc(`${l.year} 年，按月`, `${l.year}, by month`), icon: "calendar", c: "or",
-        right: `${chipFor("lib", "timeline", "released", tc("发行", "Released"), "or")}${chipFor("lib", "timeline", "added", tc("加入 Stash", "Added to Stash"), "or")}${l.year !== null ? ` <button class="ins-chip" data-set="lib.year=null">${tc("← 全部年份", "← all years")}</button>` : ""}`,
+        right: `${chipFor("lib", "timeline", "released", tc("发行", "Released"), "or")}${chipFor("lib", "timeline", "added", tc("加入 Stash", "Added to Stash"), "or")}${l.year !== null ? ` <button class="ins-chip ins-chipic" data-set="lib.year=null">${ic("back")}${tc("全部年份", "all years")}</button>` : ""}`,
         sub: tc(`${l.year === null ? "点击某年查看它的各月。" : "点击某月列出那些场景。"}${undatedN ? ` ${plural(undatedN, "scene")}因为没有发行日期而没有显示。` : ""}`, `${l.year === null ? "Click a year to see its months." : "Click a month to list those scenes."}${undatedN ? ` ${plural(undatedN, "scene")} without a release date are not shown.` : ""}`) },
         bars.length ? barChart(bars, { c: l.timeline === "added" ? "cy" : "or" }) : `<div class="ins-empty">${tc("还没有日期。", "No dates yet.")}</div>`)}
       <div class="ins-grid">
@@ -5009,7 +5135,7 @@
     const a = app.acts;
     const when = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? ago(t) : ""; };
     return `<div class="ins-dlog"><button class="ins-chip" data-set="acts.showLog=${a.showLog ? "false" : "true"}">${a.showLog ? tc("隐藏", "hide") : tc("显示", "show")}${tc("合并历史（", " the merge history (")}${fmtN(all.length)}${tc("）", ")")}</button>
-      ${a.showLog ? all.slice(0, 30).map((e) => `<div><b style="color:var(--tx)">${esc(when(e.at))}</b> · <span class="ins-go" data-go="/scenes/${esc(e.keep && e.keep.id)}">${tc("场景", "scene")} ${esc(e.keep && e.keep.id)}</span> · ${esc(e.text || "")}${e.fixed && (e.fixed.markers || e.fixed.o || e.fixed.plays) ? ` <em>${tc("（Insights 补上了 Stash 合并时遗漏的 ", "(Insights added ")}${esc([e.fixed.markers ? tc(`${e.fixed.markers} 个标记`, `${e.fixed.markers} markers`) : "", e.fixed.o ? tc(`${e.fixed.o} 次 O`, `${e.fixed.o} O's`) : "", e.fixed.plays ? tc(`${e.fixed.plays} 次播放`, `${e.fixed.plays} plays`) : ""].filter(Boolean).join(tc("、", ", ")))}${tc("）", ")")}</em>` : ""}</div>`).join("") : ""}</div>`;
+      ${a.showLog ? all.slice(0, 30).map((e) => `<div><b style="color:var(--tx)">${esc(when(e.at))}</b> · <span class="ins-go" data-go="/scenes/${esc(e.keep && e.keep.id)}">${tc("场景", "scene")} ${esc(e.keep && e.keep.id)}</span> · ${esc(e.text || "")}${e.fixed && (e.fixed.markers || e.fixed.o || e.fixed.plays) ? ` <em>${tc("（Insights 补上了 Stash 合并时遗漏的 ", "(Insights added ")}${esc([e.fixed.markers ? tc(`${e.fixed.markers} 个标记`, `${e.fixed.markers} markers`) : "", e.fixed.o ? tc(`${e.fixed.o} 次 O`, `${e.fixed.o} O's`) : "", e.fixed.plays ? tc(`${e.fixed.plays} 次播放`, `${e.fixed.plays} plays`) : ""].filter(Boolean).join(tc("、", ", ")))}${tc("）", ")")}</em>` : ""}${e.err ? ` <em style="color:var(--down)">${tc(`（已合并，但 ${esc(e.err)}）`, `(merged, but ${esc(e.err)})`)}</em>` : ""}</div>`).join("") : ""}</div>`;
   }
 
   function renderActions(el) {
@@ -5062,7 +5188,7 @@
         ${run ? `<div class="ins-run"><div class="bar"><i style="width:${(run.done / Math.max(1, run.total) * 100).toFixed(1)}%"></i></div>
             <span>${run.finished ? tc(`完成：清理 ${plural(run.ok, "group")}，移除 ${plural(run.files, "file")}，释放 ${fmtBytes(run.bytes)}${run.errors.length ? `，跳过 ${plural(run.errors.length, "group")}` : ""}。`, `Done: ${plural(run.ok, "group")} cleaned, ${plural(run.files, "file")} removed, ${fmtBytes(run.bytes)} freed${run.errors.length ? `, ${plural(run.errors.length, "group")} skipped` : ""}.`) : tc(`第 ${run.done + 1} / ${run.total} 组…`, `Group ${run.done + 1} of ${run.total}…`)}</span></div>
             ${run.errors.length ? `<div class="ins-note" style="color:var(--down)">${run.errors.slice(0, 6).map((e) => esc(e)).join("<br>")}</div>` : ""}` : ""}
-        ${a.msg ? `<div class="ins-note" style="color:var(--up)">${esc(a.msg)}</div>` : ""}
+        ${a.msg ? `<div class="ins-note" style="color:var(--${a.msgErr ? "down" : "up"})">${esc(a.msg)}</div>` : ""}
         <div class="ins-btns">
           <button class="ins-btn" data-act="dtag" ${!D.files || busy ? "disabled" : ""}>${ic("tag")} ${tc(`把 ${plural(D.files, "copy", "copies")} 标记为删除`, `Tag ${plural(D.files, "copy", "copies")} for delete`)}</button>
           <button class="ins-btn danger${a.armed ? " armed" : ""}" data-act="dremove" ${!D.files || busy ? "disabled" : ""}>${ic("alert")}
@@ -5090,7 +5216,7 @@
           (ne.n ? `<div class="ins-btns"><button class="ins-btn" data-act="reencode" data-n="100">${ic("tag")} ${tc(`给前 ${fmtN(Math.min(100, ne.n))} 个打「Re-encode」标签`, `Tag the top ${fmtN(Math.min(100, ne.n))} "Re-encode"`)}</button>
             ${ne.n > 100 ? `<button class="ins-btn" data-act="reencode" data-n="all">${tc(`全部 ${fmtN(ne.n)} 个都打标签`, `Tag all ${fmtN(ne.n)}`)}</button>` : ""}
             <span class="ins-go" data-go="${esc(S([{ type: "video_codec", modifier: "NOT_MATCHES_REGEX", value: "hevc|av1" }], "filesize"))}">${tc("在 Stash 中打开全部", "Open all in Stash")}${ic("arrow")}</span></div>` : "") +
-          (a.tagMsg ? `<div class="ins-note" style="color:var(--up)">${esc(a.tagMsg)}</div>` : ""))}
+          (a.tagMsg ? `<div class="ins-note" style="color:var(--${a.tagErr ? "down" : "up"})">${esc(a.tagMsg)}</div>` : ""))}
         ${card({ title: tc("值得升级", "Worth upgrading"), icon: "up", c: "re", id: "ins-a-up", right: `<b style="color:var(--hi)">${fmtN(up.n)}</b>`,
           sub: tc(`低于 720p，或编码不是 HEVC、AV1、H264（${fmtBytes(up.size)}）。你观看最多的排在最前：这些换个好点的副本最值。`, `Below 720p, or in a codec other than HEVC, AV1 or H264 (${fmtBytes(up.size)}). The ones you watch most come first: a better copy of those is worth the most.`) },
           con(up.list.length ? up.list.slice(0, 8).map((s) => (m.noO ? sceneLine(s, s.plays ? `${s.plays}×` : "", "var(--cy)", "") : sceneLine(s, s.o ? `${s.o}${ic("drop")}` : "", "var(--otx)", s.o || s.plays ? tc(` · 播放 ${s.plays}×`, ` · played ${s.plays}×`) : ""))).join("") : `<div class="ins-empty">${ic("check")} ${tc("没有低于 720p 或编码较差的文件。", "Nothing below 720p or in a poor codec.")}</div>`) +
@@ -5106,7 +5232,7 @@
             <div class="v"><span class="ins-go">${ic("arrow")}</span></div></div>`).join("") : "") +
           (fs.noPhash ? `<div class="ins-chk"><span class="ins-sq" style="--c:var(--pu)">${ic("search")}</span>
             <div><div class="n">${tc(`${plural(fs.noPhash, "file")}没有 phash`, `${plural(fs.noPhash, "file")} without a phash`)}</div><div class="sub">${tc("它们无法作为重复项匹配。生成会只为这些场景跑一个 Stash 任务。", "They cannot be matched as duplicates. Generating runs a Stash task for just these scenes.")}</div></div>
-            <div class="v">${a.phashMsg ? `<span style="color:var(--up);font-weight:400;font-size:12px">${esc(a.phashMsg)}</span>` : `<button class="ins-btn" data-act="phash">${tc("生成", "Generate")}</button>`}</div></div>` : "") +
+            <div class="v">${a.phashMsg ? `<span style="color:var(--${a.phashErr ? "down" : "up"});font-weight:400;font-size:12px">${esc(a.phashMsg)}</span>` : `<button class="ins-btn" data-act="phash">${tc("生成", "Generate")}</button>`}</div></div>` : "") +
           P2.open.map(checkRow).join("") +
           (!wins.length && !P2.open.length && !fs.noPhash ? `<div class="ins-empty">${ic("check")} ${tc("没有要修的。", "Nothing to fix.")}</div>` : "") +
           (P2.clear.length ? `<div class="ins-note" style="color:var(--gr)">${tc(`全部正常：${P2.clear.map((x) => esc(x.title.toLowerCase())).join("、")}。`, `All clear: ${P2.clear.map((x) => esc(x.title.toLowerCase())).join(", ")}.`)}</div>` : ""))}
@@ -5162,7 +5288,10 @@
   }
   function drawHub() {
     const el = app.root && app.root.querySelector("#ins-hub");
-    if (el) el.outerHTML = hubHtml();
+    if (!el) return;
+    const mark = focusMark(app.root);
+    el.outerHTML = hubHtml();
+    focusBack(app.root, mark);
   }
   // `force`: the toolkits read again too (the Refresh chip); otherwise each
   // answers from what it already has.
@@ -5373,15 +5502,17 @@
         w.drops.forEach((s) => doneIds.add(s.id));
       } catch (e) {
         a.run.errors.push(`${w.keep.title}: ${e.message}`);
+        // 2.15.2: merged in Stash though a later step failed: the copies are gone from the list too
+        if (e.merged) { w.drops.forEach((s) => doneIds.add(s.id)); a.run.merged = (a.run.merged || 0) + 1; }
       }
       a.run.done += 1;
       if (app.tab === "actions") render();
     }
     a.run.finished = true;
-    if (a.run.ok) refreshStash([...doneIds]);
+    if (a.run.ok || a.run.merged) refreshStash([...doneIds]);
     // the cleaned groups leave the list; the library cache is stale now
     a.dups = a.dups.map((g) => g.filter((s) => !doneIds.has(s.id))).filter((g) => g.length > 1);
-    a.msg = tc("Insights 的其余部分会在后台跟上这些改动。", "The rest of Insights catches up with these changes in the background.");
+    a.msg = tc("Insights 的其余部分会在后台跟上这些改动。", "The rest of Insights catches up with these changes in the background."); a.msgErr = false;
     render();
     refresh(false);
   }
@@ -5393,8 +5524,12 @@
     try {
       const name = await deleteTagName();
       await tagScenes(ids, name);
-      a.msg = tc(`已为 ${plural(ids.length, "copy", "copies")}打上「${name}」标签。用该标签筛选场景列表来复核并删除。`, `Tagged ${plural(ids.length, "copy", "copies")} "${name}". Filter the scene list by that tag to review and delete them.`);
-    } catch (e) { a.msg = ""; a.err = e.message; a.msg = tc(`打标签失败：${e.message}`, `Tagging failed: ${e.message}`); }
+      a.msg = tc(`已为 ${plural(ids.length, "copy", "copies")}打上「${name}」标签。用该标签筛选场景列表来复核并删除。`, `Tagged ${plural(ids.length, "copy", "copies")} "${name}". Filter the scene list by that tag to review and delete them.`); a.msgErr = false;
+    } catch (e) {
+      // 2.15.3 (audit 2026-11-10): drawn green before; the suite's words, colour and toast now
+      a.msg = tc(`未打标签：${e.message}`, `Not tagged: ${e.message}`); a.msgErr = true;
+      RT.toast(a.msg, "error", { id: "ins-tag" });
+    }
     render();
   }
 
@@ -5402,16 +5537,16 @@
     const a = app.acts, ne = a._noteff;
     const list = btn.dataset.n === "all" ? ne.list : ne.list.slice(0, 100);
     btn.disabled = true;
-    try { await tagScenes(list.map((x) => x.s.id), "Re-encode"); a.tagMsg = tc(`已为 ${plural(list.length, "scene")}打上「Re-encode」标签。`, `Tagged ${plural(list.length, "scene")} "Re-encode".`); }
-    catch (e) { a.tagMsg = tc(`打标签失败：${e.message}`, `Tagging failed: ${e.message}`); }
+    try { await tagScenes(list.map((x) => x.s.id), "Re-encode"); a.tagMsg = tc(`已为 ${plural(list.length, "scene")}打上「Re-encode」标签。`, `Tagged ${plural(list.length, "scene")} "Re-encode".`); a.tagErr = false; }
+    catch (e) { a.tagMsg = tc(`未打标签：${e.message}`, `Not tagged: ${e.message}`); a.tagErr = true; RT.toast(a.tagMsg, "error", { id: "ins-tag" }); }
     render();
   }
 
   async function runPhash(btn) {
     const a = app.acts;
     btn.disabled = true;
-    try { await generatePhashes(a._noPhashIds || []); a.phashMsg = tc("已在 Stash 的任务队列中启动。完成后刷新。", "Started in Stash's task queue. Refresh when it is done."); }
-    catch (e) { a.phashMsg = tc(`无法启动：${e.message}`, `Could not start: ${e.message}`); }
+    try { await generatePhashes(a._noPhashIds || []); a.phashMsg = tc("已在 Stash 的任务队列中启动。完成后重新读取。", "Started in Stash's task queue. Read again when it is done."); a.phashErr = false; }
+    catch (e) { a.phashMsg = tc(`未能启动：${e.message}`, `Not started: ${e.message}`); a.phashErr = true; RT.toast(a.phashMsg, "error", { id: "ins-phash" }); }
     render();
   }
 
@@ -5539,14 +5674,18 @@
     const hit = g.map((x, i) => `<rect x="${(X(i) - step / 2).toFixed(1)}" y="0" width="${Math.max(2, step).toFixed(1)}" height="${H - padB}" fill="transparent"
       data-tip="${esc(tc(`${fmtDate(x.from, { month: "long", year: "numeric" })}\n新增 ${fmtN(x.added)} · 共 ${fmtN(x.total)}\n当时占磁盘 ${fmtBytes(x.size)}`,
                           `${fmtDate(x.from, { month: "long", year: "numeric" })}\n+${fmtN(x.added)} added · ${fmtN(x.total)} in all\n${fmtBytes(x.size)} on disk then`))}"/>`).join("");
-    return `<div class="ins-well" style="padding:8px 10px 4px"><svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block;overflow:visible">
+    // 2.15.3 (IN3): the labels are HTML over the chart, not SVG text, which
+    // preserveAspectRatio="none" squeezed on a narrow screen; a phone
+    // scrolls the chart inside its own box
+    const at = (x, y, tx) => `left:${(x / W * 100).toFixed(2)}%;top:${y.toFixed(1)}px;transform:translate(${tx},-80%)`;
+    const labels = ticks.map((v) => `<span class="ins-gl" style="${at(padL - 6, Y(v) + 4, "-100%")}">${fmtN(v)}</span>`).join("") +
+      years.map((x) => `<span class="ins-gl" style="${at(X(x.i), H - 5, x.i === 0 ? "0" : "-50%")}">${x.d.getFullYear()}</span>`).join("");
+    return `<div class="ins-well ins-scroll" style="padding:8px 10px 4px"><div class="ins-gw">${labels}<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block;overflow:visible">
       <defs><linearGradient id="ins-gg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--sx-gr)" stop-opacity=".45"/><stop offset="1" stop-color="var(--sx-gr)" stop-opacity="0"/></linearGradient></defs>
-      ${ticks.map((v) => `<line x1="${padL}" x2="${W}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--sx-ui)" stroke-width="1" vector-effect="non-scaling-stroke"/>
-        <text x="${padL - 6}" y="${(Y(v) + 4).toFixed(1)}" fill="var(--sx-tx2)" font-size="11" text-anchor="end">${fmtN(v)}</text>`).join("")}
-      ${years.map((x) => `<text x="${X(x.i).toFixed(1)}" y="${H - 5}" fill="var(--sx-tx2)" font-size="11" text-anchor="${x.i === 0 ? "start" : "middle"}">${x.d.getFullYear()}</text>
-        <line x1="${X(x.i).toFixed(1)}" x2="${X(x.i).toFixed(1)}" y1="${H - padB}" y2="${H - padB + 4}" stroke="var(--sx-tx3)" vector-effect="non-scaling-stroke"/>`).join("")}
+      ${ticks.map((v) => `<line x1="${padL}" x2="${W}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--sx-ui)" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join("")}
+      ${years.map((x) => `<line x1="${X(x.i).toFixed(1)}" x2="${X(x.i).toFixed(1)}" y1="${H - padB}" y2="${H - padB + 4}" stroke="var(--sx-tx3)" vector-effect="non-scaling-stroke"/>`).join("")}
       <path d="${line} L${X(g.length - 1).toFixed(1)} ${H - padB} L${padL} ${H - padB} Z" fill="url(#ins-gg)"/>
-      <path d="${line}" fill="none" stroke="var(--sx-gr-tx)" stroke-width="2.5" vector-effect="non-scaling-stroke"/>${hit}</svg></div>`;
+      <path d="${line}" fill="none" stroke="var(--sx-gr-tx)" stroke-width="2.5" vector-effect="non-scaling-stroke"/>${hit}</svg></div></div>`;
   }
 
   function renderCollection(el) {
@@ -5713,9 +5852,13 @@
   // Reads the movies again in the background (each check, and on first
   // showing the tab); a read that finds the same movies does not redraw.
   // The first time, the kept copy is shown while it reads.
+  // 2.15.3 (audit 2026-11-10): findGroups(per_page: -1) ran on every load
+  // and check even when the Movies tab was never opened; now only while
+  // that tab is the one shown (opening it reads them).
   async function syncMovies(force) {
     const mv = app.mv;
     if (!moviesShown(app.set) || mv.busy) return;
+    if (!moviesDue(shownTab())) return;
     if (!force && mv.data && Date.now() - (mv.data.at || 0) < 20000) return;
     mv.busy = true;
     let changed = false;
@@ -5873,7 +6016,22 @@
     if (!t || RT.isTextEntry(t) || /^(BUTTON|A|SUMMARY)$/.test(t.tagName || "")) return false;
     return !!(t.matches && t.matches(ACT_SEL) && t.getAttribute("tabindex") === "0");
   }
+  // The calendar's arrows (2.15.3): one tab stop, the arrow keys move a day
+  // (up, down) or a week (left, right), Home and End to the first and last day.
+  function calKey(ev) {
+    const t = ev.target;
+    if (!t || !t.closest || !t.dataset || !t.dataset.day || ev.altKey || ev.ctrlKey || ev.metaKey) return false;
+    const cal = t.closest(".ins-cal");
+    if (!cal || !CAL_KEYS.includes(ev.key)) return false;
+    ev.preventDefault();
+    const cells = [...cal.children];
+    const j = calStep(cells.indexOf(t), ev.key, cells.length, (k) => !!(cells[k] && cells[k].dataset && cells[k].dataset.day));
+    const to = cells[j];
+    if (to && to !== t) { t.setAttribute("tabindex", "-1"); to.setAttribute("tabindex", "0"); to.focus(); }
+    return true;
+  }
   function onKey(ev) {
+    if (calKey(ev)) return;
     if (!keyActs(ev)) return;
     ev.preventDefault();
     onClick(ev);
@@ -5886,7 +6044,9 @@
     // jumped the page to the top)
     if (!t || t === app.root || !app.root.contains(t)) return;
     // a tab only swaps the content; the page stays where it is
-    if (t.dataset.tab) { app.tab = t.dataset.tab; setPref("tab", app.tab); render(); return; }
+    // 2.15.3: the tab goes into the address too (?tab=, the rest kept), and
+    // the movies are read when their tab is opened
+    if (t.dataset.tab) { app.tab = t.dataset.tab; setPref("tab", app.tab); writeTab(app.tab); render(); syncMovies(); return; }
     if (t.dataset.hub) { onHub(t); return; }
     if (t.dataset.jump) { document.getElementById(t.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
     if (t.dataset.set) {
@@ -5921,7 +6081,7 @@
       return;
     }
     if (t.dataset.day) {
-      app.tab = "you"; app.you.day = t.dataset.day; render();
+      app.tab = "you"; app.you.day = t.dataset.day; writeTab("you"); render();
       document.getElementById("ins-otd")?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
@@ -5949,11 +6109,13 @@
     if (t.dataset.act === "dremove") {
       const a = app.acts;
       if (!a.armed) {
-        a.armed = true; render();
+        a.armed = true; a.armedAt = Date.now(); render();
         clearTimeout(a.armTimer);
         a.armTimer = setTimeout(() => { if (a.armed) { a.armed = false; if (app.tab === "actions") render(); } }, 6000);
         return;
       }
+      // 2.15.2 (audit D2): the second click of a double-click is not a confirmation
+      if (Date.now() - (a.armedAt || 0) < ARM_MIN_MS) return;
       removeTicked(); return;
     }
     if (t.dataset.act === "reencode") { tagReencode(t); return; }
@@ -6056,10 +6218,26 @@
       let r = null;
       if (!full) {
         try { r = await syncLibrary(app.data, say); }
-        catch (e) { log(`Check failed (${e.message}); reading everything`); }
+        catch (e) {
+          // 2.15.3 (audit 2026-11-10): a failed check silently became a
+          // full library read (50 s on 21,000 scenes). Only a Stash that
+          // cannot do the check reads everything; otherwise it is said, what
+          // was read stays, and the kept copy is not rewritten.
+          if (!CHECK_UNKNOWN.test(String(e && e.message))) {
+            log(`Check failed: ${e.message}`, "error");
+            const text = checkFailedText(app.data.at);
+            app.syncNote = text.replace(/^C/, "c");
+            RT.toast(text, "warn", { id: "ins-check" });
+            return;
+          }
+          log(`This Stash cannot check (${e.message}); reading everything`);
+        }
       }
-      if (!r) r = { data: await loadLibrary(say), changed: null };
-      cachePut(r.data);
+      if (!r) r = { data: await loadLibrary(say, app.data), changed: null };
+      // 2.15.3: a check that found nothing does not rewrite the whole library
+      // into IndexedDB (the kept copy's own check time is then older, which
+      // only widens the next check a little)
+      if (r.changed !== 0) cachePut(r.data);
       // watch time and Lockdown runs may have moved too
       const [plugins, installed] = await Promise.all([readPlugins(), readInstalled()]);
       applySettings(plugins ? plugins[PLUGIN_ID] || {} : null, true, installed, plugins);
@@ -6144,9 +6322,18 @@
   }
   // Read when Stats opens: by load() the first time, by mount() after that.
 
+  // 2.15.3 (audit 2026-11-10): the tab in the address. Opening Stats with
+  // ?tab=<key> shows that tab; a click on a tab writes it (replaceState,
+  // every other parameter kept; never stripped).
+  function writeTab(key) {
+    try { history.replaceState(history.state, "", location.pathname + withTab(location.search, key) + location.hash); } catch (_) {}
+  }
+
   function mount() {
     if (!onStats()) return;
     if (app.root && app.root.isConnected) return;
+    const fromUrl = tabOf(location.search, TABS.map((x) => x[0]));
+    if (fromUrl) app.tab = fromUrl;
     const rows = document.querySelectorAll(".stats");
     const native = rows[rows.length - 1];
     if (!native) return;
