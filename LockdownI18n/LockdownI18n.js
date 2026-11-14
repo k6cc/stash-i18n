@@ -20,7 +20,9 @@
   window.__LockdownI18nLoaded = true;
 
   // ==================== i18n ====================
-  var _intlLocale = '';
+  // 首屏先按 <html lang> 取语言（Intl 桥接要等 React effect，晚一帧才会给出 locale）；
+  // 否则浮动栏/导航这类在启动时一次性渲染的文案会先落成英文，且不会再重绘
+  var _intlLocale = (document.documentElement && document.documentElement.lang) || '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
     return en;
@@ -35,7 +37,13 @@
       var React = api.React;
       function IntlBridge() {
         var intl = api.libraries.Intl.useIntl();
-        React.useEffect(function () { _intlLocale = intl.locale || ''; });
+        React.useEffect(function () {
+          var next = intl.locale || '';
+          if (next === _intlLocale) return;
+          _intlLocale = next;
+          // 语言晚一帧才拿到：让已渲染的浮动栏与页面按新语言重画一次
+          try { document.dispatchEvent(new CustomEvent('lockdowni18n:locale')); } catch (_) {}
+        });
         return null;
       }
       api.patch.before('App', function (props) {
@@ -45,11 +53,16 @@
       console.warn('[LockdownI18n] i18n bridge failed:', e);
     }
   })();
+  // The Stash locale arrives one React render after the plugin starts: whatever
+  // was drawn in English before that (the bar, the page) is redrawn once here
+  document.addEventListener('lockdowni18n:locale', function () {
+    try { if (bar) { bar.dataset.key = ''; renderBar(); } } catch (e) { console.warn('[LockdownI18n] bar repaint failed:', e); }
+    try { renderPage(); } catch (e) { console.warn('[LockdownI18n] page repaint failed:', e); }
+  });
 
   const PLUGIN_ID = "LockdownI18n";
   // the manifest's version; validate.sh checks they agree
-  const PLUGIN_VERSION = "2.23.0-1";
-  console.log('[LockdownI18n] Lockdown I18n v' + PLUGIN_VERSION + ' loaded');
+  const PLUGIN_VERSION = "2.24.4-1";
   // the suite's shared runtime (2.23.0, MAINTENANCE §4.12): GraphQL with a
   // timeout, typing, the keyboard owner and "ago". Not its toast (ldToast
   // stays at the top, under the bar: see there) nor its route signal (the
@@ -60,6 +73,8 @@
   const PREF_KEY  = "lockdownI18nPrefs";   // { setup, last, guideSeen, barTipSeen }
   const HOLD_MS   = 5000;              // how long Give up must be held
   const ARM_MS    = 6000;              // "Click again to ..." stays armed this long (suite standard)
+  const ARM_MIN_MS = 400;              // 2.24.3 (audit 2026-11-10): and the second click counts only this long after the first (a double-click never confirms)
+  const KEEP_MS   = 600000;            // 2.24.3 (audit 2026-11-10): the setup's counts are kept this long across New run (kept)
   const HISTORY_MAX = 200;
   const SYNC_LOCKED_MS = 5000;         // how often a locked page re-reads the lock (the polling tab)
   // 2.11 (review M5): an unlocked page looks for a lock every minute (it was
@@ -554,7 +569,7 @@
     // 2.5.1 (user): heat 1, and Next scene allowed; with a Skip budget it
     // costs a skip, so the budget below it decides how free that is
     { k: "roulette", name: tc("轮盘", "Roulette"), heat: [1], ranks: [tc("随机场景", "Random scenes")],
-      text: tc("场景不由你选：每个都是随机挑的，放完后下一个也一样。在全部放完之前不会重复同一个场景；双人锁定则轮流来。点「下一个场景」（播放器的下一个按钮）会再随机挑一个，且始终免费；跳过配额只用于在场景内拖动进度。", "You don't choose scenes: each one is picked at random, and so is the next when it ends. It never repeats a scene until all of them have played; a duo takes turns. Next scene (the player's next button) picks another one, always free; a Skip budget only counts seeking inside a scene.") },
+      text: tc("场景不由你选：每个都是随机挑的，放完后下一个也一样。在全部放完之前不会重复同一个场景；多人锁定则按顺序轮流。点「下一个场景」（播放器的下一个按钮）会再随机挑一个，且始终免费；跳过配额只用于在场景内拖动进度。", "You don't choose scenes: each one is picked at random, and so is the next when it ends. It never repeats a scene until all of them have played; a duo takes turns. Next scene (the player's next button) picks another one, always free; a Skip budget only counts seeking inside a scene.") },
     { k: "stay", name: tc("坚持到底", "Stay to the end"), heat: [2], ranks: [tc("每个场景都看完", "Finish every scene")],
       text: tc("一旦某个场景开始播放，在它放完（且看满 80%）之前不会打开别的场景。", "Once a scene plays, no other scene opens until it has played to the end, with most of it (80%) watched.") },
     // 2.13.0 (user): and the timeline's preview pictures are hidden, so the
@@ -789,10 +804,11 @@
 
   function heatOf(conds, goal) {
     const g = goal && goal.type ? goal.type : goal;
-    const one = !!(conds && conds.one) && g === "timer";
-    // anyCond(): a recorded run with a retired condition keeps its heat; a
-    // new setup has none (normaliseSetup)
-    return anyCond().reduce((h, c) => (condApplies(c, g) && conds && conds[c.k] && !(one && c.k === "stay")
+    // ANY_COND: a recorded run with a retired condition keeps its heat; a
+    // new setup has none (normaliseSetup). 2.23.1 (forum, then the user: "it
+    // should"): One scene adds its heat on top of Stay to the end; it used to
+    // replace Stay's, so turning it on with Stay on moved nothing.
+    return anyCond().reduce((h, c) => (condApplies(c, g) && conds && conds[c.k]
       ? h + c.heat[conds[c.k] - 1] : h), 0);
   }
   const heatMult = (heat) => Math.round((1 + (heat || 0) * HEAT_STEP) * 100) / 100;
@@ -1106,14 +1122,17 @@
   }
   // Play a tag card: it is back after CARD_RECHARGE_MS more watching.
   // 2.18: `scene` and `now` (the scene it opened, when) are kept in `plays`
-  // for the marker bonus (tagMatches); the last TAG_PLAYS_KEEP.
-  function handPlayTag(hand, id, w, scene, now) {
+  // for the marker bonus (tagMatches); the last TAG_PLAYS_KEEP. 2.23.1:
+  // `sub`, the ids of the tags under the card's tag (the card finds scenes
+  // with any of them, so a marker with one of them counts too).
+  function handPlayTag(hand, id, w, scene, now, sub) {
     const i = hand ? hand.tags.findIndex((t) => t.id === String(id)) : -1;
     if (i < 0 || hand.tags[i].at > w) return null;
     const tags = hand.tags.slice();
     tags[i] = { ...tags[i], at: w + CARD_RECHARGE_MS };
     const out = { ...hand, tags, rev: (hand.rev || 0) + 1 };
-    if (scene) out.plays = (Array.isArray(hand.plays) ? hand.plays : []).concat({ tag: tags[i].id, name: tags[i].name, scene: String(scene), at: now || 0 })
+    if (scene) out.plays = (Array.isArray(hand.plays) ? hand.plays : []).concat({ tag: tags[i].id, name: tags[i].name, scene: String(scene), at: now || 0,
+      ...(Array.isArray(sub) && sub.length ? { sub: sub.map(String).slice(0, TAG_SUB_MAX) } : {}) })
       .slice(-TAG_PLAYS_KEEP);
     return out;
   }
@@ -1123,7 +1142,12 @@
   // after it was played, whose primary tag or one of its tags is the card's
   // tag: +TAG_MATCH_PTS before heat, once per play. `markers` are the ones
   // just seen for the first time in scene `sid`. { hand, got: [tag names] }.
-  const TAG_MATCH_PTS = 50, TAG_PLAYS_KEEP = 20;
+  // 2.23.1 (forum: no bonus for a marker added after a tag card): the card
+  // finds scenes by its tag and every tag under it, but only the tag itself
+  // counted here, so a marker with a more precise tag got nothing; now any
+  // tag under the card's counts too (`sub`, read when the card is played).
+  const TAG_MATCH_PTS = 50, TAG_PLAYS_KEEP = 20, TAG_SUB_MAX = 200;
+  const playHasTag = (x, tags) => tags.includes(String(x.tag)) || (Array.isArray(x.sub) && x.sub.some((t) => tags.includes(String(t))));
   function tagMatches(hand, sid, markers, skewMs) {
     if (!hand || !Array.isArray(hand.plays) || !hand.plays.length) return { hand, got: [] };
     const id = String(sid), got = [];
@@ -1132,7 +1156,7 @@
       if (!m) continue;
       const tags = [m.primary_tag].concat(m.tags || []).filter((t) => t && t.id !== undefined && t.id !== null).map((t) => String(t.id));
       const made = Date.parse(m.created_at || "");
-      const i = h.plays.findIndex((x) => !x.done && x.scene === id && tags.includes(String(x.tag)) && (!isFinite(made) || made >= (x.at || 0) - (skewMs || 0)));
+      const i = h.plays.findIndex((x) => !x.done && x.scene === id && playHasTag(x, tags) && (!isFinite(made) || made >= (x.at || 0) - (skewMs || 0)));
       if (i < 0) continue;
       const plays = h.plays.slice();
       plays[i] = { ...plays[i], done: String(m.id) };
@@ -1237,7 +1261,7 @@
   // when Performers Toolkit offers its Body section (`bodyInto`); never for
   // a studio or tags. The performers, in order.
   const bodyTabOk = (L, pt) => !!L && (L.kind || "performer") === "performer" && !!pt && typeof pt.bodyInto === "function";
-  const bodyIds = (L) => (duoOf(L) ? duoOf(L).slice(0, 2).map((p) => ({ id: String(p.id), name: p.name || "?" }))
+  const bodyIds = (L) => (duoOf(L) ? duoOf(L).slice(0, DUO_MAX).map((p) => ({ id: String(p.id), name: p.name || "?" }))
     : L && L.tid ? [{ id: String(L.tid), name: L.name || "?" }] : []);
   // The cards popover right under its button (a viewport rect), inside the
   // window, its notch over the button's middle.
@@ -1320,7 +1344,7 @@
     const t = pick(mine);
     if (t) return { score: t.score, who: tc(`在 ${L.name}`, `on ${L.name}`) };
     const w = pick(runs);
-    return w ? { score: w.score, who: tc(`来自 ${LB_WAY[g] || g}`, `of ${LB_WAY[g] || g}`) } : null;
+    return w ? { score: w.score, who: tc(`来自 ${lbGoal(g)}`, `of ${LB_WAY[g] || g}`) } : null;
   }
   // What is still to be said (each once a run): halfway, 5 and 1 minute
   // to go (a target of 10 minutes or more), "nearly there" for a hidden
@@ -1366,7 +1390,7 @@
     const others = (list || []).concat((stats && stats.top) || []).filter((e) => e && e.id !== entry.id && e.result !== "gaveup" && e.score > 0 && goalType(e) === g);
     const wayBest = others.reduce((a, e) => Math.max(a, e.score), 0);
     const tBest = others.filter((e) => perfKey(e) === key).reduce((a, e) => Math.max(a, e.score), 0);
-    if (wayBest > 0 && me > wayBest) out.push(tc(`新纪录 · ${LB_WAY[g] || g}`, `New best · ${LB_WAY[g] || g}`));
+    if (wayBest > 0 && me > wayBest) out.push(tc(`新纪录 · ${lbGoal(g)}`, `New best · ${LB_WAY[g] || g}`));
     else if (tBest > 0 && me > tBest) out.push(tc(`在 ${entry.name} 的最佳`, `Best on ${entry.name}`));
     const heats = (list || []).filter((e) => e && e.id !== entry.id && e.result === "done" && typeof e.heat === "number").map((e) => e.heat);
     if (typeof entry.heat === "number" && entry.heat > 0 && heats.length && entry.heat > Math.max(...heats)) out.push(tc(`至今最高热度 · ${entry.heat}`, `Highest heat yet · ${entry.heat}`));
@@ -1468,7 +1492,7 @@
       if (r >= c.ranks.length) return;
       const next = { ...conds, [c.k]: r + 1 };
       const h1 = heatOf(next, g);
-      if (!(h1 > h0)) return;                    // Stay to the end next to One scene adds nothing
+      if (!(h1 > h0)) return;
       opts.push({ c, r, next, h1, i, uses: prev.filter((u) => (u[c.k] || 0) > 0).length });
     });
     if (!opts.length) return null;
@@ -1543,9 +1567,16 @@
   // choice: either, no "together only"). `ids` holds both, so a 2.13 device
   // enforces it as a performer with two ids; `groups` and mode "or" let the
   // several-tags paths (Stash's own lists and their filter) take it as is.
+  // 2.24.0 (user: "add more than 2 so up to 4 performers"): a duo holds up to
+  // DUO_MAX; a scene of any of them counts, and Roulette takes turns.
+  const DUO_MAX = 4;
   const duoOf = (x) => (x && (x.kind || "performer") === "performer" && Array.isArray(x.duo) && x.duo.length > 1 ? x.duo : null);
-  const duoMembers = (duo) => duo.slice(0, 2).map((p) => ({ id: String(p.id), name: p.name || "?", image_path: p.image_path || p.image || "" }));
-  const duoName = (duo) => duo.map((p) => p.name || "?").join(" & ");
+  const duoMembers = (duo) => duo.slice(0, DUO_MAX).map((p) => ({ id: String(p.id), name: p.name || "?", image_path: p.image_path || p.image || "" }));
+  const duoName = (duo) => { const n = duo.map((p) => p.name || "?"); const sep = tc("、", " & "), mid = tc("、", ", ");
+    return n.length > 2 ? `${n.slice(0, -1).join(mid)}${tc(" 与 ", " & ")}${n[n.length - 1]}` : n.join(sep); };
+  // "a duo", "a trio", "a group of 4"
+  const duoWord = (n) => (n <= 2 ? tc("双人", "a duo") : n === 3 ? tc("三人", "a trio") : tc(n === 4 ? "四人组" : `${n} 人组`, `a group of ${n}`));
+  const duoNoun = (n) => (n <= 2 ? tc("双人", "duo") : n === 3 ? tc("三人", "trio") : tc(n === 4 ? "四人组" : `${n} 人组`, `group of ${n}`));
   // What makes a target, lock or entry several: its tags (2.2) or its duo
   // (2.14), to spread into a copy of it; {} for one.
   const setOf = (x) => (duoOf(x) ? { duo: duoMembers(x.duo) } : x && x.tags ? { tags: x.tags, mode: x.mode } : {});
@@ -2338,6 +2369,44 @@
     return st;
   }
 
+  // 2.24.3 (audit 2026-11-10): Undo of a removal. The entry goes back at its
+  // place and nothing else in the list changes (rule 5): before the entry
+  // that stood after it (`at.next`, its key), else after the one that stood
+  // before it (`at.prev`), else by its start time; the list may have grown
+  // since. The totals count it again as addToStats does, with the streaks
+  // recounted from the list the way removeFromStats does (past the cap the
+  // best streak is only kept or raised). `gone` keeps its id: the run is in
+  // the history again, which is what a device still holding it looks at
+  // first (syncDecision). {} when it is there already; { full: true } at the
+  // cap, where putting it back would push the oldest entry out.
+  function putBack(list, stats, e, at) {
+    const L = list || [];
+    if (!isEntry(e)) return {};
+    const keyOf = (x) => (isEntry(x) ? entryKey(x) : null), key = entryKey(e);
+    if (L.some((x) => keyOf(x) === key)) return {};
+    if (L.length >= HISTORY_MAX) return { full: true };
+    const nx = at && at.next != null ? L.findIndex((x) => keyOf(x) === at.next) : -1;
+    const pv = at && at.prev != null ? L.findIndex((x) => keyOf(x) === at.prev) : -1;
+    let i = nx >= 0 ? nx : pv >= 0 ? pv + 1 : -1;
+    if (i < 0) { i = L.findIndex((x) => isEntry(x) && (x.at || 0) > (e.at || 0)); if (i < 0) i = L.length; }
+    const next = L.slice(0, i).concat([e], L.slice(i));
+    const st0 = { ...EMPTY_STATS, ...(stats || {}) };
+    const complete = st0.done + st0.gaveUp === L.filter(isEntry).length;
+    const st = addToStats(stats, e);
+    const s = streaksOf(next);
+    st.streak = s.streak;
+    st.bestStreak = complete ? s.best : Math.max(s.best, st0.bestStreak || 0);
+    // the name the totals have now stays (a later run's), as before the removal
+    const k = perfKey(e), had = st0.perf && st0.perf[k];
+    if (had && had.name) st.perf[k] = { ...st.perf[k], name: had.name };
+    return { list: next, stats: st };
+  }
+  // What a removal has to remember for that Undo: the entry and its neighbours' keys.
+  function removedAt(list, i) {
+    const keyOf = (x) => (isEntry(x) ? entryKey(x) : null);
+    return { e: list[i], prev: i > 0 ? keyOf(list[i - 1]) : null, next: i + 1 < list.length ? keyOf(list[i + 1]) : null };
+  }
+
   // The target locked most often, or null. Ties go to the name first in
   // the alphabet so the tile does not flicker between equals.
   function mostLocked(stats) {
@@ -2552,8 +2621,16 @@
     try {
       const v = JSON.parse(raw);
       if (!Array.isArray(v)) return null;
-      return v.filter((x) => x && typeof x === "object" && typeof x.name === "string" && x.setup && typeof x.setup === "object");
+      return v.filter(presetOk);
     } catch (_) { return null; }
+  }
+  const presetOk = (x) => !!(x && typeof x === "object" && typeof x.name === "string" && x.setup && typeof x.setup === "object");
+  // 2.24.1 (audit 2026-11-10, D4; rule 5): the stored entries this version
+  // cannot read as presets (damaged, or written by a later version). They
+  // were filtered out on reading and so dropped by the next write; they
+  // ride through every write now, after the readable ones.
+  function presetsOdd(raw) {
+    try { const v = JSON.parse(raw || "[]"); return Array.isArray(v) ? v.filter((x) => !presetOk(x)) : []; } catch (_) { return []; }
   }
   function presetOf(name, setup, target, src, now) {
     const t = target ? { kind: target.kind, id: String(target.id), name: target.name, image_path: target.image_path || "",
@@ -2621,7 +2698,7 @@
     if (next.list) input.history = JSON.stringify(next.list.slice(-HISTORY_MAX));
     if (next.stats) input.stats = JSON.stringify(next.stats);
     if ("active" in next) input.active = next.active ? JSON.stringify(next.active) : "";
-    if (next.presets) input.presets = JSON.stringify(next.presets.slice(0, PRESETS_MAX));
+    if (next.presets) input.presets = JSON.stringify(next.presets.slice(0, PRESETS_MAX).concat(presetsOdd(mine.presets)));
     if (next.pics) input.pics = JSON.stringify(next.pics);
     return input;
   }
@@ -3299,8 +3376,7 @@
   // The conditions a run had on, with what each added to its heat.
   function heatParts(conds, goal) {
     const g = goal && goal.type ? goal.type : goal;
-    const one = !!(conds && conds.one) && g === "timer";
-    return anyCond().filter((c) => conds && conds[c.k] && condApplies(c, g) && !(one && c.k === "stay"))
+    return anyCond().filter((c) => conds && conds[c.k] && condApplies(c, g))
       .map((c) => ({ k: c.k, name: c.name, rank: c.ranks[conds[c.k] - 1] || "", heat: c.heat[conds[c.k] - 1] || 0 }));
   }
   // A condition as a chip: the Skip budget by its rank ("No skips", "1 skip
@@ -3362,8 +3438,13 @@
   const hueOf = (s) => LB_HUES[[...String(s || "")].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7) % LB_HUES.length];
   function lbPicHtml(kind, name, img, big, duo) {
     const nm = escapeHtml(name || "?");
-    // 2.14: a duo, the two photos side by side
-    if (duo && duo.length > 1) return `<span class="ld-lbduo">${duo.slice(0, 2).map((p) => lbPicHtml("performer", p.name, p.image_path || "", big)).join("")}</span>`;
+    // 2.14: a duo, the two photos side by side. 2.24.4 (user: duo and group runs "get cut off from
+    // below"): every member, filling the whole picture: two side by side, three as one tall and two
+    // stacked, four as two by two (each a 2:3 cell, the card's own shape)
+    if (duo && duo.length > 1) {
+      const all = duo.slice(0, DUO_MAX);
+      return `<span class="ld-lbduo ld-lbn${all.length}">${all.map((p) => lbPicHtml("performer", p.name, p.image_path || "", big)).join("")}</span>`;
+    }
     if (kind === "studio") {
       return `<span class="ld-lbplate${big ? " ld-big" : ""}">${img ? `<img src="${escapeHtml(img)}" alt="" loading="lazy">` : `<b>${nm}</b>`}` +
         `${big ? `<small>${tc("工作室", "Studio")}</small>` : ""}</span>`;
@@ -3387,7 +3468,7 @@
   function pfHtml(x, name, image, size, kind) {
     const k = kind || (x && x.kind) || "performer", sz = size || "h";
     const duo = k === "performer" ? duoOf(x) : null;
-    if (duo) return `<span class="ld-pf2 ld-pf2-${sz}">${duo.slice(0, 2).map((p) => pfHtml(null, p.name, p.image_path || p.image, sz, "performer")).join("")}</span>`;
+    if (duo) return `<span class="ld-pf2 ld-pf2-${sz}">${duo.slice(0, 2).map((p) => pfHtml(null, p.name, p.image_path || p.image, sz, "performer")).join("")}${duo.length > 2 ? `<b class="ld-pfmore">+${duo.length - 2}</b>` : ""}</span>`;
     const src = k === "tag" ? tagPic(image) : image ? String(image) : "";
     const t = escapeHtml(name || "");
     if (src) return `<span class="ld-pf ld-pf-${sz}${k === "studio" ? " ld-pfplate" : ""}" title="${t}"><img src="${escapeHtml(src)}" alt="" loading="lazy"></span>`;
@@ -3764,8 +3845,53 @@
     return { status, start, stop, follow, live, state, get runId() { return runId; } };
   }
 
-  if (window.__LOCKDOWN_TEST__) {
-    window.__LockdownI18nTest = { RT, mergeHand, withGone, goneSet, GONE_MAX, suiteData, DATA_KEYS, unpack, packConfig, toastKind, toastHost, modalKey, TOAST_MS, routeCheck, enumOf, toGraphQLFilter, spinSchedule, fmtDuration, fmtClock, fmtMinutes,
+  // ── 2.24.3 (audit 2026-11-10, waves 4-7): pure parts ──────────────────────
+  // What the setup counted, kept KEEP_MS across New run (each openStart read
+  // it all again): `store` a Map, `read()` asks Stash. A read that fails is
+  // not kept (the next look asks again), and nothing here decides a run:
+  // beginNow counts for itself.
+  function kept(store, key, read, now) {
+    const clock = now || Date.now, c = store.get(key);
+    if (c && clock() - c.at < KEEP_MS) return Promise.resolve(c.v);
+    return Promise.resolve().then(read).then((v) => { store.set(key, { at: clock(), v }); return v; });
+  }
+  // "Click again": the second click counts once ARM_MIN_MS have passed
+  const armOk = (armedAt, now) => now - (armedAt || 0) >= ARM_MIN_MS;
+  // The page's tab in the URL (?tab=<key>): read, and written with every
+  // other parameter kept
+  const PAGE_TABS = ["new", "body", "board", "history"];
+  function tabFromSearch(search) {
+    let t = null;
+    try { t = new URLSearchParams(search || "").get("tab"); } catch (_) {}
+    return t && PAGE_TABS.includes(t) ? t : null;
+  }
+  function tabSearch(search, tab) {
+    let p;
+    try { p = new URLSearchParams(search || ""); } catch (_) { p = new URLSearchParams(""); }
+    p.set("tab", tab);
+    return `?${p.toString()}`;
+  }
+  // How many performers a filter picks from, as counts (per_page 0) instead
+  // of the whole list: the ones with scenes and, when images count, the ones
+  // with images and no scene. The two never overlap, so the counts add up to
+  // what `playable` (or withScenes) leaves of the list. Performers only:
+  // their scene_count and image_count are what the filter counts, where a
+  // studio's or a tag's include what is under it. null when the filter has
+  // its own word on scenes or images, or a sub-filter: then the list is read.
+  const HAS_SOME = { modifier: "GREATER_THAN", value: 0 };
+  function performerCountFilters(filter, images) {
+    const f = filter || {};
+    if (["scene_count", "image_count", "AND", "OR", "NOT"].some((k) => f[k] !== undefined)) return null;
+    const scenes = { ...f, scene_count: HAS_SOME };
+    return images ? [scenes, { ...f, scene_count: { modifier: "EQUALS", value: 0 }, image_count: HAS_SOME }] : [scenes];
+  }
+  // A row that is not a real button (it holds buttons, or is a list row):
+  // role="button" tabindex="0", worked by Enter and Space on the row itself
+  const rowKeyOk = (key, role, mods) => !mods && (key === "Enter" || key === " ") && role === "button";
+
+  if (window.__LOCKDOWN_I18N_TEST__) {
+    window.__LockdownI18nTest = { putBack, removedAt, kept, KEEP_MS, armOk, ARM_MIN_MS, tabFromSearch, tabSearch, PAGE_TABS, performerCountFilters, rowKeyOk,
+                              RT, mergeHand, withGone, goneSet, GONE_MAX, suiteData, DATA_KEYS, unpack, packConfig, toastKind, toastHost, modalKey, TOAST_MS, routeCheck, enumOf, toGraphQLFilter, spinSchedule, fmtDuration, fmtClock, fmtMinutes,
                               addToStats, statsFromHistory, completeStats, parseStats, fmtWhen, entryKey,
                               removeFromStats, mostLocked, groupByMonth, filterEntries, streaksOf,
                               parseHistory, parseActive, cardItem, stripRules, stripPerformerRules,
@@ -3799,7 +3925,7 @@
                               inputKind, gate0, gateInput, gateLoad, gateUser, loadIsSeek, settling, SETTLE_MS, INPUT_MS, toyLevelPrefs, previewGuardIn, PREVIEW_SEL,
                               EYES_GRACE_MS, EYES_PT_MS, awayAdd, awayPts, awayMsOf, awayNowLock, fmtAway, awayText, awayBar, goalReached,
                               // 2.14
-                              duoOf, duoName, duoMembers, duoIds, setOf, recDuos, mateCards, mateWhy, REC_MATES, DUO_RANDOM,
+                              duoOf, duoName, duoMembers, duoIds, duoWord, DUO_MAX, presetsOdd, parsePresets, packConfig, setOf, recDuos, mateCards, mateWhy, REC_MATES, DUO_RANDOM,
                               // 2.15
                               deckPick,
                               // 2.16
@@ -3856,6 +3982,29 @@
   }
 
   const favouritesOf = (kind, images) => listOf(kind, Q[kind].fav, { per_page: -1 }).then(images ? playable : withScenes);
+
+  // 2.24.3 (audit 2026-11-10): what the setup counts ("23 performers",
+  // "12 unwatched", the tag cards' numbers), kept KEEP_MS across New run and
+  // keyed by what was counted (the target and the rules): every openStart
+  // asked for all of it again. Display only; a run that ends here empties it
+  // (what was watched changed).
+  const setupKept = new Map();
+  const keptCount = (key, read) => kept(setupKept, key, read);
+  // Performers counted by the query (performerCountFilters), in one request
+  async function countPerformers(filters, q) {
+    const vars = { f: { per_page: 0, q: q || undefined } };
+    filters.forEach((x, i) => { vars[`x${i}`] = x; });
+    const d = await gql(`query ($f: FindFilterType, ${filters.map((_, i) => `$x${i}: PerformerFilterType`).join(", ")}) { ${filters.map((_, i) =>
+      `c${i}: findPerformers(performer_filter: $x${i}, filter: $f) { count }`).join(" ")} }`, vars);
+    return filters.reduce((a, _, i) => a + ((d && d[`c${i}`] && d[`c${i}`].count) || 0), 0);
+  }
+  // How many favourites a random pick draws from, for its row: performers
+  // by the query; studios and tags by listing (their counts include what is
+  // under them, which the filter cannot ask for)
+  async function favCount(kind, images) {
+    const fs = kind === "performer" ? performerCountFilters(Q.performer.fav, images) : null;
+    return fs ? countPerformers(fs) : (await favouritesOf(kind, images)).length;
+  }
 
   // Search box: by name, the ones with scenes or images (2.3; one with
   // images only says so, and works for Finish and Timer by locked time).
@@ -4053,6 +4202,12 @@
   // Sum of O counts over every scene that belongs to the target. An O
   // anywhere on those scenes, from any page or device, raises it. Only
   // scenes with an O are fetched: a big tag has thousands of scenes.
+  // 2.24.3 (audit 2026-11-10): the query stays as it is. It already asks
+  // only for rows with o_counter > 0 (per_page -1 of those: applyO needs
+  // each one's count, oBase), and "changed since the last check" cannot be
+  // asked safely (an O is not known to move a scene's updated_at). The cost
+  // is cut in checkO instead: not at all in a hidden tab, once at once when
+  // it is back (the visibilitychange listener).
   async function sceneORows(L) {
     const d = await gql(`query ($x: SceneFilterType) { findScenes(scene_filter: $x, filter: { per_page: -1 }) {
                            scenes { id o_counter } } }`,
@@ -4120,6 +4275,12 @@
   // scenes; the one with fewer starts its next round sooner. Anything else
   // is one side, "all". `all`: [{ id, who: [performer ids] }]; `r` in [0, 1).
   // Returns { id, only, side, deck } (deck: the lock's, changed or not).
+  // 2.24.0 (user: "play performer's videos 1 from each when I hit next
+  // regardless of how much I already watched one ... I prefer to be certain
+  // that next is going to be the one I expect"): strict turns in the order
+  // they were picked, not the least watched time. The one whose turn it was
+  // is the open scene's performer (one of them only), else that of the last
+  // scene shown with only one of them; nothing shown yet: any of them.
   function deckPick(all, L, notId, r, now) {
     const duo = duoOf(L);
     const sides = duo ? duo.map((p) => String(p.id)) : ["all"];
@@ -4133,12 +4294,15 @@
     if (!usable.length) return { id: null, only: scenes.length > 0, side: null, deck };
     let side = usable[0];
     if (usable.length > 1) {
-      const watched = (sd) => of(sd).reduce((a, x) => a + (recs[x.id] ? watchedSec(rangesOf(recs[x.id])) : 0), 0);
-      const last = (sd) => of(sd).reduce((a, x) => Math.max(a, shownAt(x.id)), 0);
-      const w = usable.map((sd) => ({ sd, w: watched(sd), t: last(sd) }));
-      // within half a minute of each other counts as even
-      w.sort((a, b) => (Math.abs(a.w - b.w) > 30 ? a.w - b.w : 0) || a.t - b.t);
-      side = w[0].w === w[1].w && w[0].t === w[1].t ? usable[Math.min(usable.length - 1, Math.floor(r * usable.length))] : w[0].sd;
+      const one = (id) => { const x = scenes.find((y) => y.id === id); const w = x ? sides.filter((sd) => (x.who || []).includes(sd)) : []; return w.length === 1 ? w[0] : null; };
+      let turn = not ? one(not) : null;
+      if (!turn) {
+        const seen = Object.keys(recs).filter((id) => shownAt(id) && one(id)).sort((a, b) => shownAt(b) - shownAt(a));
+        turn = seen.length ? one(seen[0]) : null;
+      }
+      const i0 = turn ? sides.indexOf(turn) : -1;
+      side = i0 < 0 ? usable[Math.min(usable.length - 1, Math.floor(r * usable.length))]
+        : sides.slice(i0 + 1).concat(sides.slice(0, i0 + 1)).find((sd) => sd !== turn && usable.includes(sd)) || usable[0];
     }
     const since = deck[side] || 0;
     let pool = of(side).filter((x) => x.id !== not && !(shownAt(x.id) && shownAt(x.id) >= since));
@@ -4229,6 +4393,12 @@
   // becomes one of its backups (Your data restores it).
   function suiteData(o) {
     const MARK = "suiteDataMirror", MIRROR_MS = o.mirrorMs || 5 * 60 * 1000, TRIES = 6;
+    // o.unmirrored: data keys (logs) left out of the copy in the config. Every
+    // plugin reads the config, and the logs made it 4 MB (review 2026-11-09).
+    // Their revision stays out of the copy's mark too, so a value written in
+    // the config while Suite Data was off is never taken for a continuation
+    // of the store's: the store keeps its log, the other becomes a backup.
+    const OUT = o.unmirrored || [];
     const name = o.label || o.id;
     const S = { inst: null, err: false, syncing: null, revs: {}, vals: {}, loaded: false, at: 0, mrevs: {}, timer: 0, told: "", chain: Promise.resolve() };
     const own = (k) => o.keys.indexOf(k) >= 0;
@@ -4315,8 +4485,11 @@
       return S.syncing;
     }
     // Rewrite the copy in the config when the store is ahead of it.
-    function plan(now) {
-      if (!o.keys.some((k) => S.revs[k] && S.revs[k] !== S.mrevs[k])) return;
+    // `mine`: the config as read; one still holding a key left out of the copy
+    // (written before 2026-11-09) is rewritten once without it
+    function plan(now, mine) {
+      const stale = !!mine && OUT.some((k) => mine[k] !== undefined && S.revs[k]);
+      if (!stale && !o.keys.some((k) => OUT.indexOf(k) < 0 && S.revs[k] && S.revs[k] !== S.mrevs[k])) return;
       const due = S.at + MIRROR_MS - Date.now();
       if (now || due <= 0) { if (S.timer) clearTimeout(S.timer); S.timer = 0; Promise.resolve().then(mirror); }
       else if (!S.timer) S.timer = setTimeout(() => { S.timer = 0; mirror(); }, due);
@@ -4326,7 +4499,8 @@
         if (!S.loaded || S.err) return;
         const next = over(await o.readConfig());
         const revs = { ...S.revs };
-        next[MARK] = JSON.stringify({ at: Date.now(), revs });
+        OUT.forEach((k) => { delete next[k]; delete revs[k]; });
+        next[MARK] = JSON.stringify({ at: Date.now(), revs, ...(OUT.length ? { out: OUT } : {}) });
         await o.writeConfig(next, { copy: true });   // the mirror itself: a plugin may skip its refetch
         S.at = Date.now();
         S.mrevs = revs;
@@ -4374,7 +4548,7 @@
         if (!S.loaded) await ensure(mine);
         else absorb((await op({ mode: "get", plugin: o.id, keys: JSON.stringify(o.keys) })).items);
         S.err = false;
-        plan(false);
+        plan(false, mine);
         return over(mine);
       } catch (e) {
         const had = Object.keys(S.revs).length > 0;
@@ -4412,7 +4586,7 @@
             changed.forEach((k) => { if (next[k] === undefined) delete fresh[k]; else fresh[k] = next[k]; });
             await o.writeConfig(fresh, opt || {});
           }
-          plan(!!(opt && opt.mirror));
+          plan(!!(opt && opt.mirror), mine);
           return { ...next };
         }
         throw new Error(tc("Suite Data：其他写入总是抢先；什么也没保存，请重试", "Suite Data: other writes kept getting in first; nothing was saved, try again"));
@@ -4506,14 +4680,30 @@
     try { c.refetchQueries({ include: queries }); } catch (e) { log(`refetch failed: ${e.message}`); }
   }
 
-  function removeEntry(key) {
+  // 2.24.3 (audit 2026-11-10) `took(x)`: what was removed and where it
+  // stood (removedAt), for Undo; called from the write that lands (the
+  // client may run this again on a newer copy), not when it was not there
+  function removeEntry(key, took) {
     return updateConfig(({ list, stats }) => {
       const i = list.findIndex((e) => isEntry(e) && entryKey(e) === key);
-      if (i < 0) return {};
+      if (i < 0) { if (took) took(null); return {}; }
       const rest = list.slice(0, i).concat(list.slice(i + 1));
+      if (took) took(removedAt(list, i));
       // 2.23.0: its id noted, so a device still holding that run does not push it back
       return { list: rest, stats: withGone(removeFromStats(stats, list[i], rest), list[i].id) };
     }, false, true);
+  }
+  // 2.24.3 (audit 2026-11-10): Undo of that removal, through the same
+  // updateConfig (putBack: the entry at its place, the totals counting it
+  // again, nothing else in the list changed). Resolves to { cfg, why }:
+  // `why` says it when nothing was put back.
+  function restoreEntry(x) {
+    let why = "";
+    return updateConfig(({ list, stats }) => {
+      const r = putBack(list, stats, x.e, x);
+      why = r.full ? tc(`历史已满（${HISTORY_MAX} 局）`, `the history is full (${HISTORY_MAX} runs)`) : r.list ? "" : tc("它已经在历史里了", "it is in the history already");
+      return r.list ? { list: r.list, stats: r.stats } : {};
+    }, false, true).then((cfg) => ({ cfg, why }));
   }
 
   // A fresh start: the list and the totals. The active lock and other keys
@@ -5090,9 +5280,14 @@ body.ld-checking #ld-veil { display: block; }
 .ld-row.gaveup .ld-rname { color: var(--sx-tx1b); }
 /* 2.17: .ld-av holds the sources' icons; pictures are portraits (.ld-pf) */
 .ld-av { flex: none; display: inline-flex; }
-.ld-lbduo { position: absolute; inset: 0; display: flex; }
-.ld-lbduo > .ld-lbphoto, .ld-lbduo > .ld-lbinit { position: relative; inset: auto; flex: 1 1 50%; min-width: 0; width: 50%; height: 100%; }
-.ld-lbduo > * + * { border-left: 2px solid var(--sx-bg2); }
+/* 2.24.4: a grid over the whole picture (it was a flex row that 2.24.0's position: relative below
+   shrank to the photos' own height, an empty block under them) */
+.ld-lbduo { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; gap: 2px; background: var(--sx-bg2); }
+.ld-lbduo.ld-lbn3, .ld-lbduo.ld-lbn4 { grid-template-rows: 1fr 1fr; }
+.ld-lbduo.ld-lbn3 > :first-child { grid-row: 1 / span 2; }
+.ld-lbduo > .ld-lbphoto, .ld-lbduo > .ld-lbinit { position: relative; inset: auto; min-width: 0; min-height: 0; width: 100%; height: 100%; }
+.ld-lbduo.ld-lbn3 > .ld-lbinit, .ld-lbduo.ld-lbn4 > .ld-lbinit { font-size: 16px; padding-bottom: 0; }
+.ld-lbpic .ld-lbduo.ld-lbn3 > .ld-lbinit, .ld-lbpic .ld-lbduo.ld-lbn4 > .ld-lbinit { font-size: 48px; }
 .ld-rmain { flex: 1; min-width: 0; }
 .ld-rname { display: block; color: var(--sx-tx); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ld-rname small { color: var(--sx-tx2); font-size: 11px; margin-left: 4px; }
@@ -5231,15 +5426,20 @@ body.ld-checking #ld-veil { display: block; }
 .ld-crown path { fill: var(--sx-ye); }
 .ld-flame path { fill: var(--sx-or); }
 .ld-tile.ld-tname b { font-size: 13px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 2.24.3 (audit 2026-11-10): see-through, not visibility: hidden, which took
+   them out of the Tab order; a row with focus inside shows them as hover does */
 .ld-rbtn { background: none; border: 0; color: var(--sx-tx2); cursor: pointer; padding: 0 2px; font: inherit; font-size: 12px;
-  visibility: hidden; min-width: 18px; white-space: nowrap; }
-.ld-row:hover .ld-rbtn, .ld-row.ld-confirm .ld-del { visibility: visible; }
+  opacity: 0; min-width: 18px; white-space: nowrap; }
+.ld-row:hover .ld-rbtn, .ld-row:focus-within .ld-rbtn, .ld-row.ld-confirm .ld-del { opacity: 1; }
+.ld-rbtn:focus-visible { outline: 2px solid var(--sx-bl); outline-offset: 1px; }
+/* rows worked like buttons (role="button"): the search's and sources' rows, the conditions */
+.ld-res[role="button"]:focus-visible, .ld-cond[role="button"]:focus-visible { outline: 2px solid var(--sx-bl); outline-offset: 1px; }
 .ld-again:hover { color: var(--sx-bl-tx); }
 .ld-del:hover { color: var(--sx-re-tx); }
 .ld-row.ld-confirm { background: var(--ld-re18); }
 /* touch screens have no hover: Play again and remove stay visible, or a
    history entry could never be removed on a phone */
-@media (hover: none) { .ld-rbtn { visibility: visible; } }
+@media (hover: none) { .ld-rbtn { opacity: 1; } }
 /* phones: the time and the row's buttons go under the name, so the name and
    its pills keep the width (they wrapped a word per line) */
 @media (max-width: 575.98px) {
@@ -5307,12 +5507,14 @@ body.ld-checking #ld-veil { display: block; }
   border-color: color-mix(in srgb, var(--tc) 55%, transparent); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 2px 6px rgba(0,0,0,calc(.4*var(--sx-k))); }
 .ld-tabs button.ld-on .ld-ico { opacity: 1; }
 /* phones: the slab loses its outer margin and keeps 12px inside; the tabs
-   share the width as a grid, so none is left alone on a line */
+   are one row that scrolls sideways (2.24.3, audit 2026-11-10: the suite's
+   phone tab bar; it was a grid) */
 @media (max-width: 575.98px) {
   .ld-modal.ld-page { margin: 0 0 24px; padding: 12px 12px 24px; }
-  .ld-pagehead .ld-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; margin-left: 0; box-sizing: border-box; }
-  .ld-modal .ld-tabs button { padding: 6px 4px; gap: 5px; font-size: 13px; min-width: 0; }
-  .ld-tabs button span { overflow: hidden; text-overflow: ellipsis; }
+  .ld-pagehead .ld-tabs { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; width: 100%; margin-left: 0; box-sizing: border-box; }
+  .ld-pagehead .ld-tabs::-webkit-scrollbar { display: none; }
+  .ld-pagehead .ld-tabs button { flex: 0 0 auto; }
+  .ld-modal .ld-tabs button { padding: 6px 10px; gap: 5px; font-size: 13px; }
 }
 .ld-setup { display: grid; gap: 10px; }
 .ld-page .ld-setup { grid-template-columns: minmax(0, 1.35fr) minmax(280px, 1fr); align-items: start; gap: 14px; }
@@ -5514,8 +5716,11 @@ body.ld-checking #ld-veil { display: block; }
 .ld-hwhen { white-space: nowrap; color: var(--sx-tx2); }
 .ld-hgave { color: var(--sx-re-tx); }
 .ld-hact { white-space: nowrap; text-align: right; }
-.ld-htable tr.ld-row:hover .ld-rbtn, .ld-htable tr.ld-row.ld-confirm .ld-del { visibility: visible; }
+.ld-htable tr.ld-row:hover .ld-rbtn, .ld-htable tr.ld-row:focus-within .ld-rbtn, .ld-htable tr.ld-row.ld-confirm .ld-del { opacity: 1; }
 @media (max-width: 640px) { .ld-htable .ld-hopt { display: none; } .ld-htable td, .ld-htable th { padding: 6px 4px; } }
+/* 2.24.0: a group of three or four: the first two faces and +N */
+.ld-pf2 { position: relative; }
+.ld-pfmore { position: absolute; right: -4px; bottom: -4px; z-index: 2; min-width: 20px; padding: 1px 5px; border-radius: 8px; background: var(--sx-ui2); color: var(--sx-tx); font-size: 11px; font-weight: 700; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,calc(.5*var(--sx-k))); }
 /* 2.14: a duo's chips carry their faces; Pair with someone and who goes well with them */
 .ld-tagchip .ld-pf { margin-left: -6px; }
 .ld-pairrow { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 6px 2px 2px; }
@@ -5657,7 +5862,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
 .ld-toyopts .ld-toyst { flex-basis: 100%; margin: 0; }
 .ld-cond.ld-condna { opacity: .6; cursor: not-allowed; }
 .ld-condtxt em.ld-na { color: var(--sx-tx2); }
-@media (max-width: 576px) { .ld-toyopts { padding-left: 9px; } }
+@media (max-width: 575.98px) { .ld-toyopts { padding-left: 9px; } }   /* 2.24.3: the suite's breakpoint (was 576px) */
 /* 2.9: pictures viewed; the recommended performers; the player's Next scene */
 #ld-bar .ld-picn { color: var(--sx-bl-tx); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 #ld-bar .ld-picn:empty { display: none; }
@@ -6146,7 +6351,6 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
 .ld-lockpill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 8px; font-size: 12.5px; color: var(--sx-hi); white-space: nowrap;
   background: color-mix(in srgb, var(--sx-re) 16%, var(--sx-bg2)); border: 1px solid color-mix(in srgb, var(--sx-re) 45%, transparent); font-variant-numeric: tabular-nums; }
 .ld-lockpill i { width: 7px; height: 7px; border-radius: 50%; background: var(--sx-re); }
-@media (max-width: 575.98px) { .ld-pagehead .ld-tabs { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); } }
 .ld-body { display: flex; flex-direction: column; }
 .ld-bodysec + .ld-bodysec { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--sx-ui2); }
 .ld-bodyhead { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -6587,12 +6791,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   });
   // 2.17: the setup's tiles (user: "Performer", "Studio", "Tag", no "A "),
   // each with a small line, and a tick on the chosen one
-  const kindTile = () => ({ performer: [tc("演员", "Performer"), tc("或两位演员", "or a duo of two")],
-                            studio: [tc("工作室", "Studio"), tc("含其下级工作室", "with its sub-studios")],
-                            tag: [tc("标签", "Tag"), tc("一个或几个", "one or several")] });
-  const goalTile = () => ({ finish: tc("射出来就出局，一次或最多 5 次。", "Finish to get out, once or up to 5 times."),
-                            timer: tc("等它走完：观看时长或锁定时间。", "Wait it out: watched or locked time."),
-                            edge: tc("忍住不射出地看着设定时长；一次 O 即为失误。", "Watch for the time without finishing; an O is a slip.") });
+  const kindTile = () => ({ performer: [tc("演员", "Performer"), tc("或 2 至 4 人一起", "or 2 to 4 together")], studio: [tc("工作室", "Studio"), tc("含其下级工作室", "with its sub-studios")], tag: [tc("标签", "Tag"), tc("一个或几个", "one or several")] });
+  const goalTile = () => ({ finish: tc("射出来就出局，一次或最多 5 次。", "Finish to get out, once or up to 5 times."), timer: tc("等它走完：观看时长或锁定时间。", "Wait it out: watched or locked time."),
+                      edge: tc("忍住不射出地看着设定时长；一次 O 即为失误。", "Watch for the time without finishing; an O is a slip.") });
   const TICK_SVG = line('<path d="M3.5 8.5l3 3 6-7"/>');
   const TICK_HTML = `<span class="ld-tick3">${TICK_SVG}</span>`;
   const X_SVG = line('<path d="M4 4l8 8M12 4l-8 8"/>');
@@ -6782,30 +6983,48 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       if (!btn) return;
       const row = btn.closest(".ld-row");
       if (!row.classList.contains("ld-confirm")) {
-        box.querySelectorAll(".ld-row.ld-confirm").forEach((r) => r.classList.remove("ld-confirm"));
+        // another row armed goes back to its bin (it kept the words)
+        box.querySelectorAll(".ld-row.ld-confirm").forEach((r) => { r.classList.remove("ld-confirm"); const d = r.querySelector(".ld-del"); if (d) d.innerHTML = TRASH; });
         row.classList.add("ld-confirm");
-        btn.innerHTML = tc("再点一次移除", "Click again to remove");
+        row.dataset.armed = String(Date.now());
+        btn.innerHTML = tc("再点一次即移除", "Click again to remove");
         setTimeout(() => { if (row.isConnected && row.classList.contains("ld-confirm")) {
           row.classList.remove("ld-confirm"); btn.innerHTML = TRASH; } }, ARM_MS);
         return;
       }
+      // 2.24.3 (audit 2026-11-10): a double-click never confirms (armOk)
+      if (!armOk(+row.dataset.armed, Date.now())) return;
       btn.innerHTML = "…";
-      try { after(await removeEntry(row.dataset.key)); }
-      catch (e) { btn.innerHTML = tc("失败", "Failed"); log(`${tc("移除失败：", "Remove failed:")} ${e.message}`, "error"); ldToast(tc(`未能移除：${e.message}`, `Not removed: ${e.message}`), "error"); }
+      // 2.24.3 (audit 2026-11-10): and the removal can be undone from its toast
+      let gone = null;
+      try {
+        after(await removeEntry(row.dataset.key, (x) => { gone = x; }));
+        if (gone) ldToast(tc(`已从历史移除「${gone.e.name || "这一局"}」`, `Removed ${gone.e.name || "the run"} from your history`), "done", { label: tc("撤销", "Undo"), fn: () => {
+          const x = gone;
+          restoreEntry(x).then(({ cfg, why }) => {
+            if (why) { ldToast(tc(`未能放回：${why}`, `Not put back: ${why}`), "error"); return; }
+            ldToast(tc(`已放回「${x.e.name || "这一局"}」`, `Put back ${x.e.name || "the run"}`), "done");
+            // the rows it came from when they are still on screen, else what shows the history now
+            if (box.isConnected) after(cfg); else historyChanged();
+          }).catch((e) => { log(`Undo failed: ${e.message}`, "error"); ldToast(tc(`未能放回：${e.message}`, `Not put back: ${e.message}`), "error"); });
+        } });
+      }
+      catch (e) { btn.innerHTML = tc("失败", "Failed"); log(`Remove failed: ${e.message}`, "error"); ldToast(tc(`未能移除：${e.message}`, `Not removed: ${e.message}`), "error"); }
     });
   }
 
   // Clear everything: the first click names the count, a second clears.
   function wireClear(btn, count, after) {
-    let armed = false, t = null;
+    let armed = false, t = null, armedAt = 0;
     btn.addEventListener("click", async () => {
       if (!armed) {
-        armed = true;
-        btn.textContent = tc(`再点一次可清空全部 ${typeof count === "function" ? count() : count}`, `Click again to clear all ${typeof count === "function" ? count() : count}`);
+        armed = true; armedAt = Date.now();
+        btn.textContent = tc(`再点一次即清空全部 ${typeof count === "function" ? count() : count} 局`, `Click again to clear all ${typeof count === "function" ? count() : count}`);
         btn.classList.add("ld-armed");
         t = setTimeout(() => { armed = false; btn.innerHTML = `${TRASH} ${tc("清空历史", "Clear history")}`; btn.classList.remove("ld-armed"); }, ARM_MS);
         return;
       }
+      if (!armOk(armedAt, Date.now())) return;   // 2.24.3 (audit 2026-11-10): a double-click never clears
       clearTimeout(t);
       btn.textContent = tc("清空中…", "Clearing…");
       try { after(await clearHistory()); }
@@ -6818,7 +7037,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   const guideHtml = () => tc(`<div class="ld-guide" data-a="guide">
       <b>一盘是怎么运作的</b>
       <ol>
-        <li><b>锁给谁。</b> 一名演员、一对双人（两位演员，任一位的场景都算）、一个工作室（含其子工作室）或一个标签（含其子标签）。锁定期间，
+        <li><b>锁给谁。</b> 一名演员、2 至 4 人组合（任一位的场景都算）、一个工作室（含其子工作室）或一个标签（含其子标签）。锁定期间，
           Stash 只打开他们的场景、图片和画廊，在你所有设备上都是如此。</li>
         <li><b>怎么出去。</b> <i>完成</i>：射出来就出局。<i>计时</i>：等它走完。<i>边缘</i>：在设定时间内忍住不射；
           每次 O 都算一次失误，会加时间。一旦达标你就出局、分数入账；你可以在那里射出来，也可以进入加时继续：
@@ -6844,7 +7063,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       <button class="ld-link" data-a="gotit">知道了</button></div>`, `<div class="ld-guide" data-a="guide">
       <b>How a run works</b>
       <ol>
-        <li><b>Who.</b> A performer, a duo (two performers: a scene of either counts), a studio (with its sub-studios) or a
+        <li><b>Who.</b> A performer, or two to four of them (a scene of any of them counts, and Roulette takes turns between them in order), a studio (with its sub-studios) or a
           tag (with its sub-tags). While you're locked, Stash only opens their scenes, images and galleries, on every device.</li>
         <li><b>Way out.</b> <i>Finish</i>: finish to get out. <i>Timer</i>: wait it out. <i>Edge</i>: watch for the set time
           without finishing; each O is a slip that adds time. Once you reach it you're out and the score is banked; you can
@@ -6888,6 +7107,14 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     `<span class="ld-stepper ld-timebox" data-s="${key}"><button data-d="-1" aria-label="${tc("减少 15 分钟", "15 minutes less")}">−</button>` +
     `<input class="ld-time" data-time="${key}" autocomplete="off" spellcheck="false" aria-label="${tc("时长，例如 45、1h30 或 1:30", "Time, for example 45, 1h30 or 1:30")}">` +
     `<button data-d="1" aria-label="${tc("增加 15 分钟", "15 minutes more")}">+</button></span>`;
+
+  // 2.24.3 (audit 2026-11-10): the setup on screen, { box, refresh }: what a
+  // change to the history redraws instead of the whole page (historyChanged)
+  let setupLive = null;
+  function historyChanged() {
+    if (!lock && setupLive && setupLive.box.isConnected) { setupLive.refresh().catch(() => {}); return; }
+    renderPage();
+  }
 
   // prefill: { setup, target, src } (Play again, Play last setup again).
   // prefill: { setup, target, src } (Play again, Play last setup again).
@@ -6971,8 +7198,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
           <button class="ld-link ld-soundbtn" data-a="sound"></button></div>
       </aside>
       </div>
-      ${into ? "" : `<div class="ld-hist" data-a="hist"><div class="ld-empty">${tc("正在加载历史…", "Loading history…")}</div></div>
-      <button class="ld-close" data-a="close">${tc("稍后再说", "Not now")}</button>`}`;
+      ${into ? "" : `<div class="ld-hist" data-a="hist"><div class="ld-empty">Reading your history…</div></div>
+      <button class="ld-close" data-a="close">Not now</button>`}`;
     const box = into ? into : modal(html);
     if (into) into.innerHTML = html;
     const $ = (a) => box.querySelector(`[data-a="${a}"]`);
@@ -6988,7 +7215,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     const recMemo = new Map();
     // review L8: a quick Random pick waits for this read, or it could land on
     // someone run yesterday
-    const cfgReady = readConfig().then((d) => {
+    const takeCfg = (d) => {
       topRuns = (d.stats && d.stats.top) || [];
       bestHeat = (d.stats && d.stats.bestHeat) || 0;
       presets = d.presets || [];
@@ -6996,12 +7223,27 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       recLong = recentPerformers(d.list, Date.now(), REC_LONG_MS);
       histList = d.failed ? null : d.list || [];
       if (box.isConnected) { render(); renderPresets(); renderRecs(); if (S.pick === "random") renderSources(); }
-    });
+    };
+    const cfgReady = readConfig().then(takeCfg);
+    // 2.24.3 (audit 2026-11-10): the history changed while the setup is open
+    // (a finished run saved at last, an Undo): only what shows it is drawn
+    // again (the records to beat, the presets, who ran lately, the dialog's
+    // history), from the same S, target and src. retryPending redrew the
+    // page, which made a new setup and dropped the one being filled in. A
+    // time being typed keeps its text and the focus; a read that failed
+    // changes nothing.
+    setupLive = { box, refresh: () => readConfig().then((d) => {
+      if (d.failed || !box.isConnected) return;
+      const a = document.activeElement, tk = a && a.dataset && box.contains(a) ? a.dataset.time : null, tv = tk ? a.value : null;
+      takeCfg(d);
+      if (tk) { const n = box.querySelector(`[data-time="${tk}"]`); if (n) { n.value = tv; n.focus(); } }
+      if (!into && $("hist")) renderPreview($("hist"), d);
+    }) };
 
     // ── presets (2.3, forum: "save preset run settings with custom names"):
     // who (or where a random pick comes from) and the whole setup, kept with
     // the history in Stash so every device has them
-    let presetArmed = null, presetTimer = 0;
+    let presetArmed = null, presetTimer = 0, presetArmedAt = 0;
     const renderPresets = () => {
       const el = $("presets");
       if (!el) return;
@@ -7018,13 +7260,16 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         ev.stopPropagation();
         const id = b.dataset.pdel;
         clearTimeout(presetTimer);
-        if (presetArmed !== id) { presetArmed = id; renderPresets(); presetTimer = setTimeout(() => { presetArmed = null; renderPresets(); }, ARM_MS); return; }
+        if (presetArmed !== id) { presetArmed = id; presetArmedAt = Date.now(); renderPresets(); presetTimer = setTimeout(() => { presetArmed = null; renderPresets(); }, ARM_MS); return; }
+        // 2.24.3 (audit 2026-11-10): a double-click never deletes (still armed, the 6 s start again)
+        if (!armOk(presetArmedAt, Date.now())) { presetTimer = setTimeout(() => { presetArmed = null; renderPresets(); }, ARM_MS); return; }
         presetArmed = null;
         presets = presets.filter((y) => y.id !== id);
         renderPresets();
         updateConfig(({ presets: cur }) => ({ presets: (cur || []).filter((y) => y.id !== id) }))
           .then((cfg) => { presets = cfg.presets || presets; renderPresets(); })
-          .catch((e) => err(tc(`预设未删除：${e.message}`, `Preset not deleted: ${e.message}`)));
+          // 2.24.3 (audit 2026-11-10): the toast, in the suite's words; the preset comes back on screen (it was not deleted)
+          .catch((e) => { ldToast(tc(`未能删除：${e.message}`, `Not deleted: ${e.message}`), "error"); readConfig().then((d) => { if (!d.failed) { presets = d.presets || []; renderPresets(); } }); });
       }));
     };
     const wirePresetSave = () => {
@@ -7044,9 +7289,11 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
           if (!name) { err(tc("请给预设起个名字。", "Give the preset a name.")); return; }
           const x = presetOf(name, S, S.pick === "choose" ? target : null, S.pick === "random" ? src : null, Date.now());
           close();
-          updateConfig(({ presets: cur }) => ({ presets: addPreset(cur || [], x) }))
-            .then((cfg) => { presets = cfg.presets || presets; renderPresets(); ldToast(tc(`已保存“${name}”`, `Saved “${name}”`), "done"); })
-            .catch((e) => err(tc(`预设未保存：${e.message}`, `Preset not saved: ${e.message}`)));
+          // 2.24.1: at the limit the oldest goes; said, with its name (it went silently)
+          let gone = "";
+          updateConfig(({ presets: cur }) => { const l = cur || [], nx = addPreset(l, x); const d = l.find((y) => !nx.some((z) => z.id === y.id) && String(y.name || "").toLowerCase() !== x.name.toLowerCase()); gone = d ? d.name : ""; return { presets: nx }; })
+            .then((cfg) => { presets = cfg.presets || presets; renderPresets(); ldToast(gone ? tc(`已保存「${name}」。已删除最早的「${gone}」（最多 ${PRESETS_MAX} 个）`, `Saved “${name}”. “${gone}”, the oldest of ${PRESETS_MAX}, was dropped`) : tc(`已保存「${name}」`, `Saved “${name}”`), "done"); })
+            .catch((e) => ldToast(tc(`未能保存：${e.message}`, `Not saved: ${e.message}`), "error"));   // 2.24.3 (audit 2026-11-10)
         };
         inp.addEventListener("keydown", (e) => {
           e.stopPropagation();                      // keep Stash and QuickTools keys out of the box
@@ -7079,7 +7326,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       cardCounts = { key, by: null, total: null };
       if (!key) return;
       const mine = ++cardCountSeq, probe = tProbe(t, fresh);
-      Promise.all([countCardTags(probe, list, fresh), sceneCount(probe)])
+      // 2.24.3 (audit 2026-11-10): kept 10 minutes, by target, Unwatched only and the tags
+      keptCount(`cards|${key}`, () => Promise.all([countCardTags(probe, list, fresh), sceneCount(probe)]))
         .then(([ns, total]) => {
           if (mine !== cardCountSeq || !box.isConnected) return;
           const by = {};
@@ -7140,14 +7388,15 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         `<span class="ld-paddt">${tc("加一张标签牌", "Add a tag card")}</span><span class="ld-pmeta">${tc(`搜索任意标签；最多 ${CARD_TAGS_MAX} 张`, `search any tag; ${CARD_TAGS_MAX} at most`)}</span></button>`;
       el.innerHTML = h;
       $("cardaddbox").hidden = !cardAdd || list.length >= CARD_TAGS_MAX;
-      $("cardres").innerHTML = cardRes.map((r, i) => `<div class="ld-res" data-cardadd="${i}">${pfHtml(null, r.name, r.image_path, "xs", "tag")}<span class="ld-rname">${escapeHtml(r.name)}</span>` +
+      $("cardres").innerHTML = cardRes.map((r, i) => `<div class="ld-res" data-cardadd="${i}" role="button" tabindex="0">${pfHtml(null, r.name, r.image_path, "xs", "tag")}<span class="ld-rname">${escapeHtml(r.name)}</span>` +
         `<span class="ld-rmeta">${r.scene_count !== undefined ? plural(r.scene_count, "scene", "scenes") : ""}</span></div>`).join("");
       $("cardfoot").innerHTML = `<span class="ld-hint">${tc(`${S.cards ? "你的标签牌" : "来自你的收藏标签"}${t ? `，按 ${escapeHtml(t.name)} 统计` : ""}。`, `${S.cards ? "Your tag cards" : "From your favourite tags"}${t ? `, counted for ${escapeHtml(t.name)}` : ""}. `)}` +
         `${tc("对局场景都没有的标签会被略去。", "A tag none of the run's scenes have is left out.")}</span>` + (S.cards ? `<button class="ld-link" data-a="cardfav">${tc("用我的收藏标签", "Use my favourite tags")}</button>` : "");
       const n = cardsInHand();
       $("sum4").innerHTML = io ? tc("图片对局没有牌", "none in a run of images") : `<b>${plural(n, "card", "cards")}</b> · ${tc("对局中想用时再打出", "play them when you like during the run")}`;
     };
-    listOf("tag", { favorite: true }, { per_page: -1 }).then((l) => { cardFavs = l.map((t) => ({ id: String(t.id), name: t.name, n: t.scene_count || 0, ...cardPic(t) }))
+    // 2.24.3 (audit 2026-11-10): the favourite tags are kept 10 minutes too (a failed read is not)
+    keptCount("favtags", () => listOf("tag", { favorite: true }, { per_page: -1 })).then((l) => { cardFavs = l.map((t) => ({ id: String(t.id), name: t.name, n: t.scene_count || 0, ...cardPic(t) }))
       .sort((a, b) => b.n - a.n); if (box.isConnected) render(); }).catch(() => { cardFavs = []; if (box.isConnected) render(); });
     box.addEventListener("click", (e) => {
       const un = e.target.closest && e.target.closest("[data-uncard]");
@@ -7221,20 +7470,25 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       // 2.14: a duo: the two, each with an x, and what they bring together
       // 2.17: as the chosen card, the two portraits overlapping
       if (!typed && S.kind === "performer" && duoOf(target)) {
+        const room = target.duo.length < DUO_MAX;
         $("results").innerHTML = `<div class="ld-chosen ld-chduo">${pfHtml(target, target.name, target.image_path, "m")}<div class="ld-chmain">` +
-          `<div class="ld-tagpick">${target.duo.map((x, i) => `${i ? `<span class="ld-tagjoin">&amp;</span>` : ""}` +
+          `<div class="ld-tagpick">${target.duo.map((x, i) => `${i ? `<span class="ld-tagjoin">${i === target.duo.length - 1 ? "&amp;" : ","}</span>` : ""}` +
             `<span class="ld-tagchip">${escapeHtml(x.name)}` +
-            `<button data-unduo="${i}" aria-label="${tc("移除 ", "Remove ")}${escapeHtml(x.name)}">×</button></span>`).join("")}</div>` +
+            `<button data-unduo="${i}" aria-label="${tc(`移除 ${escapeHtml(x.name)}`, `Remove ${escapeHtml(x.name)}`)}">×</button></span>`).join("")}</div>` +
           `<small>${duoCount === null ? tc("统计中…", "Counting…") : !duoCount ? ""
-            : !duoCount.s && !duoCount.i ? `<b class="ld-coral">${tc("他们两位都没有场景或图片。", "Neither of them has a scene or image.")}</b>`
-            : tc(`${duoCount.s ? plural(duoCount.s, "scene", "scenes") : `${plural(duoCount.i, "image", "images")}（仅图片）`} 任一人的都算。`, `${duoCount.s ? plural(duoCount.s, "scene", "scenes") : `${plural(duoCount.i, "image", "images")} (images only)`} with either of them.`)}` +
-            `${duoCount && duoCount.s && whoN.u !== null && whoN.key === tKey(target) ? ` ${tc(`${whoN.u} 张未看过。`, `${whoN.u} unwatched.`)}` : ""}</small></div>` +
-          `<button class="ld-xbtn" data-a="unpick" aria-label="${tc("清除双人", "Clear the duo")}" title="${tc("清除", "Clear")}">${X_SVG}</button></div>` +
-          `<div class="ld-pairrow"><span class="ld-hint">${tc("双人：任一人的场景都算", "a duo: a scene of either of them counts")}</span></div>`;
+            : !duoCount.s && !duoCount.i ? `<b class="ld-coral">${tc("他们都没有场景或图片。", "None of them has a scene or image.")}</b>`
+            : tc(`${duoCount.s ? plural(duoCount.s, "scene", "scenes") : `${plural(duoCount.i, "image", "images")}（仅图片）`}，带其中任意一人。`, `${duoCount.s ? plural(duoCount.s, "scene", "scenes") : `${plural(duoCount.i, "image", "images")} (images only)`} with any of them.`)}` +
+            `${duoCount && duoCount.s && whoN.u !== null && whoN.key === tKey(target) ? tc(` · ${whoN.u} 张未看过`, ` ${whoN.u} unwatched`) : ""}</small></div>` +
+          (room ? `<button class="ld-btn" data-a="pair">${PLUS_SVG} ${pairing ? tc("在上方再搜一位", "Search above for one more") : tc("加一位", "Add someone")}</button>` : "") +
+          `<button class="ld-xbtn" data-a="unpick" aria-label="${tc(`清空${duoNoun(target.duo.length)}`, `Clear the ${duoNoun(target.duo.length)}`)}" title="${tc("清空", "Clear")}">${X_SVG}</button></div>` +
+          `<div class="ld-pairrow"><span class="ld-hint">${tc(`${duoWord(target.duo.length)}：其中任何一人的场景都算；轮盘按这个顺序轮流${room ? `；最多 ${DUO_MAX} 人` : ""}`, `${duoWord(target.duo.length)}: a scene of any of them counts; Roulette takes turns in this order${room ? `; up to ${DUO_MAX}` : ""}`)}</span></div>`;
+        const pb = $("results").querySelector('[data-a="pair"]');
+        if (pb) pb.addEventListener("click", (ev) => { ev.stopPropagation(); pairing = true; $("q").placeholder = tc("再搜一位演员", "Search one more performer"); renderResults(); $("q").focus(); });
         $("results").querySelectorAll("[data-unduo]").forEach((b) => b.addEventListener("click", (ev) => {
           ev.stopPropagation();
-          const keep = target.duo[1 - +b.dataset.unduo];
-          target = { kind: "performer", id: keep.id, name: keep.name, image_path: keep.image_path, scene_count: keep.scene_count, image_count: keep.image_count };
+          const rest = target.duo.filter((_, i) => i !== +b.dataset.unduo);
+          if (rest.length > 1) target = duoTarget(rest);
+          else { const keep = rest[0]; target = { kind: "performer", id: keep.id, name: keep.name, image_path: keep.image_path, scene_count: keep.scene_count, image_count: keep.image_count }; }
           duoChanged();
         }));
         wireUnpick();
@@ -7252,7 +7506,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         // well with them (from Neglected, Backlog and Discover)
         if (S.kind === "performer") {
           const mates = mateCards(recs, target.id, recLong, rulesOf(S).fresh).slice(0, REC_MATES_SHOW);
-          $("results").insertAdjacentHTML("beforeend", `<div class="ld-pairrow"><span class="ld-hint">${tc("与某人配对成双人：任一人的场景都算", "Pair with someone for a duo: a scene of either of them counts")}</span></div>` +
+          $("results").insertAdjacentHTML("beforeend", `<div class="ld-pairrow"><span class="ld-hint">${tc("加人配对：任一人的场景都算（最多 4 人）", "Pair with someone for a duo: a scene of either of them counts")}</span></div>` +
             (mates.length ? `<div class="ld-matehead">${tc(`与 ${escapeHtml(target.name)} 很搭`, `Goes well with ${escapeHtml(target.name)}`)}</div><div class="ld-reclist ld-mates">${mates.map((x, i) =>
               `<button class="ld-reccard" data-mate="${i}" title="${escapeHtml(x.why)}">${pfHtml(null, x.name, x.image_path, "s", "performer")}` +
               `<span><b>${escapeHtml(x.name)}</b><small>${escapeHtml(x.why)}</small></span></button>`).join("")}</div>` : ""));
@@ -7269,7 +7523,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
             if (!x) return;
             recStore = recSeenPick(recStore, x.id, Date.now());
             recSeenSave(recStore);
-            target = duoTarget([target, x]);
+            target = duoTarget([...(duoOf(target) || [target]), x]);
             duoChanged();
           }));
         }
@@ -7282,7 +7536,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       }
       hi = Math.min(hi, list.length - 1);
       $("results").innerHTML = list.map((p, i) =>
-        `<div class="ld-res${i === hi && typed ? " ld-hi" : ""}${target && String(p.id) === target.id && target.kind === S.kind ? " ld-sel" : ""}" data-i="${i}">` +
+        `<div class="ld-res${i === hi && typed ? " ld-hi" : ""}${target && String(p.id) === target.id && target.kind === S.kind ? " ld-sel" : ""}" data-i="${i}" role="button" tabindex="0">` +
         `${pfHtml(null, p.name, p.image_path, "xs", S.kind)}<span class="ld-rname">${escapeHtml(p.name)}</span>` +
         `<span class="ld-rmeta">${imageOnly(p) ? `${plural(p.image_count, "image", "images")} · <i>${tc("仅图片", "images only")}</i>`
           : p.scene_count !== undefined ? plural(p.scene_count, "scene", "scenes") : ""}</span><span class="ld-tick">✓</span></div>`).join("");
@@ -7307,7 +7561,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       whoN = { key, u: null };
       if (!key) return;
       const mine = ++whoSeq;
-      sceneCount(tProbe(t, true)).then((u) => { if (mine === whoSeq && box.isConnected) { whoN = { key, u }; renderResults(); render(); } }).catch(() => {});
+      keptCount(`who|${key}`, () => sceneCount(tProbe(t, true))).then((u) => { if (mine === whoSeq && box.isConnected) { whoN = { key, u }; renderResults(); render(); } }).catch(() => {});
     };
     const lastLocked = (t) => {
       const k = tKey(t);
@@ -7325,7 +7579,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     };
     // 2.14: the duo as one target: the first one's id and picture, both in `duo`
     const duoTarget = (two) => {
-      const duo = duoMembers(two).map((p, i) => ({ ...p, scene_count: two[i].scene_count, image_count: two[i].image_count }));
+      const duo = duoMembers(two).map((p, i) => ({ ...p, scene_count: two[i].scene_count, image_count: two[i].image_count }));   // 2.24.0: up to DUO_MAX
       return { kind: "performer", id: duo[0].id, name: duoName(duo), image_path: duo[0].image_path, duo };
     };
     let duoSeq = 0;
@@ -7341,7 +7595,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       renderRecs();
       if (!duoOf(target)) return;
       const mine = ++duoSeq, probe = { kind: "performer", tid: target.id, duo: target.duo };
-      Promise.all([sceneCount(probe), imageCount(probe)])
+      keptCount(`duo|${tKey(target)}`, () => Promise.all([sceneCount(probe), imageCount(probe)]))
         .then(([n, ni]) => { if (mine === duoSeq) { duoCount = { s: n, i: ni }; renderResults(); render(); } })
         .catch(() => { if (mine === duoSeq) { duoCount = undefined; renderResults(); } });
     };
@@ -7362,7 +7616,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       render();
       if (tagList.length < 2) return;
       const mine = ++countSeq;
-      Promise.all([countTagScenes(tagList, S.tagMode), countTagImages(tagList, S.tagMode)])
+      const tl = tagList.slice(), tm = S.tagMode;
+      keptCount(`tags|${tm === "or" ? "or" : "and"}|${tl.map((x) => x.id).sort().join(",")}`, () => Promise.all([countTagScenes(tl, tm), countTagImages(tl, tm)]))
         .then(([n, ni]) => { if (mine === countSeq) { tagCount = { s: n, i: ni }; renderResults(); render(); } })
         .catch(() => { if (mine === countSeq) { tagCount = undefined; renderResults(); } });
     };
@@ -7378,10 +7633,10 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       }
       const one = { kind: S.kind, id: String(p.id), name: p.name, image_path: p.image_path, scene_count: p.scene_count, image_count: p.image_count };
       // 2.14: after "Pair with someone", the pick is the second of a duo
-      if (S.kind === "performer" && pairing && target && target.kind === "performer" && !duoOf(target) && target.id !== one.id) {
-        target = duoTarget([target, one]);
-        duoChanged();
-        return;
+      if (S.kind === "performer" && pairing && target && target.kind === "performer") {
+        const have = duoOf(target) || [target];
+        if (have.some((x) => String(x.id) === one.id)) { err(tc(`${one.name} 已经在里面了。`, `${one.name} is in already.`)); return; }
+        if (have.length < DUO_MAX) { target = duoTarget([...have, one]); duoChanged(); return; }
       }
       pairing = false;
       target = one;
@@ -7506,7 +7761,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     const renderSources = () => {
       const k = S.kind;
       const row = (key, ico, name, meta, cls = "") =>
-        `<div class="ld-res${src && srcKey(src) === key ? " ld-sel" : ""}${cls}" data-src="${escapeHtml(key)}">` +
+        `<div class="ld-res${src && srcKey(src) === key ? " ld-sel" : ""}${cls}" data-src="${escapeHtml(key)}" role="button" tabindex="0">` +
         `<span class="ld-av">${ico}</span><span class="ld-rname">${escapeHtml(name)}</span>` +
         `<span class="ld-rmeta">${escapeHtml(meta)}</span><span class="ld-tick">✓</span></div>`;
       let html = row("fav", HEART, tc("收藏", "Favourites"), favN === null ? "…" : favN ? kp(k, favN) : `${tc("没有收藏的" + ((KIND_ZH[k] || {}).plural || k), `no favourite ${KINDS[k].plural}`)}`);
@@ -7546,7 +7801,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       renderRecs();
       renderSources();
       const img = imagesOk(S);
-      favouritesOf(k, img).then((l) => { if (mine === srcSeq) { favN = l.length; renderSources(); } })
+      // 2.24.3 (audit 2026-11-10): a count, not the list (favCount), kept 10 minutes
+      keptCount(`fav|${k}|${img ? 1 : 0}`, () => favCount(k, img)).then((n) => { if (mine === srcSeq) { favN = n; renderSources(); } })
         .catch(() => { if (mine === srcSeq) { favN = 0; renderSources(); } });
       savedFiltersOf(k).then((l) => {
         if (mine !== srcSeq) return;
@@ -7555,7 +7811,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         for (const f of l) {
           const key = `${k}:${f.id}:${img ? 1 : 0}`;
           if (key in counts) continue;
-          countFor(k, f, img).then((n) => { counts[key] = n; if (mine === srcSeq) renderSources(); })
+          // kept by the filter as it is saved now (edited in Stash, it is counted again)
+          keptCount(`flt|${key}|${JSON.stringify([f.object_filter, f.find_filter && f.find_filter.q])}`, () => countFor(k, f, img))
+            .then((n) => { counts[key] = n; if (mine === srcSeq) renderSources(); })
             .catch(() => { counts[key] = null; if (mine === srcSeq) renderSources(); });
         }
       }).catch(() => {});
@@ -7642,19 +7900,18 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       // 2.12: Toy in charge without Intiface Sync 1.49 is shown off and adds nothing
       const C = setupConds();
       const heat = io ? 0 : heatOf(C, S.goal);
-      const covered = (c) => c.k === "stay" && S.goal === "timer" && !!S.conds.one;   // One scene does it already
       const free = conditions().filter((c) => c.noHeat && condApplies(c, S.goal));
       $("conds").innerHTML = conditions().filter((c) => !c.noHeat && condApplies(c, S.goal) && (!c.with || S.conds[c.with])).map((c) => {
         // 2.22: Blind Journey only with Toy in charge on, and an Intiface Sync that can
         const na = c.needs === "goon" && (!goonApi() || (c.k === "blindj" && !blindApi()));
         const needText = tc(c.k === "blindj" ? "需要 Intiface Sync 1.67 或更高版本" : "需要 Intiface Sync 1.49 或更高版本", c.k === "blindj" ? BLIND_NEEDS : TOY_NEEDS);
         const r = na ? 0 : S.conds[c.k] || 0;
-        return `<div class="ld-cond${r ? " ld-on" : ""}${na ? " ld-condna" : ""}" data-cond="${c.k}"${na ? ` aria-disabled="true" title="${needText}"` : ""}>` +
+        return `<div class="ld-cond${r ? " ld-on" : ""}${na ? " ld-condna" : ""}" data-cond="${c.k}" role="button" tabindex="0" aria-label="${escapeHtml(c.name)}${r ? `: ${escapeHtml(c.ranks[r - 1])}` : ""}, raise a rank"${na ? ` aria-disabled="true" title="${needText}"` : ""}>` +
           `<span class="ld-condico">${COND_ICON[c.k]}</span>` +
           `<span class="ld-condtxt"><b>${escapeHtml(c.name)}</b>${r ? `<em>${escapeHtml(c.ranks[r - 1])}</em>` : na ? `<em class="ld-na">${needText}</em>` : ""}<small title="${escapeHtml(c.text)}">${escapeHtml(c.text)}</small></span>` +
           `<span class="ld-pips">${c.ranks.map((rk, i) => `<button class="ld-pip${i < r ? " ld-on" : ""}" data-pip="${i + 1}" ` +
-            `title="${escapeHtml(rk)} · +${c.heat[i]} ${tc("热度", "heat")}" aria-label="${escapeHtml(c.name)}: ${escapeHtml(rk)}"${na ? " disabled" : ""}></button>`).join("")}</span>` +
-          `<span class="ld-condheat"${covered(c) && r ? ` title="${tc("单一场景已经让你停在同一个场景上", "One scene already keeps you on one scene")}"` : ""}>${r ? (covered(c) ? "+0" : `+${c.heat[r - 1]}`) : "0"}</span></div>` +
+            `title="${escapeHtml(rk)} · +${c.heat[i]} heat" aria-label="${escapeHtml(c.name)}: ${escapeHtml(rk)}"${na ? " disabled" : ""}></button>`).join("")}</span>` +
+          `<span class="ld-condheat">${r ? `+${c.heat[r - 1]}` : "0"}</span></div>` +
           (c.k === "toy" && r ? toyOptsHtml() : "");
       }).join("") + (free.length ? `<div class="ld-noheat"><span>${tc("无热度", "No heat")}</span>${free.map((c) =>
           `<button class="ld-nhchip${S.conds[c.k] ? " ld-on" : ""}" data-cond="${c.k}" title="${escapeHtml(c.text)}"><i></i>${COND_ICON[c.k]} ${escapeHtml(c.name)}</button>`).join("")}
@@ -7772,6 +8029,18 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     // a typed time: taken as typed (whole minutes, 1 min to a day), on Enter
     // or leaving the box; something unreadable puts back what was there
     box.addEventListener("keydown", (ev) => {
+      // 2.24.3 (audit 2026-11-10): rows that are not buttons (a condition, a
+      // search result, a source) work by Enter and Space like one (rowKeyOk);
+      // the focus goes back to the row drawn again in its place
+      const kt = ev.target;
+      if (kt && kt.tagName !== "BUTTON" && kt.getAttribute && rowKeyOk(ev.key, kt.getAttribute("role"), ev.ctrlKey || ev.metaKey || ev.altKey)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const back = kt.dataset.cond ? `[data-cond="${kt.dataset.cond}"]` : kt.dataset.src ? `[data-src="${CSS.escape(kt.dataset.src)}"]` : null;
+        kt.click();
+        if (back) { const n = box.querySelector(back); if (n && n !== document.activeElement) n.focus(); }
+        return;
+      }
       if (ev.target.dataset && ev.target.dataset.toy) { ev.stopPropagation(); return; }   // 2.12: the toy's pickers too
       if (!ev.target.dataset || !ev.target.dataset.time) return;
       ev.stopPropagation();                         // Stash's and QuickTools' keys stay out
@@ -7794,9 +8063,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       err("");
       if (lock) { err(tc("已经有一个锁局在进行了。", "A lockdown is already running.")); return; }
       if (S.pick === "choose") {
-        if (!target || target.kind !== S.kind) { err(tc(`请先挑一个${label()}：在上方搜索。`, `Pick a ${label()} first: search for one above.`)); $("q").focus(); return; }
-        if (target.tags && tagCount && !tagCount.s && !tagCount.i) { err(tc(`没有场景或图片带这些标签中的${S.tagMode === "or" ? "任一个" : "全部"}。`, `No scene or image has ${S.tagMode === "or" ? "any" : "all"} of these tags.`)); return; }
-        if (duoOf(target) && duoCount && !duoCount.s && !duoCount.i) { err(tc("他们两位都没有场景或图片。", "Neither of them has a scene or image.")); return; }
+        if (!target || target.kind !== S.kind) { err(tc(`请先选一个${label()}：在上方搜索。`, `Pick a ${label()} first: search for one above.`)); $("q").focus(); return; }
+        if (target.tags && tagCount && !tagCount.s && !tagCount.i) { err(tc(`没有任何场景或图片带${S.tagMode === "or" ? "其中任意一个" : "全部"}这些标签。`, `No scene or image has ${S.tagMode === "or" ? "any" : "all"} of these tags.`)); return; }
+        if (duoOf(target) && duoCount && !duoCount.s && !duoCount.i) { err(tc("他们都没有场景或图片。", "None of them has a scene or image.")); return; }
         const io = pickedImageOnly();
         if (io && !imagesOk(S)) { err(tc(`${target.name} 只有图片：请选完成，或按锁定时间的计时。`, `${target.name} has images only: pick Finish, or Timer by locked time.`)); return; }
         const run = io ? { ...S, conds: {} } : { ...S, conds: setupConds() };
@@ -7861,8 +8130,15 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   // counted by the query; studios and tags by listing (their scene counts
   // include what is under them, which the filter cannot ask for).
   async function countFor(kind, saved, images) {
-    if (kind !== "performer" || images) return (await targetsFor(kind, saved, images)).length;
+    if (kind !== "performer") return (await targetsFor(kind, saved, images)).length;
     const filter = toGraphQLFilter(saved.object_filter, await fieldTypesOf(kind));
+    // 2.24.3 (audit 2026-11-10): with images too, two counts instead of the
+    // whole list (performerCountFilters); the list only when the filter has
+    // its own word on scenes or images
+    if (images) {
+      const fs = performerCountFilters(filter, true);
+      return fs ? countPerformers(fs, saved.find_filter?.q) : (await targetsFor(kind, saved, images)).length;
+    }
     if (!filter.scene_count) filter.scene_count = { modifier: "GREATER_THAN", value: 0 };
     const d = await gql(`query ($x: PerformerFilterType, $f: FindFilterType) {
                            findPerformers(performer_filter: $x, filter: $f) { count } }`,
@@ -7988,8 +8264,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   function mountPage(el) {
     injectStyles();
     pageEl = el;
-    const t = new URLSearchParams(location.search).get("tab");
-    if (t && ["new", "board", "history", "body"].includes(t)) pageTab = t;
+    const t = tabFromSearch(location.search);
+    if (t) pageTab = t;
     renderPage();
   }
 
@@ -8004,14 +8280,23 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     const tabs = [["new", lock ? tc("你的对局", "Your run") : tc("新对局", "New run"), LOCK_LINE, "var(--sx-re)"]]
       .concat(body ? [["body", tc("身体数据", "Body stats"), BODY_LINE, "var(--sx-bl)"]] : [])
       .concat([["board", tc("排行榜", "Leaderboard"), CROWN_LINE, "var(--sx-ye)"], ["history", tc("历史", "History"), HISTORY_LINE, "var(--sx-pu)"]]);
-    const sub = lock ? tc(`锁定到 ${lock.name}`, `Locked to ${lock.name}`) : tc("锁定到一位演员、一对双人、一个工作室或标签，直到你出局", "Locked to one performer, a duo, a studio or tags until you get out");
+    const sub = lock ? tc(`锁定到 ${lock.name}`, `Locked to ${lock.name}`) : tc("锁定到一位演员（或 2 至 4 人组合）、一个工作室或标签，直到你出局", "Locked to one performer, a duo, a studio or tags until you get out");
     // 2.17: while locked the header says so, with the time (updateLive)
     pageEl.innerHTML = `<div class="ld-pagehead"><div class="ld-ptitle"><h2>${LOCK_SVG} ${tc("锁局", "Lockdown")}</h2>` +
-      (lock ? `<span class="ld-lockpill" title="${escapeHtml(sub)}"><i></i><span data-a="lockpill">${tc("已锁定", "Locked")} · ${escapeHtml(fmtDuration(Date.now() - lock.startedAt))}</span></span>`
-        : `<span class="ld-psub">${escapeHtml(sub)}</span>`) + `</div><div class="ld-tabs">` +
-      tabs.map(([k, l, ico, c]) => `<button data-tab="${k}" class="${k === pageTab ? "ld-on" : ""}" style="--tc:${c}">${ico}<span>${l}</span></button>`).join("") +
+      (lock ? `<span class="ld-lockpill" title="${escapeHtml(sub)}"><i></i><span data-a="lockpill">${tc("已锁定 · ", "Locked · ")}${escapeHtml(fmtDuration(Date.now() - lock.startedAt))}</span></span>`
+        : `<span class="ld-psub">${escapeHtml(sub)}</span>`) + `</div><div class="ld-tabs" role="tablist" aria-label="Lockdown">` +
+      // 2.24.3 (audit 2026-11-10): tabs per the suite: roles, and the tab in the URL (?tab=)
+      tabs.map(([k, l, ico, c]) => `<button type="button" role="tab" aria-selected="${k === pageTab}" data-tab="${k}" class="${k === pageTab ? "ld-on" : ""}" style="--tc:${c}">${ico}<span>${l}</span></button>`).join("") +
       `</div></div><div class="ld-pagebody" data-a="pbody"></div>`;
-    pageEl.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { pageTab = b.dataset.tab; renderPage(); }));
+    pageEl.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => {
+      pageTab = b.dataset.tab; renderPage();
+      pageEl && pageEl.querySelector(`[data-tab="${pageTab}"]`)?.focus();   // the focus stays on the tab just used
+    }));
+    // the URL says the tab shown (a click, Start a run, a tab that went away);
+    // every other parameter kept
+    if (location.pathname === PAGE_PATH && tabFromSearch(location.search) !== pageTab) {
+      try { history.replaceState(history.state, "", PAGE_PATH + tabSearch(location.search, pageTab) + location.hash); } catch (_) {}
+    }
     const pb = pageEl.querySelector('[data-a="pbody"]');
     if (pageTab === "new") {
       if (lock) renderLive(pb);
@@ -8540,6 +8825,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     lock = null;
     confirmedId = null;
     toyCtl.stop();                 // 2.12: any end ends Goon mode started for the run
+    setupKept.clear();             // 2.24.3: the run changed what is unwatched; the next setup counts again
     writeState(null);
     clearBar();
     resetChecks();
@@ -8589,8 +8875,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       if (pageTab !== "new") renderPage();
     }).catch((e) => {
       const el = placeEl();
-      if (el) el.textContent = tc("尚未保存：锁局会先留着它，稍后再试", "Not saved yet: Lockdown keeps it and tries again");
-      ldToast(tc(`这一盘暂时没能保存（${e.message}）；已先留着，等 Stash 恢复后会再保存`, `The run could not be saved yet (${e.message}); it is kept and saved when Stash answers`), "error");
+      if (el) el.textContent = tc("尚未保存：锁局会保留这一局并重试", "Not saved yet: Lockdown keeps it and tries again");
+      // 2.24.3 (audit 2026-11-10): the suite's words for a failed save
+      ldToast(tc(`尚未保存：${e.message}。这一局会被保留，等 Stash 有响应时再写入`, `Not saved yet: ${e.message}. The run is kept and saved when Stash answers`), "error");
       // A history that cannot be read must not keep every device locked.
       updateConfig(({ active }) => (active && active.id === done.id ? { active: null } : {})).catch(() => {});
     });
@@ -8614,8 +8901,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     if (!list.length) return;
     pendBusy = true;
     list.slice().reverse().reduce((ch, p) => ch.then(() => writeEnd(p)), Promise.resolve())
-      .then(() => { pendFails = 0; pendNext = 0; ldToast(tc(`之前没保存成的 ${list.length} 盘已保存`, `Saved the finished ${list.length === 1 ? "run" : "runs"} that could not be saved before`), "done"); renderPage(); },
-            (e) => { pendFails++; pendNext = Date.now() + backoffMs(pendFails, 30000, 600000); log(`${tc("已结束的对局仍未保存：", "Finished run still not saved:")} ${e.message}`, "error"); })
+      // 2.24.3 (audit 2026-11-10): historyChanged, not renderPage: a setup being filled in stays
+      .then(() => { pendFails = 0; pendNext = 0; ldToast(tc(`已补存之前未能保存的 ${list.length} 局`, `Saved the finished ${list.length === 1 ? "run" : "runs"} that could not be saved before`), "done"); historyChanged(); },
+            (e) => { pendFails++; pendNext = Date.now() + backoffMs(pendFails, 30000, 600000); log(`Finished run still not saved: ${e.message}`, "error"); })
       .finally(() => { pendBusy = false; });
   }
 
@@ -8725,6 +9013,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     if (result) sound(result === "done" ? "out" : "giveup");
     lock = null;
     confirmedId = null;
+    setupKept.clear();             // 2.24.3: as in end()
     toyCtl.stop();                 // 2.12
     writeState(null);
     clearBar();
@@ -8770,10 +9059,14 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     picking = true;
     const L = lock;
     let pick = null;
+    // 2.24.2 (audit 2026-11-10): a pick that failed (Stash not answering) said "No scene to deal" and left
+    // for Galleries; it says what failed and stays
+    let pickErr = null;
     try { pick = await randomScene(L, cur); }
-    catch (e) { log(`Random scene failed: ${e.message}`, "error"); }
+    catch (e) { pickErr = e; log(`Random scene failed: ${e.message}`, "error"); }
     finally { picking = false; }
     if (!lock || lock.id !== L.id) return;
+    if (pickErr) { ldToast(tc(`未能挑出下一个场景：${pickErr.message}。请再试一次。`, `Next scene not picked: ${pickErr.message}. Try again.`), "error"); return; }
     // 2.15: a side that dealt all its scenes starts a new round (kept with the lock)
     if (pick && pick.deck && JSON.stringify(pick.deck) !== JSON.stringify(lock.deck || {})) {
       lock.deck = { ...(lock.deck || {}), ...pick.deck };
@@ -9228,8 +9521,16 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       const all = (d?.findScenes?.scenes ?? []).map((x) => ({ id: String(x.id), who: [] }));
       const pick = deckPick(all, { scenes: L.scenes, deck: {} }, sceneHere(), Math.random(), Date.now());
       if (!lock || lock.id !== L.id) return;
-      if (!pick.id) { ldToast(tc(`没有其他带 ${card.name} 的 ${L.name} 场景${L.rules && L.rules.fresh ? " 还没看过" : ""}`, `No other scene of ${L.name} with ${card.name}${L.rules && L.rules.fresh ? " left unwatched" : ""}`), "info"); return; }
-      const h = handPlayTag(lock.hand, card.id, lock.watchedMs || 0, pick.id, Date.now());
+      if (!pick.id) { ldToast(tc(`${L.name} 没有其他带「${card.name}」的场景${L.rules && L.rules.fresh ? "未看过" : ""}`, `No other scene of ${L.name} with ${card.name}${L.rules && L.rules.fresh ? " left unwatched" : ""}`), "info"); return; }
+      // 2.23.1: the tags under the card's, for the marker bonus (a failed read only narrows it to the tag itself)
+      let sub = [];
+      try {
+        const t = await gql(`query ($x: TagFilterType) { findTags(tag_filter: $x, filter: { per_page: ${TAG_SUB_MAX} }) { tags { id } } }`,
+                            { x: { parents: { value: [card.id], modifier: "INCLUDES", depth: -1 } } });
+        sub = (t?.findTags?.tags ?? []).map((x) => String(x.id));
+      } catch (e) { log(`Tag card: the tags under ${card.name} could not be read: ${e.message}`); }
+      if (!lock || lock.id !== L.id) return;
+      const h = handPlayTag(lock.hand, card.id, lock.watchedMs || 0, pick.id, Date.now(), sub);
       if (h) handSet(h, true);
       // 2.18: say what the card is worth now
       ldToast(tc(`${card.name}：在场景里用此标签标记一个瞬间，+${TAG_MATCH_PTS}`, `${card.name}: mark a moment with this tag in the scene for +${TAG_MATCH_PTS}`), "info");
@@ -10006,7 +10307,12 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
           lock = { ...lock, hand: tm.hand };
           saveProgress(true);
           sound("best");
-          ldToast(tc(`${tm.got.join(", ")} 已标记：标签牌 +${TAG_MATCH_PTS * tm.got.length}`, `${tm.got.join(", ")} marked: +${TAG_MATCH_PTS * tm.got.length} for the tag card`), "done");
+          ldToast(tc(`${tm.got.join("、")} 已标记：标签牌 +${TAG_MATCH_PTS * tm.got.length}`, `${tm.got.join(", ")} marked: +${TAG_MATCH_PTS * tm.got.length} for the tag card`), "done");
+        } else {
+          // 2.23.1: a new marker in a scene a tag card opened that did not
+          // count says why, instead of nothing
+          const open = (lock.hand.plays || []).filter((x) => x && !x.done && x.scene === String(id));
+          if (open.length) ldToast(tc(`标签牌没有加成：标记必须带「${open.map((x) => x.name).join(" 或 ")}」（或其下的标签）`, `No tag card bonus: the marker needs the tag ${open.map((x) => x.name).join(" or ")} (or one under it)`), "info");
         }
       }
       dirty = true;
@@ -10718,6 +11024,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     ev.stopImmediatePropagation();
     if (act === "close") { ev.preventDefault(); closeModal(); }
     else if (act === "stop") ev.preventDefault();
+    // 2.24.3 (audit 2026-11-10): a row worked like a button gets its Enter /
+    // Space here, since this stops the key before the dialog's own listener
+    else if (t && t.tagName !== "BUTTON" && t.getAttribute && rowKeyOk(ev.key, t.getAttribute("role"), false) && back.contains(t)) { ev.preventDefault(); t.click(); }
   }, true);
 
   // Another tab of this browser started, changed or ended the lock.
@@ -10746,7 +11055,10 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
 
   document.addEventListener("visibilitychange", () => {
     guard("eyes", eyesCheck);      // 2.13.0: Eyes on screen, before the hidden tab saves
-    if (document.visibilityState === "visible") { lastMark = 0; lastOScene = 0; syncSoon(); }
+    // 2.24.3 (audit 2026-11-10): `lastOCheck = 0` too: a hidden tab reads no
+    // O's (checkO), so the one read of every O of the target comes at once
+    // when the tab is back, not up to 15 s later (the polling tab only, as ever)
+    if (document.visibilityState === "visible") { lastMark = 0; lastOScene = 0; lastOCheck = 0; syncSoon(); }
     else { pollOwnerNow(); if (lock) { writeState(lock); saveProgress(true); } }   // a hidden tab lets the polling go
   });
   window.addEventListener("focus", syncSoon);
