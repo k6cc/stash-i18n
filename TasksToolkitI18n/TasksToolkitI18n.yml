@@ -1,6 +1,6 @@
 name: Tasks Toolkit I18n
 description: "把 Stash 自己的任务（扫描、生成、识别、自动打标签、备份）与各工具包的只读扫描集中到一处：Autopilot 自动巡检按固定顺序、一次一项地跑完媒体库维护；任务目录只收安全步骤，按固定顺序安全排队；定时例程可按天、按周或按月执行；调度器守护进程让安排在 Stash 内运行的例程无需打开浏览器也能按时执行；另含任务查看与最近 200 条历史。中文/英文跟随 Stash 界面语言。"
-version: 0.6.6-1
+version: 0.6.9-1
 url: https://gitlab.com/allisless0/stash-plugins
 
 # The server script (written by the page, run by Unraid User Scripts or

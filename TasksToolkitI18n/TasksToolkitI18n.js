@@ -30,7 +30,7 @@
   window.__TasksToolkitI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '0.6.6-1';
+  var PLUGIN_VERSION = '0.6.9-1';
   var _intlLocale = '';
   var _afterLocale = [];        // locale 到达后要重绘的东西（导航入口、面板）
   function tc(zh, en) {
@@ -202,11 +202,45 @@
     ["archive", "ArchiveToolkit", "Archive Toolkit: archive Ready scenes", "db", "Archive ready scenes", { mode: "archive", select: "auto" }, "0.2.3",
       "Moves the clean Ready scenes of its last scan into the library, within its caps, each logged with Undo; stops between scenes when you switch Autopilot off"],
   ];
+  // ── 0.6.9 (audit 2026-11-10): another plugin's task, offered to routines.
+  // window.TasksToolkitKits is an array another plugin may push
+  // { id, name, icon, task, minVersion } onto, before or after this file
+  // loads; it is read each time it is needed and checked: id and task are
+  // 1 to 40 letters, digits and inner spaces. Wherever the toolkits' scans
+  // are listed (Overview, the routine editor, the recommended routines),
+  // those tasks are too. A routine step names one as "ext:<plugin id>|<task
+  // name>", so the server scheduler and the server script start it with
+  // runPluginTask from the step alone: no list is needed there.
+  if (typeof window !== "undefined" && window.TasksToolkitKits === undefined) window.TasksToolkitKits = [];
+  const EXT_NAME = "[A-Za-z0-9](?:[A-Za-z0-9 ]{0,38}[A-Za-z0-9])?";
+  const EXT_RX = new RegExp(`^${EXT_NAME}$`);
+  const EXT_KEY_RX = new RegExp(`^ext:(${EXT_NAME})\\|(${EXT_NAME})$`);
+  const EXT_SUB = "Another plugin's task, offered by it for routines; Tasks starts it as a Stash task and waits for it";
+  const EXT_SUB_ZH = "别的插件提供的任务，交给例程使用；Tasks 会把它作为那个插件的 Stash 任务启动并等待它结束";
+  const extKey = (id, task) => `ext:${id}|${task}`;
+  function extKits(list) {
+    const out = [], seen = new Set(KITS.map((k) => `${k[0]}|${k[3]}`));
+    for (const x of Array.isArray(list) ? list : []) {
+      if (!x || typeof x !== "object" || typeof x.id !== "string" || typeof x.task !== "string" || !EXT_RX.test(x.id) || !EXT_RX.test(x.task)) continue;
+      const pair = `${x.id}|${x.task}`;
+      if (seen.has(pair)) continue;
+      seen.add(pair);
+      const name = typeof x.name === "string" && x.name.trim() ? x.name.trim().slice(0, 60) : `${x.id}: ${x.task}`;
+      const icon = typeof x.icon === "string" && /^[a-z]{1,12}$/.test(x.icon) ? x.icon : "list";
+      const min = typeof x.minVersion === "string" && /^\d{1,4}(\.\d{1,6}){0,2}$/.test(x.minVersion) ? x.minVersion : "";
+      out.push({ id: x.id, task: x.task, key: extKey(x.id, x.task), name, icon, min });
+    }
+    return out;
+  }
+  const extList = () => extKits(typeof window !== "undefined" ? window.TasksToolkitKits : null);
+  const extOf = (id, task) => extList().find((x) => x.id === id && x.task === task) || null;
   const kitName = (id) => {
     const k = KITS.find((x) => x[0] === id);
     if (k) return k[1];
     const s = KIT_STEPS.find((x) => x[0] === id);
-    return s ? kitName(s[1]) : id;
+    if (s) return kitName(s[1]);
+    const e = extList().find((x) => x.id === id);
+    return e ? e.name : id;
   };
   // Scenes Toolkit from this version has "Fill performers from stash-box" (its Fill tab)
   const FILL_MIN = "0.11.0";
@@ -219,7 +253,7 @@
   // Stash's plugin list; unknown counts as not)
   const kitServer = (id, ver) => { const k = KITS.find((x) => x[0] === id); return !!(k && ver && verAtLeast(ver, k[4])); };
   // A toolkit step can be planned on the server by the installed version (0.5.0: a second step has its own minimum)
-  const stepServer = (c, ver) => (c && c.only ? !!(ver && verAtLeast(ver, c.min)) : !!(c && kitServer(c.kit, ver)));
+  const stepServer = (c, ver) => (c && c.ext ? !!ver && (!c.min || verAtLeast(ver, c.min)) : c && c.only ? !!(ver && verAtLeast(ver, c.min)) : !!(c && kitServer(c.kit, ver)));
 
   // ── The safe catalogue: everything a routine or "Do the safe ones" may run.
   // Each adds or reads only: new files scanned in, generated files made for
@@ -283,6 +317,13 @@
   const ORDER = ["scan", "genfast", "identify", "autotag"].concat(KITS.map((k) => "kit:" + k[0]), KIT_STEPS.map((k) => "kit:" + k[0]), ["sdbackup", "backupdb", "previews", "cleangen", "optimise"]);
   function catOf(k) {
     if (CAT[k]) return CAT[k];
+    // 0.6.9: another plugin's task, from the step's own words (registered or not)
+    const ek = EXT_KEY_RX.exec(String(k || ""));
+    if (ek) {
+      const x = extOf(ek[1], ek[2]);
+      return { name: x ? x.name : `${ek[1]}: ${ek[2]}`, sub: tc(EXT_SUB_ZH, EXT_SUB), src: x ? x.name : ek[1], heavy: false, icon: x ? x.icon : "list", c: "or",
+        q: Q.task, plugin: ek[1], task: ek[2], min: x ? x.min : "", ext: true };
+    }
     const ap = /^ap:(\w+)$/.exec(String(k || "")), a = ap && AP_STEPS.find((x) => x[0] === ap[1]);
     if (a) return { name: a[2], sub: a[7], src: kitName(a[1]), heavy: false, icon: a[3], c: "or", kit: a[1], q: Q.kitscan, plugin: a[1], task: a[4], args: a[5], min: a[6], only: true, ap: true, writes: true };
     if (ap) return null;
@@ -295,6 +336,15 @@
     return { name: `${kit[1]} scan`, sub: KIT_SAVES.includes(kit[0]) ? KIT_SAVES_SUB : "Reads only, planned on the server; what it finds waits on its page", src: kit[1], heavy: false, icon: kit[2], c: "or", kit: kit[0],
       q: Q.kitscan, plugin: kit[0], task: kit[3], args: { mode: "scan" }, min: kit[4], saves: KIT_SAVES.includes(kit[0]) };
   }
+  // 工具包的第二类步骤与 Autopilot 的步骤（品牌名与 task 名保持英文）
+  const KIT_STEP_ZH = {
+    SceneToolkitUpdates: ["Scenes Toolkit：查找已更新的场景",
+      "只读取：向 stash-box 询问已关联场景的记录自 Stash 收录以来有哪些变化；有差异的内容等你在它的 Update 标签页查看"],
+  };
+  const AP_STEP_ZH = {
+    archive: ["Archive Toolkit：归档 Ready 场景",
+      "把它上次扫描到的干净 Ready 场景移入媒体库（受它的上限约束），每个都记录可撤销；你关掉 Autopilot 时会在场景之间停下"],
+  };
   // 目录键的中文名；没有中文条目（或非目录键）返回 null
   function catZh(k) {
     const key = String(k || "");
@@ -309,21 +359,14 @@
     if (kit) return { name: `${kit[1]} 扫描`, sub: KIT_SAVES.includes(kit[0]) ? KIT_SAVES_SUB_ZH : "只读取，在服务器上规划；结果等你在它的页面上查看" };
     return null;
   }
-  // 工具包的第二类步骤与 Autopilot 的步骤（品牌名与 task 名保持英文）
-  const KIT_STEP_ZH = {
-    SceneToolkitUpdates: ["Scenes Toolkit：查找已更新的场景",
-      "只读取：向 stash-box 询问已关联场景的记录自 Stash 收录以来有哪些变化；有差异的内容等你在它的 Update 标签页查看"],
-  };
-  const AP_STEP_ZH = {
-    archive: ["Archive Toolkit：归档 Ready 场景",
-      "把它上次扫描到的干净 Ready 场景移入媒体库（受它的上限约束），每个都记录可撤销；你关掉 Autopilot 时会在场景之间停下"],
-  };
   // 英文名：历史条目匹配服务器 notes（notes 里存的是英文步骤名），脚本也用它
   const stepNameEn = (k) => (catOf(k) || { name: String(k) }).name;
   const stepName = (k) => { const z = isZh() && catZh(k); return z ? z.name : stepNameEn(k); };
   // 目录说明的中文（供 catOf 的 sub 显示）
   const catSub = (k) => { const z = isZh() && catZh(k); return z ? z.sub : (catOf(k) || {}).sub || ""; };
-  const safeOrder = (ks) => ks.slice().sort((a, b) => (ORDER.indexOf(a) < 0 ? 99 : ORDER.indexOf(a)) - (ORDER.indexOf(b) < 0 ? 99 : ORDER.indexOf(b)));
+  // another plugin's task runs after the toolkits' scans, before the backups (0.6.9)
+  const ordOf = (k) => (ORDER.indexOf(k) >= 0 ? ORDER.indexOf(k) : EXT_KEY_RX.test(String(k)) ? ORDER.indexOf("sdbackup") - 0.5 : 99);
+  const safeOrder = (ks) => ks.slice().sort((a, b) => ordOf(a) - ordOf(b));
 
   // ── Identify, the safe shape (user: "Identify is safe if it detects scenes
   // that are linked with phash on stash-box"). Stash-box sources only, which
@@ -761,11 +804,23 @@
           : tc(`只用这些名字，且只用在这些 ${atWhere}。仅新增。${at.first ? " 首次运行：最近 7 天。" : ""}${atMore ? ` ${atMore}` : ""}`,
             `Only those names, only in their ${atWhere}. Adds only.${at.first ? " First run: the last 7 days." : ""}${atMore ? ` ${atMore}` : ""}`),
         fine: (at.scenes || 0) + (at.galleries || 0) > 0 ? autotagTitle(at, now).replace(/^Auto tag: /, "").replace(/^自动打标签：/, "") : tc("上次自动打标签之后没有新增内容", "nothing added since the last Auto tag") });
-    } else add({ k: "autotag", need: false, title: tc("自动打标签", "Auto tag"),
+    } else if (L.pending && L.pending.autotag) add({ k: "autotag", need: false, title: tc("自动打标签", "Auto tag"),
+      sub: tc("正在规划它会处理哪些新文件夹…", "Planning which new folders it would go through…"), fine: "" });
+    else add({ k: "autotag", need: false, title: tc("自动打标签", "Auto tag"),
       sub: tc("Tasks 的服务器部分没有响应，所以跳过它，而不是对整库运行。", "Tasks' server part did not answer, so it is skipped rather than run over the whole library."),
       fine: tc("服务器部分没有响应，因此跳过", "the server part did not answer, so it is skipped") });
     for (const kit of L.kits || []) {
       if (!kit.present) continue;
+      // 0.6.9: another plugin's task, offered for routines
+      if (kit.ext) {
+        const k = kit.ext.key, ce = catOf(k), at4 = lastOk(H, k);
+        if (!stepServer(ce, kit.version)) continue;
+        add({ k, need: !at4 || now - at4 > 7 * 86400000,
+          title: at4 ? tc(`${ce.name}：上次运行 ${ago(at4)}`, `${ce.name}: last run ${ago(at4)}`) : tc(`${ce.name}：还没运行过`, `${ce.name}: not run yet`),
+          sub: tc(`${EXT_SUB_ZH}。`, `${EXT_SUB}.`),
+          fine: at4 ? `${ce.name} ${ago(at4)}` : "" });
+        continue;
+      }
       const at2 = kit.lastScan || lastOk(H, `kit:${kit.id}`), srv = kitServer(kit.id, kit.version), c = catOf(`kit:${kit.id}`);
       if (c.saves) {
         const due = !at2 || now - at2 > 7 * 86400000;
@@ -864,13 +919,13 @@
   // ── Recommended routines, from what is installed and how the library grows
   // L: { kits: [ids present], sd, boxes (count), scenes, recent }
   function recommend(L) {
-    const kits = (L.kits || []).filter((id) => KITS.some((k) => k[0] === id));
+    const kits = (L.kits || []).filter((id) => KITS.some((k) => k[0] === id)), ext = (L.ext || []).filter((k) => EXT_KEY_RX.test(k));
     const out = [
       // 0.4.0: Stash runs it by itself (the scheduler), no tab needed
       { name: "Nightly", where: "server", sched: { freq: "daily", time: "02:00", dow: 0 }, steps: ["scan", "genfast", "autotag"], idle: true, holdPlay: true, onFail: "stop", on: true },
       // 0.2.0: a server routine again; the toolkits plan their own scans there
       { name: "Weekly", where: "server", sched: { freq: "weekly", time: "03:00", dow: 0 },
-        steps: kits.map((id) => `kit:${id}`).concat(L.boxes ? ["identify"] : [], L.sd ? ["sdbackup"] : [], ["backupdb"]), idle: true, holdPlay: true, onFail: "continue", on: true },
+        steps: kits.map((id) => `kit:${id}`).concat(ext, L.boxes ? ["identify"] : [], L.sd ? ["sdbackup"] : [], ["backupdb"]), idle: true, holdPlay: true, onFail: "continue", on: true },
       { name: "Monthly", where: "server", sched: { freq: "monthly", time: "05:00", dow: 0 }, steps: ["previews", "cleangen", "optimise", "backupdb"], idle: true, holdPlay: true, onFail: "continue", on: true },
       { name: "After adding files", where: "browser", sched: { freq: "hand", time: "02:00", dow: 0 },
         steps: ["scan", "genfast", "autotag"].concat(kits.includes("SceneToolkit") ? ["kit:SceneToolkit"] : []), idle: true, holdPlay: true, onFail: "stop", on: true },
@@ -883,13 +938,13 @@
   // installed. Written once, only while there is no routines key at all
   // (seedRoutines), so a list someone emptied stays empty.
   function starterRoutines(L, now) {
-    const kits = (L.kits || []).filter((id) => KITS.some((k) => k[0] === id));
+    const kits = (L.kits || []).filter((id) => KITS.some((k) => k[0] === id)), ext = (L.ext || []).filter((k) => EXT_KEY_RX.test(k));
     const base = { where: "server", idle: true, holdPlay: true, onFail: "continue", on: false, starter: true };
     return [
       { ...base, name: "Overnight", sched: { freq: "daily", time: "02:00", dow: 0 },
         steps: ["scan", "genfast", "autotag"].concat(kits.includes("SceneToolkit") ? ["kit:SceneToolkit"] : [], ["previews"], L.sd ? ["sdbackup"] : []) },
       { ...base, name: "Weekly catalogue check", sched: { freq: "weekly", time: "03:00", dow: 0 },
-        steps: (L.boxes ? ["identify"] : []).concat(kits.filter((id) => id !== "SceneToolkit").map((id) => `kit:${id}`), ["backupdb"]) },
+        steps: (L.boxes ? ["identify"] : []).concat(kits.filter((id) => id !== "SceneToolkit").map((id) => `kit:${id}`), ext, ["backupdb"]) },
       { ...base, name: "Monthly tidy-up", sched: { freq: "monthly", time: "05:00", dow: 0 }, steps: ["cleangen", "optimise", "backupdb"] },
     ].map((r) => normRoutine({ ...r, id: newId("t", now), created: now }));
   }
@@ -928,6 +983,12 @@
     let total = 0;
     for (const k of routineSteps(r.steps)) {
       const c = catOf(k), label = shSafe(c.name);
+      // 0.6.9: another plugin's task: left out when that plugin is not installed
+      if (c.ext && o.kitVers && !stepServer(c, o.kitVers[c.plugin])) {
+        skipped.push(c.name);
+        lines.push(`# left out: ${label} (${o.kitVers[c.plugin] ? `version ${shSafe(o.kitVers[c.plugin], 12)}; it needs ${c.min}` : "not installed in Stash"}, then copy this script again)`);
+        continue;
+      }
       if (c.kit && o.kitVers && !stepServer(c, o.kitVers[c.kit])) {
         skipped.push(c.name);
         lines.push(`# left out: ${label} (${o.kitVers[c.kit] ? `version ${shSafe(o.kitVers[c.kit], 12)} ${c.only ? "does not have this step" : "plans its scan on its page only"}; update it to ${c.min}` : "not installed in Stash"}, then copy this script again)`);
@@ -1210,6 +1271,25 @@
     return !!(r && r.on && r.sched && r.sched.freq !== "hand" && !(r.steps || []).some(apSaves));
   }
   // What the switch going off did, in words
+  // 0.6.9 (audit 2026-11-10): the tab in the address (?tab=), other parameters kept
+  const TAB_KEYS = ["overview", "routines", "viewer"];
+  const tabOf = (search) => { const t = new URLSearchParams(search || "").get("tab") || ""; return TAB_KEYS.includes(t) ? t : ""; };
+  function tabUrl(loc, tab) {
+    const q = new URLSearchParams((loc && loc.search) || "");
+    q.set("tab", tab);
+    return `${(loc && loc.pathname) || ""}?${q.toString()}${(loc && loc.hash) || ""}`;
+  }
+  // How often the tab reads (0.6.9, audit 2026-11-10). o: { visible, mine
+  // (it holds the runner's lock), page (the page is open), busy (something
+  // runs or waits here) }. Stash's queue: never from a hidden tab unless it
+  // is the one running something here (then every 30 s); every 3 s tick on
+  // the page or in the runner tab, else every 10 s. The data: 10 s on the
+  // page only while something runs or waits, else 30 s; 5 min hidden.
+  function readEvery(o) {
+    const q = !o.visible ? (o.mine && o.busy ? 30000 : Infinity) : o.mine || o.page ? 0 : 10000;
+    const data = !o.mine ? Infinity : !o.visible ? 5 * 60000 : o.page ? (o.busy ? 10000 : 30000) : o.busy ? 15000 : 5 * 60000;
+    return { q, data };
+  }
   function apOffWords(r) {
     const st = (r && r.stopped) || [], left = (r && r.left) || [];
     const parts = [st.length ? tc(`已停止 ${st.slice(0, 3).join("、")}${st.length > 3 ? ` 等 ${st.length} 项` : ""}`, `Stopped ${st.slice(0, 3).join(", ")}${st.length > 3 ? ` and ${st.length - 3} more` : ""}`) : tc("当时没有任务在运行", "Nothing was running")];
@@ -1220,7 +1300,7 @@
   }
 
   if (window.__TasksToolkitI18nTest) {
-    window.__TasksToolkitI18nTestHooks = { PLUGIN_VERSION, DATA_KEYS, CAT, Q, KITS, KIT_STEPS, stepServer, ORDER, catOf, stepName, safeOrder, safeIdentifyInput, idEndpoints, identifyRisks, ID_FIELDS, ID_FILTER,
+    window.__TasksToolkitI18nTestHooks = { extKits, extKey, EXT_SUB, tabOf, tabUrl, readEvery, PLUGIN_VERSION, DATA_KEYS, CAT, Q, KITS, KIT_STEPS, stepServer, ORDER, catOf, stepName, safeOrder, safeIdentifyInput, idEndpoints, identifyRisks, ID_FIELDS, ID_FILTER,
       GUARDS, heavyJob, classifyDesc, inNight, gate, firstReady, parseHM, nextRun, lastDue, dueState, schedWords, cronLine, readData, writeData, normRoutine,
       routineSteps, enqueue, enqueueRoutine, moveItem, pushHist, finishCur, histFilter, histCounts, timePerPlugin, lastOk, estimate, overview, recommend,
       applyRecommended, serverScript, stepBody, shSafe, kitServer, verAtLeast, autotagTitle, navPlan, shq, slugOf, fmtDur, fmtAgo, fmtWhen, HIST_MAX, GRACE_MS, LONG_MS, suiteData, lockFree,
@@ -1240,7 +1320,7 @@
     window.dispatchEvent(new PopStateEvent("popstate", { state: {} }));
   }
   async function readConfig() {
-    const d = await gql(`query { configuration { plugins } }`);
+    const d = await gql(`query { configuration { plugins(include: ["${PLUGIN_ID}"]) } }`);
     const plugins = d?.configuration?.plugins;
     if (!plugins || typeof plugins !== "object") throw new Error("could not read the plugin config");
     return plugins[PLUGIN_ID] || {};
@@ -1276,7 +1356,7 @@
 
   // ═══ Data: Suite Data's client ═════════════════════════════════════════════
   let sdNote = "";
-  const SD = suiteData({ id: PLUGIN_ID, keys: DATA_KEYS, gql, label: "Tasks Toolkit", readConfig, writeConfig,
+  const SD = suiteData({ id: PLUGIN_ID, keys: DATA_KEYS, unmirrored: ["history"], gql, label: "Tasks Toolkit", readConfig, writeConfig,
                          notify: (t) => { sdNote = t; toast(t, "warn"); } });
   // The one writer: fn(data) changes the parsed data and returns it (null:
   // nothing to write); the whole map goes back with unknown keys untouched
@@ -1305,7 +1385,7 @@
     tab: ["overview", "routines", "viewer"].includes(prefs.tab) ? prefs.tab : "overview",
     data: null, dataAt: 0, dataErr: "", lib: null, libAt: 0, libErr: "", loading: false,
     queue: [], queueAt: 0, queueErr: "", why: {}, kits: {}, kitVer: {}, notes: null, notesErr: "", server: "", sched: null, schedErr: "",
-    hf: "all", hmore: 25, fold: {}, sheet: null, armed: null, armTimer: 0, force: "", missed: [], msg: "",
+    hf: "all", hmore: 25, fold: {}, sheet: null, armed: null, armTimer: 0, force: "", missed: [],
     ap: null, apErr: "",
   };
   let pageEl = null, sheetEl = null;
@@ -1317,6 +1397,21 @@
   function toast(text, kind, act) {
     injectStyles();
     return RT.toast(text, kind, act ? { action: act } : undefined);
+  }
+  // 0.6.9 (audit 2026-11-10): a save made in the background (History for a
+  // job started elsewhere, Autopilot's hold, a routine's timer, a step's
+  // start and end) that fails says so in the suite's toast, not only in the
+  // console; the same one at most once a minute, since the tick runs every 3 s
+  const failedAt = {};
+  const SAVE_VERB_ZH = { saved: "保存", "written to History": "写入历史", queued: "排入队列", started: "开始" };
+  function saveFailed(verb, what, e) {
+    const why = (e && e.message) || String(e || "");
+    log(`${what}: ${why}`, "error");
+    const now = Date.now(), key = `${verb}:${what}`;
+    if (now - (failedAt[key] || 0) < 60000) return;
+    failedAt[key] = now;
+    injectStyles();
+    RT.toast(tc(`未能${SAVE_VERB_ZH[verb] || verb}：${why}（${what}）`, `Not ${verb}: ${why} (${what})`), "error", { id: "tt-fail" });
   }
   function armed(id) {
     if (S.armed === id) { S.armed = null; clearTimeout(S.armTimer); return true; }
@@ -1337,7 +1432,7 @@
     idable: findScenes(filter: { per_page: 0 }, scene_filter: { is_missing: "stash_id", NOT: { is_missing: "phash" } }) { count }
     unorg: findScenes(filter: { per_page: 0 }, scene_filter: { organized: false }) { count }
     recent: findScenes(filter: { per_page: 0 }, scene_filter: { created_at: { value: $since, modifier: GREATER_THAN } }) { count }
-    configuration { general { stashBoxes { endpoint name } } plugins }
+    configuration { general { stashBoxes { endpoint name } } plugins(include: ${JSON.stringify(KITS.map((k) => k[0]).concat(PLUGIN_ID))}) }
     plugins { id name enabled version }
   }`;
   const ID_DEFAULTS_Q = `{ configuration { defaults { identify { sources { source { stash_box_endpoint scraper_id } }
@@ -1361,45 +1456,56 @@
     }
     try { const v = typeof raw === "string" ? JSON.parse(raw || "null") : raw; return isObj(v) ? v : null; } catch (_) { return null; }
   }
+  // 0.6.9 (audit 2026-11-10): the counts are drawn as soon as they are in;
+  // the Identify settings, each toolkit's last run, the last backup, the
+  // data and Auto tag's plan are asked together and fill in as each lands
+  // (they were six reads one after another before anything was drawn).
   async function loadLib(force) {
     if (S.loading || (!force && S.lib && Date.now() - S.libAt < 5 * 60000)) return;
     S.loading = true; S.libErr = ""; render();
+    const prev = S.lib;
     try {
       const since = new Date(Date.now() - 7 * 86400000).toISOString();
       const d = await gql(COUNTS_Q, { since });
       const cfg = (d.configuration && d.configuration.plugins) || {};
       const on = (id) => ((d.plugins || []).find((p) => p && p.id === id) || { enabled: false }).enabled !== false && (d.plugins || []).some((p) => p && p.id === id);
       const sdOn = on("SuiteData");
-      let idDefaults = null;
-      idDefaults = await readIdDefaults();
       const C = conns();
-      const kits = await Promise.all(KITS.map(async ([id]) => {
-        const present = on(id) && !!C[id];
-        const run = present ? await kitRun(id, cfg, sdOn) : null;
-        // (0.5.0: a scan's end only; a toolkit's other runs, as Scenes Toolkit's update check, count for their own step)
-        const lastScan = run && !["save", "fill", "fillplan", "update", "updplan"].includes(run.kind) && (run.finishedAt || 0) && !run.lost ? run.finishedAt : 0;
-        const lastRuns = run && run.kind && run.finishedAt && !run.lost ? { [run.kind]: run.finishedAt } : {};
-        const ver = ((d.plugins || []).find((p) => p && p.id === id) || {}).version || "";
-        return { id, present, installed: on(id), version: ver, lastScan, lastRuns, page: C[id] && C[id].page, items: (S.kits[id] && S.kits[id].items) || [] };
-      }));
-      let lastBackup = 0;
-      if (sdOn) { try { const l = await sdOp("list"); lastBackup = ((l.snapshots || [])[0] || {}).at || 0; } catch (_) {} }
-      if (!S.data) await loadData();
-      // 0.2.0: which toolkits plan their scan on the server, and what Auto tag would go through
+      // 0.2.0: which toolkits plan their scan on the server
       S.kitVer = {};
       for (const p of d.plugins || []) if (p && p.id) S.kitVer[p.id] = p.version || "";
-      let autotag = null;
-      // 0.3.0: once per library read (page open, then at most every 5 min);
-      // the server keeps the plan 30 min unless something new came in, and
-      // plans again on Refresh (force)
-      try { autotag = await serverOp("autotag_paths", force ? { refresh: "1" } : {}); } catch (e) { log(`autotag_paths: ${e.message}`); }
-      S.lib = { scenes: d.all.count, nophash: d.nophash.count, nocover: d.nocover.count, idable: d.idable.count, unorg: d.unorg.count, recent: d.recent.count,
-        boxes: (d.configuration.general && d.configuration.general.stashBoxes) || [], idDefaults, kits, sd: { on: sdOn, lastBackup }, autotag };
-      S.libAt = Date.now();
-      loadKitPiles(kits);
+      const old = (id) => (prev && (prev.kits || []).find((x) => x.id === id && !x.ext)) || null;
+      const kits = KITS.map(([id]) => {
+        const o = old(id);
+        return { id, present: on(id) && !!C[id], installed: on(id), version: S.kitVer[id] || "", lastScan: (o && o.lastScan) || 0, lastRuns: (o && o.lastRuns) || {},
+          page: C[id] && C[id].page, items: (S.kits[id] && S.kits[id].items) || [] };
+      }).concat(extList().map((x) => ({ id: x.id, ext: x, present: on(x.id), installed: on(x.id), version: S.kitVer[x.id] || "", lastScan: 0, lastRuns: {}, items: [] })));
+      const L = { scenes: d.all.count, nophash: d.nophash.count, nocover: d.nocover.count, idable: d.idable.count, unorg: d.unorg.count, recent: d.recent.count,
+        boxes: (d.configuration.general && d.configuration.general.stashBoxes) || [], idDefaults: prev ? prev.idDefaults : null, kits,
+        sd: { on: sdOn, lastBackup: (prev && prev.sd && prev.sd.lastBackup) || 0 }, autotag: prev ? prev.autotag : null, pending: prev ? {} : { autotag: true } };
+      S.lib = L; S.libAt = Date.now();
+      render();
+      const fill = () => { if (S.lib === L) render(); };
+      await Promise.all([
+        readIdDefaults().then((v) => { L.idDefaults = v; fill(); }),
+        ...kits.filter((k) => k.present && !k.ext).map((k) => kitRun(k.id, cfg, sdOn).then((run) => {
+          // (0.5.0: a scan's end only; a toolkit's other runs, as Scenes Toolkit's update check, count for their own step)
+          k.lastScan = run && !["save", "fill", "fillplan", "update", "updplan"].includes(run.kind) && (run.finishedAt || 0) && !run.lost ? run.finishedAt : 0;
+          k.lastRuns = run && run.kind && run.finishedAt && !run.lost ? { [run.kind]: run.finishedAt } : {};
+          fill();
+        })),
+        sdOn ? sdOp("list").then((l) => { L.sd.lastBackup = ((l.snapshots || [])[0] || {}).at || 0; fill(); }, () => {}) : null,
+        S.data ? null : loadData().then(fill, (e) => { S.dataErr = e.message; }),
+        // 0.3.0: once per library read (page open, then at most every 5 min);
+        // the server keeps the plan 30 min unless something new came in, and
+        // plans again on Read again (force)
+        serverOp("autotag_paths", force ? { refresh: "1" } : {}).then((a) => { L.autotag = a; }, (e) => { log(`autotag_paths: ${e.message}`); L.autotag = null; })
+          .then(() => { delete L.pending.autotag; fill(); }),
+      ]);
       seedRoutines();
     } catch (e) { S.libErr = e.message; }
     S.loading = false;
+    if (S.lib && pageEl && S.tab === "overview") loadKitPiles(S.lib.kits);
     render();
   }
   // 0.6.2: the starter routines, once, only when no routines were ever stored
@@ -1418,11 +1524,15 @@
   }
   // What each toolkit's last scan left to do (its connector's summary, the
   // hub's contract): read after the counts, each on its own, so a slow one
-  // does not hold the page
+  // does not hold the page. 0.6.9 (audit 2026-11-10): only while Overview
+  // is on screen (a summary can read a whole library: Markers Toolkit's
+  // every marker), kept 10 minutes, and a failed one is asked again the
+  // next time Overview is shown, not kept as empty.
   function loadKitPiles(kits) {
+    if (!pageEl || S.tab !== "overview") return;
     const C = conns();
-    for (const k of kits) {
-      if (!k.present || !C[k.id] || typeof C[k.id].summary !== "function") continue;
+    for (const k of kits || []) {
+      if (k.ext || !k.present || !C[k.id] || typeof C[k.id].summary !== "function") continue;
       const prev = S.kits[k.id];
       if (prev && Date.now() - prev.at < 10 * 60000) continue;
       S.kits[k.id] = { at: Date.now(), items: (prev && prev.items) || [] };
@@ -1433,7 +1543,7 @@
           if (lk) { lk.items = S.kits[k.id].items; if (s && s.scannedAt && !lk.lastScan) lk.lastScan = s.scannedAt; }
           render();
         })
-        .catch((e) => log(`${k.id}: ${e.message}`));
+        .catch((e) => { log(`${k.id}: ${e.message}`); const was = S.kits[k.id]; S.kits[k.id] = { at: 0, items: (was && was.items) || [], err: e.message }; });
     }
   }
   async function loadNotes() {
@@ -1494,7 +1604,7 @@
       if (ap.held && !d.runner.hold) { d.runner.hold = true; d.runner.apHold = true; return d; }
       if (ap.on && d.runner.apHold) { d.runner.hold = false; delete d.runner.apHold; return d; }
       return null;
-    }).catch((e) => log(e.message, "error"));
+    }).catch((e) => saveFailed("saved", tc("Autopilot 的保持", "the queue's hold for Autopilot"), e));
   }
   // The first switch-on: timed routines off (kept; their steps are in the tree)
   async function apTakeRoutines() {
@@ -1571,6 +1681,14 @@
       // a runner tab that never drew the page: which version is installed
       try { const d = await gql("{ plugins { id version } }"); for (const p of (d && d.plugins) || []) if (p && p.id) S.kitVer[p.id] = p.version || ""; } catch (_) {}
     }
+    // 0.6.9: another plugin's task: that plugin installed (and new enough), then runPluginTask
+    if (c.ext) {
+      if (!(c.plugin in S.kitVer)) {
+        try { const d = await gql("{ plugins { id version } }"); for (const p of (d && d.plugins) || []) if (p && p.id) S.kitVer[p.id] = p.version || ""; } catch (_) {}
+      }
+      if (!(c.plugin in S.kitVer)) throw new Error(tc(`Stash 里没有安装 ${c.plugin}`, `${c.plugin} is not installed in Stash`));
+      if (c.min && !verAtLeast(S.kitVer[c.plugin], c.min)) throw new Error(tc(`${c.name} 需要 ${c.min} 或更新版本（你的是：${S.kitVer[c.plugin] || "未知"}）`, `${c.name} needs version ${c.min} (yours: ${S.kitVer[c.plugin] || "unknown"})`));
+    }
     // 0.5.0: a toolkit's second step is planned on the server or not run at all
     if (c.only) {
       if (!stepServer(c, S.kitVer[c.kit])) throw new Error(tc(`${kitName(c.kit)} ${c.min} 或更新版本才有这一步（你的是：${S.kitVer[c.kit] || "未安装"}）`, `${kitName(c.kit)} ${c.min} or newer has this step (yours: ${S.kitVer[c.kit] || "not installed"})`));
@@ -1638,14 +1756,16 @@
       const mine = holdLock();
       const busy = !!(S.data && (S.data.runner.cur || S.data.runner.wait.length));
       const now = Date.now();
-      // Stash's queue: every tick for the tab that runs things or shows the page; else every 10 s while visible
-      if (mine || pageEl || (visible && now - lastQ > 10000)) {
+      // 0.6.9 (audit 2026-11-10): how often, in readEvery: no queue read from
+      // a hidden tab unless it runs something here; the data every 10 s on
+      // the page only while something runs or waits
+      const ev = readEvery({ visible, mine, page: !!pageEl, busy });
+      if (now - lastQ >= ev.q) {
         try { S.queue = await readQueue(); S.queueErr = ""; } catch (e) { S.queueErr = e.message; }
         S.queueAt = lastQ = Date.now();
       }
       if (mine) {
-        const every = pageEl ? 10000 : busy ? 15000 : 5 * 60000;
-        if (!S.data || now - lastRead > every) { lastRead = now; try { await loadData(); } catch (e) { S.dataErr = e.message; } }
+        if (!S.data || now - lastRead > ev.data) { lastRead = now; try { await loadData(); } catch (e) { S.dataErr = e.message; } }
         if (S.data && !S.dataErr) {
           await watchElsewhere();
           await watchCur();
@@ -1683,7 +1803,7 @@
         d.history = pushHist(d.history, { id: newId("h"), k: classifyDesc(f.description) || "other", label: String(f.description || "Stash job").slice(0, 80),
           src: { t: "elsewhere", name: "Stash" }, start, end, result, note: f.error ? String(f.error).slice(0, 200) : "", job: id });
         return d;
-      }).catch(() => {});
+      }).catch((e) => saveFailed("written to History", String(f.description || tc("一个 Stash 任务", "a Stash job")).slice(0, 60), e));
     }
   }
   async function watchCur() {
@@ -1729,7 +1849,7 @@
       if (!d.runner.cur || d.runner.cur.id !== c.id) return null;
       d.runner.cur = { ...d.runner.cur, job: String(r.job), atJob: String(r.job), atMore: !!r.more, note: String(r.label || "") };
       return d;
-    }).catch((e) => log(e.message, "error"));
+    }).catch((e) => saveFailed("saved", tc("自动打标签的下一批", "Auto tag's next part"), e));
     return true;
   }
   function end(c, result, note) {
@@ -1738,7 +1858,7 @@
     if (result === "ok" && c.atJob) serverOp("autotag_done", { job: c.atJob }).catch((e) => log(e.message));
     return save((d) => (d.runner.cur && d.runner.cur.id === c.id ? finishCur(d, result, note, Date.now()) : null)).then(() => {
       if (result !== "ok") toast(`${endWords(c.k, result, note)}${tc("。", ".")}`, result === "failed" ? "error" : "warn");
-    }).catch((e) => log(e.message, "error"));
+    }).catch((e) => saveFailed("written to History", stepName(c.k), e));
   }
   // Browser routines whose time came: run them; a missed one asks
   async function timers() {
@@ -1754,7 +1874,7 @@
         if (!x || dueState(x, now) !== "due") return null;
         enqueueRoutine(d, x, now, due);
         return d;
-      }).catch((e) => log(e.message, "error"));
+      }).catch((e) => saveFailed("queued", r.name, e));
     }
     if (S.missed.length && !S.toldMissed) {
       S.toldMissed = true;
@@ -1779,7 +1899,7 @@
       d.runner.cur = { ...it, sentAt: Date.now(), by: ME };
       claimed = d.runner.cur;
       return d;
-    }).catch((e) => log(e.message, "error"));
+    }).catch((e) => saveFailed("started", stepName(pick.item.k), e));
     if (!claimed) return;
     if (S.force === claimed.id) S.force = "";
     let res;
@@ -1790,7 +1910,7 @@
       if (!d.runner.cur || d.runner.cur.id !== claimed.id) return null;
       d.runner.cur = { ...d.runner.cur, job: res.job || "", kit: res.kit || "", note: res.note || "", atJob: res.atJob || "", atMore: !!res.atMore, startedAt: Date.now() };
       return d;
-    }).catch((e) => log(e.message, "error"));
+    }).catch((e) => saveFailed("saved", tc(`${stepName(claimed.k)} 的任务`, `${stepName(claimed.k)}'s job`), e));
   }
   // What the running tab tells the others (the nav indicator)
   function shareView() {
@@ -1940,7 +2060,7 @@
     const html = `<div class="tt" data-tab="${S.tab}">
       <div class="tt-head"><h1 class="tt-title">${ic("tasks")}${tc("任务", "Tasks")}</h1><span class="tt-read">${readLine(now)}</span>
         <div class="tt-tabs" role="tablist" aria-label="${tc("任务", "Tasks")}">${TABS.map(([k, l, i, c, key]) => `<button class="tt-tab${S.tab === k ? " on" : ""}" role="tab" aria-selected="${S.tab === k}" style="--tc:var(--sx-${c})" data-tab="${k}" title="${tabLabel(k, l)} (${key})">${ic(i)}${tabLabel(k, l)}</button>`).join("")}</div></div>
-      ${missedHtml(now)}${S.msg ? `<div class="tt-banner">${ic("info")}<span class="tt-grow">${esc(S.msg)}</span></div>` : ""}
+      ${missedHtml(now)}
       ${body}</div>`;
     if (soft && html === lastHtml) return;
     lastHtml = html;
@@ -1974,12 +2094,12 @@
     const hero = `<div class="tt-card tt-hero">
       <div class="tt-grow"><h2>${O.total ? tc(`待处理 ${plural(O.total, "thing")} · ${fmtN(allSafe)} 项可立即运行`, `${plural(O.total, "thing")} to do · ${fmtN(allSafe)} can run now`) : tc("全部都是最新的。", "All up to date.")}</h2>
         ${O.total ? `<p>${[O.look.filter((r) => r.what !== "Info" && !r.opt).length ? tc(`${fmtN(O.look.filter((r) => r.what !== "Info" && !r.opt).length)} 项需要你查看`, `${fmtN(O.look.filter((r) => r.what !== "Info" && !r.opt).length)} need${O.look.filter((r) => r.what !== "Info" && !r.opt).length === 1 ? "s" : ""} your review`) : "", O.long.length ? tc(`${fmtN(O.long.length)} 项留到今晚更好`, `${fmtN(O.long.length)} best left for tonight`) : ""].filter(Boolean).join(tc("、", ", "))}</p>` : ""}</div>
-      <button class="tt-btn tt-go tt-big" data-a="dosafe" ${O.picked.length ? "" : "disabled"}>${ic("play")}${tc("运行安全项", "Run the safe ones")} <small>${plural(O.picked.length, "task")}${O.pickedMs ? tc(` · 约 ${esc(fmtDur(O.pickedMs))}`, ` · about ${esc(fmtDur(O.pickedMs))}`) : ""}</small></button>
+      <button class="tt-btn tt-go tt-big" data-a="dosafe" ${O.picked.length && !S.loading ? "" : "disabled"}>${ic("play")}${tc("运行安全项", "Run the safe ones")} <small>${S.loading ? tc("正在补齐…", "reading the rest…") : `${plural(O.picked.length, "task")}${O.pickedMs ? tc(` · 约 ${esc(fmtDur(O.pickedMs))}`, ` · about ${esc(fmtDur(O.pickedMs))}`) : ""}`}</small></button>
       ${O.picked.length ? `<div class="tt-flow" aria-label="${tc("安全任务的运行顺序", "Order the safe tasks run in")}"><span>${tc("按此顺序：", "In this order:")}</span>${O.picked.map((k, i) => `${i ? ic("arrow") : ""}<span class="tt-fs"><b>${i + 1}</b>${esc(stepName(k).replace(/^Generate covers and phashes$/, "Generate").replace(/ scan$/, " scan"))}</span>`).join("")}
         <span class="tt-grow"></span><span>${tc("有场景播放时暂停。", "Pauses while a scene plays.")}</span></div>` : ""}</div>`;
     const safe = `<section><div class="tt-sh" style="--c:var(--sx-gr)"><h3>${ic("shield")}${tc("可安全运行", "Safe to run")}</h3><span class="tt-muted">${tc("只新增或只读取", "only adds or reads")}</span>
         <span class="tt-shw">${O.safe.length ? tc(`已选 ${fmtN(O.safe.filter((r) => r.on).length)} / 共 ${fmtN(O.safe.length)}`, `${fmtN(O.safe.filter((r) => r.on).length)} of ${fmtN(O.safe.length)}`) : ""}</span>
-        <button class="tt-btn tt-sm" data-a="relib" title="${tc("重新统计数量并重新规划自动打标签", "Read the counts again and plan Auto tag afresh")}">${ic("refresh")}${tc("刷新", "Refresh")}</button></div>
+        <button class="tt-btn tt-sm" data-a="relib" title="${tc("重新统计数量并重新规划自动打标签", "Read the counts again and plan Auto tag afresh")}">${ic("refresh")}${tc("重新读取", "Read again")}</button></div>
       <div class="tt-list">${O.safe.length ? O.safe.map((r) => safeRow(r)).join("") : `<div class="tt-none">${ic("check")}${tc("没有要运行的任务。", "Nothing to run.")}</div>`}</div></section>`;
     const long = O.long.length ? `<button class="tt-fold${S.fold.long ? " open" : ""}" style="--c:var(--sx-bl)" data-a="fold" data-k="long">${ic("clock")}<span><b>${tc("今晚最合适", "Best tonight")}</b> · ${fmtN(O.long.length)}</span>${ic("chev")}</button>
       <section class="tt-sec${S.fold.long ? " open" : ""}"><div class="tt-sh" style="--c:var(--sx-bl)"><h3>${ic("clock")}${tc("今晚最合适", "Best tonight")}</h3><span class="tt-muted">${tc("安全，但很慢", "safe, but slow")}</span></div>
@@ -1989,7 +2109,7 @@
       <div class="tt-list">${O.look.map((r) => lookRow(r)).join("")}</div></section>` : "";
     const fine = O.fine.filter((r) => r.fine).map((r) => r.fine);
     const done = fine.length ? `<div class="tt-done">${ic("check")}<b>${tc("已是最新：", "Up to date:")}</b> ${esc(fine.join(" · "))}</div>` : "";
-    const piles = S.lib.kits.some((k) => k.present && !(S.kits[k.id] && S.kits[k.id].items)) ? `<div class="tt-muted">${tc("正在读取工具包的结果…", "Reading the toolkits' results…")}</div>` : "";
+    const piles = S.lib.kits.some((k) => k.present && !k.ext && !(S.kits[k.id] && S.kits[k.id].items)) ? `<div class="tt-muted">${tc("正在读取工具包的结果…", "Reading the toolkits' results…")}</div>` : "";
     return `<div class="tt-split"><div class="tt-main">${apCard(now)}${hero}${safe}${long}${look}${piles}${done}</div>${sideHtml(now, "overview")}</div>`;
   }
   // 0.6.0: Autopilot's card: the switch, what it does now, its tree
@@ -2126,7 +2246,8 @@
   }
   function recInput() {
     const L = S.lib || {};
-    return { kits: (L.kits || []).filter((k) => k.present).map((k) => k.id), sd: !!(L.sd && L.sd.on), boxes: (L.boxes || []).length, scenes: L.scenes || 0, recent: L.recent || 0 };
+    return { kits: (L.kits || []).filter((k) => k.present && !k.ext).map((k) => k.id), ext: (L.kits || []).filter((k) => k.present && k.ext && stepServer(catOf(k.ext.key), k.version)).map((k) => k.ext.key),
+      sd: !!(L.sd && L.sd.on), boxes: (L.boxes || []).length, scenes: L.scenes || 0, recent: L.recent || 0 };
   }
   function recWhy() {
     const I = recInput();
@@ -2305,7 +2426,8 @@
     const est = r.steps.reduce((a, k) => a + estimate(k, S.lib, S.data.history), 0);
     const stash = ["scan", "genfast", "identify", "autotag", "previews", "cleangen", "optimise", "backupdb"];
     const kitKs = KITS.filter(([id]) => kits.some((k) => k.id === id && k.present)).map(([id]) => `kit:${id}`)
-      .concat(KIT_STEPS.filter((x) => kits.some((k) => k.id === x[1] && k.present && stepServer(catOf(`kit:${x[0]}`), k.version))).map((x) => `kit:${x[0]}`));
+      .concat(KIT_STEPS.filter((x) => kits.some((k) => k.id === x[1] && k.present && stepServer(catOf(`kit:${x[0]}`), k.version))).map((x) => `kit:${x[0]}`),
+        kits.filter((k) => k.ext && k.present && stepServer(catOf(k.ext.key), k.version)).map((k) => k.ext.key));
     const sdOn = S.lib && S.lib.sd && S.lib.sd.on;
     const mi = (k) => { const c = catOf(k); const note = c.locks ? tc("占用 Stash", "Locks Stash") : c.long ? tc("重任务 · 数小时", "Heavy · hours") : c.heavy ? tc("重", "Heavy") : tc("轻", "Light");
       return `<button class="tt-mi" role="menuitem" style="--c:${tok(c.c)}" data-a="addstep" data-k="${esc(k)}">${ic(c.icon)}${esc(c.name)}<span>${esc(c.browser ? fmtEst(estimate(k, S.lib, S.data.history)) : note)}</span></button>`; };
@@ -2317,7 +2439,7 @@
       <div class="tt-field"><label for="tt-rname">${tc("名称", "Name")}</label><input id="tt-rname" class="tt-input" data-f="name" data-focus value="${esc(r.name)}" maxlength="40"></div>
       <div class="tt-field"><span class="tt-lbl">${tc("步骤（按顺序）", "Steps, in order")}</span>
         <div class="tt-steps">${r.steps.length ? r.steps.map((k, i) => { const c = catOf(k) || { name: k };
-          const off = c.kit && !kits.some((x) => x.id === c.kit && x.present);
+          const off = (c.kit && !kits.some((x) => x.id === c.kit && x.present)) || (c.ext && !kits.some((x) => x.id === c.plugin && x.present));
           return `<div class="tt-step" style="--c:${tok(c.c)}" tabindex="0" data-step="${i}"><span class="tt-num">${i + 1}</span>${ic(c.icon)}
             <div class="tt-what"><b>${esc(c.name)}</b><span>${esc(off ? tc("未安装或已关闭：按失败跳过", "Not installed or off here: skipped as failed") : c.only && !stepServer(c, S.kitVer[c.kit]) ? tc(`需要 ${kitName(c.kit)} ${c.min}：更新前跳过`, `Needs ${kitName(c.kit)} ${c.min}: skipped until it is updated`)
               : r.where === "server" && c.kit && !kitServer(c.kit, S.kitVer[c.kit]) ? tc(`此版本只在自己的页面上规划扫描：更新到 ${c.min} 才能用在服务器脚本里`, `This version plans its scan on its page only: update it to ${c.min} for the server script`) : c.sub || "")}</span></div>
@@ -2432,7 +2554,7 @@
       else if (a === "copy") copyText(sh.text);
       else if (a === "dl") { const blob = new Blob([sh.text.replace(/\n/g, "\n")], { type: "text/x-sh" }); const el = document.createElement("a"); el.href = URL.createObjectURL(blob); el.download = sh.file;
         document.body.appendChild(el); el.click(); setTimeout(() => { URL.revokeObjectURL(el.href); el.remove(); }, 1000); }
-      else if (a === "seehist") { closeSheet(); S.tab = "viewer"; S.hf = "routine"; render(); }
+      else if (a === "seehist") { closeSheet(); setTab("viewer"); S.hf = "routine"; render(); }
       return;
     }
     const r = sh.r;
@@ -2510,7 +2632,13 @@
   async function onClick(ev) {
     const t = ev.target.closest("[data-tab],[data-a],[data-go]");
     if (!t || !pageEl.contains(t)) return;
-    if (t.dataset.tab) { S.tab = t.dataset.tab; setPref("tab", S.tab); S.hmore = 25; render(); if (S.tab !== "overview") loadNotes(); return; }
+    if (t.dataset.tab) {
+      setTab(t.dataset.tab); S.hmore = 25; render(); showTab();
+      // focus stays on the tab just used after the redraw
+      const nb = t.classList.contains("tt-tab") && pageEl.querySelector(`.tt-tab[data-tab="${S.tab}"]`);
+      if (nb) nb.focus();
+      return;
+    }
     if (t.dataset.go && !t.dataset.a) {
       if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button === 1) return;
       ev.preventDefault(); navigate(t.dataset.go); return;
@@ -2536,7 +2664,7 @@
       const ks = O.picked.filter((x) => !waiting.has(x));
       if (!ks.length) { toast(tc("这些已经在这里等待了。", "Those are already waiting here."), "info"); return; }
       await queueSteps(ks, { t: "safe", name: "Run the safe ones" }, { hold: true });
-      S.tab = "viewer"; setPref("tab", S.tab); render();
+      setTab("viewer"); render();
     }
     else if (a === "runone") queueSteps([k], { t: "you", name: "You" });
     else if (a === "tonight") queueSteps([k], { t: "tonight", name: "Tonight" }, { after: tonight(now), hold: true });
@@ -2602,7 +2730,19 @@
     }
     if (!pageEl || typing || ev.ctrlKey || ev.metaKey || ev.altKey || ev.defaultPrevented || ev.repeat) return;
     const tab = TABS.find((x) => x[4] === ev.key);
-    if (tab) { ev.preventDefault(); S.tab = tab[0]; setPref("tab", S.tab); render(); if (S.tab !== "overview") loadNotes(); }
+    if (tab) { ev.preventDefault(); setTab(tab[0]); render(); showTab(); }
+  }
+  // 0.6.9 (audit 2026-11-10): the tab is written to the address as ?tab=
+  // (other parameters kept) and remembered as before; ?tab= opens it
+  function setTab(t) {
+    if (!TAB_KEYS.includes(t)) return;
+    S.tab = t; setPref("tab", t);
+    if (pageEl && location.pathname === PAGE_PATH) { try { history.replaceState(history.state, "", tabUrl(location, t)); } catch (_) {} }
+  }
+  // what the tab on screen needs
+  function showTab() {
+    if (S.tab !== "overview") loadNotes();
+    else if (S.lib) loadKitPiles(S.lib.kits);
   }
 
   function mountPage(el) {
@@ -2610,6 +2750,8 @@
     pageEl = el;
     lastHtml = "";
     el.addEventListener("click", onClick);
+    const ut = tabOf(location.search);
+    if (ut) { S.tab = ut; setPref("tab", ut); }
     render();
     (S.data ? Promise.resolve() : loadData()).catch((e) => { S.dataErr = e.message; }).then(() => { render(); loadLib(false); loadNotes(); tick(); });
   }
@@ -2799,6 +2941,12 @@
   // becomes one of its backups (Your data restores it).
   function suiteData(o) {
     const MARK = "suiteDataMirror", MIRROR_MS = o.mirrorMs || 5 * 60 * 1000, TRIES = 6;
+    // o.unmirrored: data keys (logs) left out of the copy in the config. Every
+    // plugin reads the config, and the logs made it 4 MB (review 2026-11-09).
+    // Their revision stays out of the copy's mark too, so a value written in
+    // the config while Suite Data was off is never taken for a continuation
+    // of the store's: the store keeps its log, the other becomes a backup.
+    const OUT = o.unmirrored || [];
     const name = o.label || o.id;
     const S = { inst: null, err: false, syncing: null, revs: {}, vals: {}, loaded: false, at: 0, mrevs: {}, timer: 0, told: "", chain: Promise.resolve() };
     const own = (k) => o.keys.indexOf(k) >= 0;
@@ -2885,8 +3033,11 @@
       return S.syncing;
     }
     // Rewrite the copy in the config when the store is ahead of it.
-    function plan(now) {
-      if (!o.keys.some((k) => S.revs[k] && S.revs[k] !== S.mrevs[k])) return;
+    // `mine`: the config as read; one still holding a key left out of the copy
+    // (written before 2026-11-09) is rewritten once without it
+    function plan(now, mine) {
+      const stale = !!mine && OUT.some((k) => mine[k] !== undefined && S.revs[k]);
+      if (!stale && !o.keys.some((k) => OUT.indexOf(k) < 0 && S.revs[k] && S.revs[k] !== S.mrevs[k])) return;
       const due = S.at + MIRROR_MS - Date.now();
       if (now || due <= 0) { if (S.timer) clearTimeout(S.timer); S.timer = 0; Promise.resolve().then(mirror); }
       else if (!S.timer) S.timer = setTimeout(() => { S.timer = 0; mirror(); }, due);
@@ -2896,7 +3047,8 @@
         if (!S.loaded || S.err) return;
         const next = over(await o.readConfig());
         const revs = { ...S.revs };
-        next[MARK] = JSON.stringify({ at: Date.now(), revs });
+        OUT.forEach((k) => { delete next[k]; delete revs[k]; });
+        next[MARK] = JSON.stringify({ at: Date.now(), revs, ...(OUT.length ? { out: OUT } : {}) });
         await o.writeConfig(next, { copy: true });   // the mirror itself: a plugin may skip its refetch
         S.at = Date.now();
         S.mrevs = revs;
@@ -2944,7 +3096,7 @@
         if (!S.loaded) await ensure(mine);
         else absorb((await op({ mode: "get", plugin: o.id, keys: JSON.stringify(o.keys) })).items);
         S.err = false;
-        plan(false);
+        plan(false, mine);
         return over(mine);
       } catch (e) {
         const had = Object.keys(S.revs).length > 0;
@@ -2982,7 +3134,7 @@
             changed.forEach((k) => { if (next[k] === undefined) delete fresh[k]; else fresh[k] = next[k]; });
             await o.writeConfig(fresh, opt || {});
           }
-          plan(!!(opt && opt.mirror));
+          plan(!!(opt && opt.mirror), mine);
           return { ...next };
         }
         throw new Error(tc("Suite Data：其他写入总是抢先；什么也没保存，请重试", "Suite Data: other writes kept getting in first; nothing was saved, try again"));
@@ -3922,14 +4074,15 @@
 
 /* tablets: the side column under the main one */
 @media (max-width: 991.98px) { .tt-side { max-width: none; flex-basis: 100%; } .tt-rgrid { grid-template-columns: minmax(0, 1fr); } }
-/* phones (Bootstrap's sm): the slab edge to edge with 12px sides; the tabs a
-   grid of three; a row's pills and time under its title; Too long and Needs
-   a look folded; no key hints */
+/* phones (Bootstrap's sm): the slab edge to edge with 12px sides; the tabs
+   one row that scrolls sideways (0.6.9, suite convention); a row's pills and
+   time under its title; Too long and Needs a look folded; no key hints */
 @media (max-width: 575.98px) {
   .tt { margin: 0 0 24px; padding: 12px; border-radius: 0; border-left: 0; border-right: 0; }
   .tt kbd { display: none; }
-  .tt-tabs { margin-left: 0; width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .tt-tab { justify-content: center; padding: 8px 6px; font-size: 13px; }
+  .tt-tabs { margin-left: 0; width: 100%; display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .tt-tabs::-webkit-scrollbar { display: none; }
+  .tt-tab { flex: 0 0 auto; justify-content: center; padding: 8px 10px; font-size: 13px; }
   .tt-read { margin-left: auto; }
   .tt-hero { padding: 14px; gap: 10px; }
   .tt-hero .tt-btn.tt-big { width: 100%; justify-content: center; min-height: 48px; flex-wrap: wrap; }

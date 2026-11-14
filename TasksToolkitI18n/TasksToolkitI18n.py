@@ -85,7 +85,7 @@ except ImportError:          # Windows: no scheduler there (it needs fork)
     fcntl = None
 
 PLUGIN_ID = "TasksToolkitI18n"
-PLUGIN_VERSION = "0.6.6-1"
+PLUGIN_VERSION = "0.6.9-1"
 EVENTS_MAX = 100          # the newest events kept, oldest dropped
 STEPS_MAX = 40            # steps kept per run
 RUNS_MAX = 50             # routines with a run on record
@@ -931,7 +931,7 @@ Q_KITSCAN = "mutation ($p: ID!, $t: String!, $a: Map) { runPluginTask(plugin_id:
 Q_QUEUE = "{ jobQueue { id status description } }"
 Q_JOB = "query ($id: ID!) { findJob(input: { id: $id }) { id status error } }"
 Q_PLUGINS = "{ plugins { id version enabled } }"
-Q_CONFIG = "{ configuration { plugins } }"
+Q_CONFIG = '{ configuration { plugins(include: ["TasksToolkitI18n"]) } }'
 Q_BOXES = "{ configuration { general { stashBoxes { endpoint } } } }"
 Q_ID_DEFAULTS = """{ configuration { defaults { identify { sources { source { stash_box_endpoint scraper_id } }
     options { setCoverImage setOrganized includeMalePerformers skipMultipleMatches fieldOptions { field strategy createMissing } } } } } }"""
@@ -983,10 +983,21 @@ STEPS = {
 }
 
 
+# 0.6.9 (audit 2026-11-10): another plugin's task in a routine, named in the
+# step itself as "ext:<plugin id>|<task name>" (each 1 to 40 letters, digits
+# and inner spaces, as the page checks them), so it runs with runPluginTask
+# like the toolkits' scans without any list of such plugins here.
+EXT_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9 ]{0,38}[A-Za-z0-9])?"
+EXT_RX = re.compile(r"^ext:(%s)\|(%s)$" % (EXT_NAME, EXT_NAME))
+
+
 def step_def(k):
     """The step for a catalogue key, or None (as the page's catOf)."""
     if k in STEPS:
         return STEPS[k]
+    e = EXT_RX.match(str(k or ""))
+    if e:
+        return {"name": "%s: %s" % (e.group(1), e.group(2)), "q": Q_TASK, "plugin": e.group(1), "task": e.group(2), "heavy": False, "ext": True}
     m = re.match(r"^ap:(\w+)$", str(k or ""))
     ap = m and next((x for x in AP_STEPS if x[0] == m.group(1)), None)
     if ap:
@@ -1410,6 +1421,11 @@ class Runner(object):
         d = step_def(k)
         if not d:
             return "skipped", "not a step Tasks knows", ""
+        if d.get("ext"):
+            # another plugin's task: only while that plugin is installed and on
+            p = (plugins or {}).get(d["plugin"])
+            if not p or p.get("enabled") is False:
+                return "skipped", "left out: not installed in Stash, or off", ""
         if d.get("kit"):
             p = (plugins or {}).get(d["kit"])
             if not p or p.get("enabled") is False:
