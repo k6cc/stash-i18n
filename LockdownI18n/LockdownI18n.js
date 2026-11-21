@@ -56,19 +56,20 @@
   // The Stash locale arrives one React render after the plugin starts: whatever
   // was drawn in English before that (the bar, the page) is redrawn once here
   document.addEventListener('lockdowni18n:locale', function () {
+    try { document.getElementById('ld-tip')?.remove(); } catch (_) {}
     try { if (bar) { bar.dataset.key = ''; renderBar(); } } catch (e) { console.warn('[LockdownI18n] bar repaint failed:', e); }
     try { renderPage(); } catch (e) { console.warn('[LockdownI18n] page repaint failed:', e); }
   });
 
   const PLUGIN_ID = "LockdownI18n";
   // the manifest's version; validate.sh checks they agree
-  const PLUGIN_VERSION = "2.24.4-1";
+  const PLUGIN_VERSION = "2.27.2-1";
   // the suite's shared runtime (2.23.0, MAINTENANCE §4.12): GraphQL with a
   // timeout, typing, the keyboard owner and "ago". Not its toast (ldToast
   // stays at the top, under the bar: see there) nor its route signal (the
   // history patch below has to check a route before the page renders)
   const RT = suiteRuntime({ id: PLUGIN_ID });
-  const DATA_KEYS = ["history", "stats", "active", "presets", "pics"];   // in Suite Data's store when it is installed (pics: 2.9)
+  const DATA_KEYS = ["history", "stats", "active", "presets", "pics", "learn"];   // in Suite Data's store when it is installed (pics: 2.9; learn: 2.26.0)
   const STATE_KEY = "lockdownI18nState";   // this browser's copy of the active lock
   const PREF_KEY  = "lockdownI18nPrefs";   // { setup, last, guideSeen, barTipSeen }
   const HOLD_MS   = 5000;              // how long Give up must be held
@@ -363,9 +364,12 @@
     // 2.12 (user): Stash's Settings, every tab and sub-route, open during a
     // lock; the visit is noted in the run's history (enforce)
     if (isSettingsPath(p)) return { ok: true, settings: true };
+    // 2.25.0: a run on the performers' tags lives in the lists (below): the tag's own
+    // page and tabs list the scenes that carry the tag, which is another run
+    const listRun = (t.groups && t.groups.length > 1) || perfTags(t);
     let m = new RegExp(`^/${K.path}/(\\d+)(?:/([a-z]+))?$`).exec(p);
     if (m) {
-      if (!ids.includes(m[1])) return { bounce: true };
+      if (!ids.includes(m[1]) || perfTags(t)) return { bounce: true };
       const tab = m[2] || "";
       if (!K.tabs.includes(tab)) return { bounce: true };
       if (roulette && (tab === "" || tab === "scenes")) return { bounce: true };
@@ -373,8 +377,8 @@
     }
     // several tags: their scenes are listed on Stash's Scenes page (each card
     // is still checked); with random scenes that list is off limits too
-    if (p === "/scenes" && t.groups && t.groups.length > 1) return roulette ? { bounce: true } : { ok: true };
-    if ((p === "/images" || p === "/galleries") && t.groups && t.groups.length > 1) return { ok: true };
+    if (p === "/scenes" && listRun) return roulette ? { bounce: true } : { ok: true };
+    if ((p === "/images" || p === "/galleries") && listRun) return { ok: true };
     if ((m = /^\/scenes\/(\d+)$/.exec(p)))            return { check: "scene", id: m[1] };
     if ((m = /^\/images\/(\d+)$/.exec(p)))            return { check: "image", id: m[1] };
     if ((m = /^\/galleries\/(\d+)(?:\/.*)?$/.exec(p))) return { check: "gallery", id: m[1] };
@@ -591,8 +595,18 @@
       text: tc("只有看满这么长时间后 O 才开始计数。在那之前的 O 不算数，并把等待重新计时。", "O's only count once you've watched this long. An O before that doesn't count and starts the wait over.") },
     // 2.2: a share of the target instead of fixed minutes (user feedback: "at
     // least reset the goal to the original time if I came")
-    { k: "harsh", name: tc("严苛失误", "Harsh slips"), goal: "edge", heat: [1, 2], ranks: [tc("每次 O 加一半", "Each O adds half"), tc("一次 O 就重新计时", "An O starts it over")],
-      text: tc("一次 O 的代价高于通常的三分之一：要么一半，要么整段目标重新来过。", "An O costs more than the usual third of the target: half of it, or the whole target again.") },
+    { k: "harsh", name: tc("严苛失误", "Harsh slips"), goal: "edge", heat: [1, 2], ranks: [tc("每次 O 加半个目标", "Each O adds half"), tc("一次 O 从头开始", "An O starts it over")],
+      text: tc("一次 O 的代价高于通常的三分之一目标：半个目标，或者整个目标再来一遍。", "An O costs more than the usual third of the target: half of it, or the whole target again.") },
+    // 2.26.0 (the user's history: both runs given up were hidden targets on
+    // "An O starts it over" that ended at their first O): two softer O rules,
+    // no heat (a preference, like Unwatched only). `not`: the condition it
+    // cannot be on with (turning one on turns the other off). A fixed 10
+    // minutes, not a share: a hidden target can be told "+10 min" without
+    // giving its length away, and 2.1's runs already slipped by fixed minutes.
+    { k: "soft", name: tc("O 加 10 分钟", "An O adds 10 min"), goal: "edge", heat: [0], noHeat: true, not: "harsh", ranks: [tc("每次 O 加 10 分钟", "An O adds 10 min")],
+      text: tc("无论目标多长，一次 O 都加 10 分钟可看时长，而不是目标的三分之一（或「严苛失误」设定的量）。目标隐藏时只说 +10 min，不再透露更多。", "An O adds 10 minutes to watch, whatever the target's length, instead of a third of it (or what Harsh slips sets). With a hidden target it says +10 min and nothing more.") },
+    { k: "grace", name: tc("首 O 宽恕", "First O forgiven"), goal: "edge", heat: [0], noHeat: true, ranks: [tc("每局宽恕第一次 O", "First O forgiven")],
+      text: tc("每局一次，O 不加时：目标停在原处。但那 100 分失误照扣。", "Once a run, an O adds no time: the target stays where it was. It still costs the slip's 100 points.") },
     // 2.12 (user): the target is drawn around the time you set and kept from
     // you until the end, so watched time alone no longer tells how far it is
     { k: "hide", name: tc("隐藏目标", "Hidden target"), goal: "edge", heat: [1], ranks: [tc("目标保密", "Target hidden")],
@@ -638,6 +652,7 @@
   const HARSH_MIN = [10, 20, 30];      // 2.1's minutes, for its runs
   // What an O costs in Edge (2.2): a share of the target, or starting over.
   const SLIP = ["third", "half", "reset"];
+  const SOFT_ADD_MS = 10 * 60000;      // 2.26.0: what "An O adds 10 min" adds
   const SKIPS_AT = [null, 3, 1, 0];
   // 2.12: Hidden target draws the real one between these shares of the time
   // set; Toy in charge's heat needs Goon mode running this share of the
@@ -715,7 +730,16 @@
     return { earned: w > 0 && share >= TOY_SHARE, share, ms, watched: w };
   }
   // Edge with a hidden target: how far, in three words, never a number.
-  const edgeHint = (frac) => (frac < 0.35 ? tc("刚开始", "early") : frac < 0.75 ? tc("过半", "about halfway") : tc("快到了", "nearly there"));
+  const edgeHint = (frac) => (frac < 0.35 ? "early" : frac < 0.75 ? "about halfway" : "nearly there");
+  // 2.25.1 (user: "nearly there for a long time"): how far, measured by what
+  // is left against the target's own length. watched / need put a run with
+  // "An O starts it over" at "about halfway" right after the O and at
+  // "nearly there" with most of the new target still to watch.
+  function edgeFrac(L) {
+    const g = (L && L.goal) || {}, need = edgeNeedMs(L), base = g.watchMs || need;
+    if (!need || !base) return 0;
+    return Math.max(0, Math.min(1, 1 - (need - Math.min(need, (L.watchedMs || 0))) / base));
+  }
   // 2.12.1 (decided, the 2.12.0 open point): past a hidden target the time
   // stays hidden until the result card: no watched time, overtime clock,
   // meter or score on the bar, the overtime card or the run page (each one
@@ -785,6 +809,7 @@
       if (v) conds[c.k] = v;
     }
     for (const c of conditions()) if (c.with && !conds[c.with]) delete conds[c.k];   // 2.22
+    for (const c of conditions()) if (c.not && conds[c.not]) delete conds[c.k];      // 2.26.0: Harsh slips wins over a stored "adds 10 min"
     return {
       kind: KINDS[x.kind] ? x.kind : d.kind,
       pick: x.pick === "random" ? "random" : "choose",
@@ -794,11 +819,15 @@
       timerBy: x.timerBy === "locked" ? "locked" : "watched",
       edgeMin: clamp(x.edgeMin, MIN_MIN, MAX_MIN, d.edgeMin),
       tagMode: x.tagMode === "or" ? "or" : "and",
+      // 2.25.0: where a tag run looks for its tags: on the scene (as before) or on its performers
+      tagOn: x.tagOn === "performers" ? "performers" : "scenes",
       conds,
       // 2.12: Toy in charge's Goon mode settings (kept whether it is on or not)
       toy: normaliseToy(x.toy),
       // 2.16: tag cards chosen by hand; null: the favourite tags
       cards: normaliseCardTags(x.cards),
+      // 2.26.0: Roulette and tag cards learn from what is skipped (on unless turned off)
+      learn: x.learn !== false,
     };
   }
 
@@ -819,8 +848,13 @@
       ? { type: "timer", ms: setup.timerMin * 60000 } : { type: "timer", ms: setup.timerMin * 60000, by: "watched" };
     // 2.12: Hidden target marks the goal; newLock draws the real watchMs
     // (and keeps the time set as `about`)
-    if (setup.goal === "edge") return { type: "edge", watchMs: setup.edgeMin * 60000, slip: SLIP[(setup.conds && setup.conds.harsh) || 0],
-                                        ...(setup.conds && setup.conds.hide ? { hidden: true } : {}) };
+    // 2.26.0: "An O adds 10 min" is slip "add" with its minutes in addMs (2.1's
+    // fixed minutes, now under a slip so the take-back's lastSlip works);
+    // "First O forgiven" is `grace`, how many O's a run forgives (one)
+    const c = setup.conds || {};
+    if (setup.goal === "edge") return { type: "edge", watchMs: setup.edgeMin * 60000, slip: c.soft && !c.harsh ? "add" : SLIP[c.harsh || 0],
+                                        ...(c.soft && !c.harsh ? { addMs: SOFT_ADD_MS } : {}), ...(c.grace ? { grace: 1 } : {}),
+                                        ...(c.hide ? { hidden: true } : {}) };
     return { type: "finish", os: setup.os };
   }
 
@@ -863,7 +897,7 @@
     return out;
   }
 
-  const UNIT_ZH = { "O": "次O", "O's": "次O", skip: "次跳过", skips: "次跳过", scene: "个场景", scenes: "个场景", image: "张图片", images: "张图片", moment: "个瞬间", moments: "个瞬间", play: "次播放", plays: "次播放", card: "张牌", cards: "张牌" };
+  const UNIT_ZH = { "O": "次O", "O's": "次O", slip: "次失误", slips: "次失误", skip: "次跳过", skips: "次跳过", scene: "个场景", scenes: "个场景", image: "张图片", images: "张图片", moment: "个瞬间", moments: "个瞬间", play: "次播放", plays: "次播放", card: "张牌", cards: "张牌", run: "局", runs: "局" };
   const plural = (n, one, many) => tc(`${n} ${UNIT_ZH[one] || one}`, `${n} ${n === 1 ? one : many}`);
 
   // "Finish · 2 O's", "Timer · 1 h watched", "Edge · 30 min".
@@ -882,7 +916,7 @@
   function rulesLabels(rules, goal) {
     const r = rules || {};
     const out = [];
-    if (r.skips !== null && r.skips !== undefined) out.push(r.skips === 0 ? tc("不能跳过", "no skips") : tc(`每场景 ${plural(r.skips, "skip", "skips")}`, `${plural(r.skips, "skip", "skips")} per scene`));
+    if (r.skips !== null && r.skips !== undefined) out.push(r.skips === 0 ? tc("禁止跳过", "no skips") : tc(`${plural(r.skips, "skip", "skips")}／场景`, `${plural(r.skips, "skip", "skips")} per scene`));
     if (r.random) out.push(tc("随机场景", "random scenes"));
     if (r.stay) out.push(tc("坚持到底", "stay to the end"));
     if (r.speed) out.push(tc("1 倍速、无预览", "1x speed, no previews"));
@@ -890,8 +924,10 @@
     if (r.eyes) out.push(tc("盯着画面", "eyes on screen"));
     if (r.fresh) out.push(tc("仅未看过", "unwatched only"));
     if ((goal || {}).type === "finish" && r.minMs) out.push(tc(`看满 ${fmtMinutes(r.minMs / 60000)} 后 O 才计数`, `O's count after ${fmtMinutes(r.minMs / 60000)} watched`));
-    if (r.one) out.push(tc("单一场景循环重播", "one scene on repeat"));
-    if ((goal || {}).type === "edge" && goal.slip && goal.slip !== "third") out.push(goal.slip === "reset" ? tc("一次 O 就重新计时", "an O starts it over") : tc("每次 O 加一半", "each O adds half"));
+    if (r.one) out.push(tc("单一场景循环", "one scene on repeat"));
+    if ((goal || {}).type === "edge" && goal.slip && goal.slip !== "third") out.push(goal.slip === "reset" ? tc("一次 O 从头开始", "an O starts it over")
+      : goal.slip === "add" ? tc(`每次 O 加 ${fmtMinutes((goal.addMs || SOFT_ADD_MS) / 60000)}`, `each O adds ${fmtMinutes((goal.addMs || SOFT_ADD_MS) / 60000)}`) : tc("每次 O 加半个目标", "each O adds half"));
+    if ((goal || {}).type === "edge" && goal.grace) out.push(tc("宽恕第一次 O", "first O forgiven"));   // 2.26.0
     if ((goal || {}).type === "edge" && !goal.slip && goal.addMs && goal.addMs !== 600000) out.push(tc(`每次 O 加 ${fmtMinutes(goal.addMs / 60000)}`, `each O adds ${fmtMinutes(goal.addMs / 60000)}`));
     if ((goal || {}).type === "edge" && goal.hidden) out.push(tc("隐藏目标", "hidden target"));
     if ((goal || {}).type === "edge" && r.toy) out.push(tc("玩具主导", "toy in charge"));
@@ -899,10 +935,17 @@
   }
 
   // What an O costs in Edge, in words. 2.1 runs carry fixed minutes (addMs).
+  // 2.26.0: slip "add" (fixed minutes, the same words hidden or not), and
+  // "the first one forgiven" after any rule with a grace
   function slipText(g) {
+    const t = slipRule(g);
+    return g && g.slip && g.grace ? tc(`${t}，第一次宽恕`, `${t}, the first one forgiven`) : t;
+  }
+  function slipRule(g) {
     if (!g || !g.slip) return tc(`每次 O 加 ${fmtMinutes(((g && g.addMs) || 600000) / 60000)}`, `each O adds ${fmtMinutes(((g && g.addMs) || 600000) / 60000)}`);
-    if (g.slip === "reset") return tc("一次 O 就重新计时", "an O starts it over");
-    if (g.hidden) return tc(`每次 O 加目标的 ${g.slip === "half" ? tc("一半", "half") : tc("三分之一", "a third")}`, `each O adds ${g.slip === "half" ? tc("一半", "half") : tc("三分之一", "a third")} of it`);
+    if (g.slip === "reset") return tc("一次 O 从头开始", "an O starts it over");
+    if (g.slip === "add") return tc(`每次 O 加 ${fmtMinutes((g.addMs || SOFT_ADD_MS) / 60000)}`, `each O adds ${fmtMinutes((g.addMs || SOFT_ADD_MS) / 60000)}`);
+    if (g.hidden) return g.slip === "half" ? tc("每次 O 加目标的一半", "each O adds half of it") : tc("每次 O 加目标的三分之一", "each O adds a third of it");
     const add = g.slip === "half" ? g.watchMs / 2 : g.watchMs / 3;
     return tc(`每次 O 加${g.slip === "half" ? "一半" : "三分之一"}（${fmtMinutes(Math.round(add / 60000))}）`, `each O adds ${g.slip === "half" ? "half" : "a third"} (${fmtMinutes(Math.round(add / 60000))})`);
   }
@@ -962,8 +1005,14 @@
     const stays = Math.round(Number(e.stayPts) || 0), race = Math.round(Number(e.racePts) || 0);
     // 2.20: skip cards still in hand at the end
     const skipc = SKIP_CARD_PTS * Math.max(0, Math.floor(Number(e.skipCards && e.skipCards.kept) || 0));
-    return { watched, skips, slips, overtime, pics, out, heat, mult, nov, away, holds, tagm, stays, race, skipc,
-             total: Math.max(0, Math.round((watched + skips + slips + overtime + pics + out + away + holds + tagm + stays + race + skipc) * mult * (1 + nov))) };
+    // 2.26.0: time past the target (only entries that carry pastMs) and the
+    // pictures cards kept (before heat); entries without them score as before
+    const past = g.type === "edge" && e.pastMs > 0 ? pastPts(e) : 0;
+    const picc = Math.max(0, Math.floor(Number(e.picPts) || 0));
+    // 2.27.0: the Lock in card (a reward only, before heat)
+    const lockin = Math.max(0, Math.floor(Number(e.lockPts) || 0));
+    return { watched, skips, slips, overtime, past, pics, out, heat, mult, nov, away, holds, tagm, stays, race, skipc, picc, lockin,
+             total: Math.max(0, Math.round((watched + skips + slips + overtime + past + pics + out + away + holds + tagm + stays + race + skipc + picc + lockin) * mult * (1 + nov))) };
   }
 
   // ── 2.16: cards in hand (user, in an interview: hold cards "should be out
@@ -992,19 +1041,36 @@
     // removed it should only reward if complete"): opening another scene
     // only loses the card, nothing is taken off; the scene ending plays it
     // again (the "ended" listener) rather than Roulette's next.
-    stay5: { get name() { return tc("停留 5", "Stay 5"); }, ms: 5 * 60000, pts: 40, stay: true, get text() { return tc("在本场景连续播放 5 分钟；打开别的场景就会失去它", "5 minutes of playing on this scene; opening another scene loses it"); } },
-    stay10: { get name() { return tc("停留 10", "Stay 10"); }, ms: 10 * 60000, pts: 100, stay: true, get text() { return tc("在本场景连续播放 10 分钟；打开别的场景就会失去它", "10 minutes of playing on this scene; opening another scene loses it"); } },
+    stay5: { name: "Stay 5", ms: 5 * 60000, pts: 40, stay: true, text: "5 minutes of playing on this scene; opening another scene loses it" },
+    stay10: { name: "Stay 10", ms: 10 * 60000, pts: 100, stay: true, text: "10 minutes of playing on this scene; opening another scene loses it" },
+    // 2.26.0: Pictures cards. Played, they open the run's pictures in
+    // Slideshow; the card's time is Slideshow's own playing time (it
+    // announces only time on screen, not paused or away: `pms` on the hold),
+    // not watched time. Closing the slideshow before the time is up loses the
+    // card, nothing taken off (as Stay cards since 2.20). 15 a minute, as
+    // Eyes on screen; kept in `picPts`, apart from the holds' points.
+    pics2: { name: "Pictures 2", ms: 2 * 60000, pts: 30, pics: true, text: "2 minutes of the run's pictures in Slideshow; closing it before then loses the card" },
+    pics5: { name: "Pictures 5", ms: 5 * 60000, pts: 75, pics: true, text: "5 minutes of the run's pictures in Slideshow; closing it before then loses the card" },
   };
   // The deal picks one of these by the hand's seed and the deal's number,
   // so every device deals the same card. A run where another scene can't
   // be opened anyway (One scene, Stay to the end) deals only Eyes on screen.
+  // 2.26.0 `pics` (the hand's `pk`: the target has PICS_CARD_MIN pictures
+  // and Slideshow was there at the start): one deal in four is a Pictures
+  // card, 2 or 5 minutes; a hand without `pk` deals exactly as before.
   const HOLD_DEAL = ["eyes", "stay5", "stay10"];
-  function dealKind(seed, due, stays) {
-    if (!stays) return "eyes";
+  const PICS_CARD_MIN = 20;
+  function dealKind(seed, due, stays, pics) {
+    if (!stays && !pics) return "eyes";
     let a = ((seed | 0) + Math.imul(due | 0, 0x9e3779b1)) | 0;
     a = Math.imul(a ^ (a >>> 16), 0x45d9f3b); a = Math.imul(a ^ (a >>> 16), 0x45d9f3b); a ^= a >>> 16;
-    return HOLD_DEAL[(a >>> 0) % HOLD_DEAL.length];
+    const u = a >>> 0;
+    if (pics && u % 4 === 0) return (u >>> 2) % 2 ? "pics5" : "pics2";
+    return stays ? HOLD_DEAL[u % HOLD_DEAL.length] : "eyes";
   }
+  // How far a hold being played is: watched time since it was played, or a
+  // Pictures card's own slideshow time
+  const holdSpent = (hold, w) => (hold && HOLD_KINDS[hold.k] && HOLD_KINDS[hold.k].pics ? Math.max(0, Number(hold.pms) || 0) : Math.max(0, w - ((hold && hold.from) || 0)));
   // 2.19: the Race (Oddysee's forum idea, a card that has you finish
   // before a countdown ends; the user's choices: once a run, late; a fixed
   // 3 minutes of real time; +100 won, -50 lost, before heat). Dealt past
@@ -1037,6 +1103,145 @@
     if (!r || r.st !== "on" || now > r.until + RACE_GRACE_MS) return hand;
     return { ...hand, race: { ...r, st: "won", ms: Math.max(0, Math.min(RACE_MS, now - r.from)) }, racePts: (hand.racePts || 0) + RACE_WIN, rev: (hand.rev || 0) + 1 };
   }
+  // 2.27.0: Lock in (user: "when I do multiple performers, sometimes or most
+  // times I lean on one more ... a card that would actually reward the
+  // player ... available after a third of the run is passed"). Once a run,
+  // only when the target is 2 to 4 performers (a duo or group), not under One
+  // scene. Played, it asks which of them; from then Roulette and the tag
+  // cards deal only that performer's scenes. Reward only (as Stay cards since
+  // 2.20): LOCKIN_PER_MIN a watched minute on scenes with them after locking
+  // in (their watched time in the run, `L.pw`, less what it was at the play:
+  // `w0`), counted up to LOCKIN_CAP_MS, and LOCKIN_KEEP when the run ends with
+  // it kept after at least LOCKIN_KEEP_MIN_MS of them (so a lock-in played in
+  // the last minute is not a free bonus). Opening a scene without them breaks
+  // it: what it earned stays, the end bonus goes, nothing is taken off. The
+  // numbers: 2 a minute is a fifth of watching's 10, so an hour locked in is
+  // +120 and the most it gives is +170 before heat, beside the Race's +100,
+  // Stay 10's +100 and the time past the target's +150; it rewards leaning on
+  // one without outscoring the run itself. When the run comes (deal):
+  // Timer a third of its time (watched or locked, as the goal counts); Edge a
+  // third of the target (a hidden target: a third of the time set, `about`,
+  // or the card's moment would give the real length away); Finish has no
+  // length, so the larger of LOCKIN_FINISH_MS watched (when the first hold
+  // card comes) and a third of Slow burn's minimum (the shortest the run can
+  // be). `hand.lk`: { st: "held" } | { st: "on", id, name, at, w0, free? } |
+  // { st: "broke", ..., ms (earned, frozen), bAt }. `free`: a scene the dealer
+  // opened of another performer because the locked one had none left; it
+  // does not break the lock-in.
+  const LOCKIN_PER_MIN = 2, LOCKIN_CAP_MS = 60 * 60000, LOCKIN_KEEP = 50, LOCKIN_KEEP_MIN_MS = 5 * 60000, LOCKIN_FINISH_MS = 10 * 60000;
+  const LOCKIN_ORDER = { held: 1, on: 2, broke: 3 };
+  function lockInDue(L, now) {
+    if (!L || !L.goal || !duoOf(L) || L.media === "images" || (L.one && L.rules && L.rules.one)) return false;
+    const g = L.goal, w = L.watchedMs || 0;
+    if (g.type === "timer") return g.by === "watched" ? w >= g.ms / 3 : (now || 0) - (L.startedAt || 0) >= g.ms / 3;
+    if (g.type === "edge") return w >= ((g.hidden && g.about) || g.watchMs || 0) / 3;
+    const minMs = (L.rules && L.rules.minMs) || 0;
+    return w >= Math.max(LOCKIN_FINISH_MS, minMs / 3);
+  }
+  // The performer locked in, while it holds (an id), else null
+  const lockedIn = (L) => { const k = L && L.hand && L.hand.lk; return k && k.st === "on" && k.id ? String(k.id) : null; };
+  // `scene`: the one on screen, which does not break it (it was open before)
+  function handPlayLockIn(hand, p, w0, now, scene) {
+    if (!hand || !hand.lk || hand.lk.st !== "held" || !p || !p.id) return null;
+    return { ...hand, lk: { st: "on", id: String(p.id), name: String(p.name || "?"), at: now || 0, w0: Math.max(0, Number(w0) || 0), ...(scene ? { free: String(scene) } : {}) },
+             rev: (hand.rev || 0) + 1 };
+  }
+  // Watched ms on the locked performer's scenes since locking in
+  function lockInMs(L) {
+    const k = L && L.hand && L.hand.lk;
+    if (!k || !k.id) return 0;
+    if (k.st === "broke") return Math.max(0, Number(k.ms) || 0);
+    return Math.max(0, pwGet(L.pw, k.id) - (k.w0 || 0));
+  }
+  function handBreakLock(hand, ms, now, scene) {
+    const k = hand && hand.lk;
+    if (!k || k.st !== "on") return hand;
+    return { ...hand, lk: { ...k, st: "broke", ms: Math.round(Math.max(0, ms || 0)), bAt: now || 0, ...(scene ? { by: String(scene) } : {}) }, rev: (hand.rev || 0) + 1 };
+  }
+  const lockInPts = (ms, kept) => Math.round((Math.min(Math.max(0, ms || 0), LOCKIN_CAP_MS) / 60000) * LOCKIN_PER_MIN) +
+    (kept && ms >= LOCKIN_KEEP_MIN_MS ? LOCKIN_KEEP : 0);
+  // Whether the scene breaks the lock-in: its performers are known, the
+  // locked one is not among them, and the dealer did not open it for want of theirs
+  const lockBreaks = (lk, scene, who) => !!(lk && lk.st === "on" && scene && Array.isArray(who) && String(scene) !== String(lk.free || "") &&
+    !who.some((p) => String(p && p.id) === String(lk.id)));
+  // "kept, 24 min" | "broken after 12 min", for the score lines and History
+  // A tag card's scenes narrowed to the one locked in: { pool, out } (out:
+  // nothing of theirs but the open scene, so every scene as before)
+  function lockPool(all, lk, notId) {
+    if (!lk) return { pool: all || [], out: false };
+    const mine = (all || []).filter((x) => (x.who || []).includes(String(lk)));
+    return mine.some((x) => String(x.id) !== String(notId)) ? { pool: mine, out: false } : { pool: all || [], out: true };
+  }
+  const lockInText = (x) => (!x ? "" : tc(`${x.name || "?"}，${x.st === "broke" ? `在被破前 ${fmtMinutes(Math.round((x.ms || 0) / 60000))}` : `守住，${fmtMinutes(Math.round((x.ms || 0) / 60000))}`}`, `${x.name || "?"}, ${x.st === "broke" ? `broken after ${fmtMinutes(Math.round((x.ms || 0) / 60000))}` : `kept, ${fmtMinutes(Math.round((x.ms || 0) / 60000))}`}`));
+
+  // ── 2.27.0: watched time per performer ──
+  // During a run (`L.pw`, from newLock: a lock without it records nothing),
+  // the time on screen goes to the performers of the scene (or picture)
+  // playing: for a performer target the target's performers in it, for a
+  // studio or tag target the item's performers, the male ones left out when
+  // Stash has their gender. A scene with two of them counts for both. In ms,
+  // only growing (mergeLock takes the larger per performer). An entry keeps
+  // the PW_KEEP largest in seconds (`pw`, small enough for the 200 entries).
+  const PW_KEEP = 16, PW_STATS_MAX = 400, LB_PERF_ROWS = 10, LB_PERF_MORE = 25;
+  const pwGet = (pw, id) => Math.max(0, Number(pw && pw[String(id)]) || 0);
+  function pwWho(L, perfs) {
+    if (!L || !Array.isArray(perfs)) return [];
+    const ps = perfs.filter((p) => p && p.id !== undefined && p.id !== null);
+    if ((L.kind || "performer") === "performer") {
+      const want = (duoOf(L) ? duoOf(L).map((p) => String(p.id)) : [String(L.tid)]);
+      const got = [...new Set(ps.map((p) => String(p.id)).filter((id) => want.includes(id)))];
+      return got.length ? got : duoOf(L) ? [] : [String(L.tid)];
+    }
+    return [...new Set(ps.filter((p) => String(p.gender || "").toUpperCase() !== "MALE").map((p) => String(p.id)))];
+  }
+  function pwAdd(pw, ids, ms) {
+    if (!(ms > 0) || !ids || !ids.length) return pw;
+    const out = { ...(pw || {}) };
+    for (const id of ids) out[String(id)] = pwGet(out, id) + ms;
+    return out;
+  }
+  function pwMerge(a, b) {
+    const out = { ...(a || {}) };
+    for (const [k, v] of Object.entries(b || {})) out[k] = Math.max(pwGet(out, k), Number(v) || 0);
+    return out;
+  }
+  // The entry's copy: seconds, the PW_KEEP largest
+  function pwSlim(pw) {
+    const rows = Object.entries(pw || {}).map(([k, v]) => [k, Math.round((Number(v) || 0) / 1000)]).filter(([, s]) => s > 0)
+      .sort((a, b) => b[1] - a[1]).slice(0, PW_KEEP);
+    return Object.fromEntries(rows);
+  }
+  // What an entry gives each performer, in seconds: its own record (2.27 on),
+  // else an estimate (`est`): a run on one performer gives them all of its
+  // watched time, a duo or group splits it evenly; studios and tags, nothing
+  function pwOfEntry(e) {
+    if (!isEntry(e)) return { m: {}, est: false };
+    if (e.pw && typeof e.pw === "object") {
+      const m = {};
+      for (const [k, v] of Object.entries(e.pw)) if (Number(v) > 0) m[k] = Math.round(Number(v));
+      return { m, est: false };
+    }
+    const s = Math.round((e.watchedMs || 0) / 1000);
+    if (!(s > 0) || (e.kind && e.kind !== "performer")) return { m: {}, est: false };
+    const duo = duoOf(e);
+    if (duo) { const each = Math.round(s / duo.length), m = {}; for (const p of duo) m[String(p.id)] = (m[String(p.id)] || 0) + each; return { m, est: true }; }
+    const id = e.pid || e.tid;
+    return id ? { m: { [String(id)]: s }, est: true } : { m: {}, est: false };
+  }
+  // The lifetime totals' part (`stats.pw`): { m: { id: seconds }, c: entries
+  // counted, e: how many of them estimated }, the PW_STATS_MAX largest kept
+  function pwStatsAdd(pw, e, sign) {
+    const cur = pw && typeof pw === "object" ? pw : { m: {}, c: 0, e: 0 };
+    if (!isEntry(e)) return cur;
+    const r = pwOfEntry(e), m = { ...(cur.m || {}) }, k = sign < 0 ? -1 : 1;
+    for (const [id, s] of Object.entries(r.m)) { const v = (Number(m[id]) || 0) + k * s; if (v > 0) m[id] = v; else delete m[id]; }
+    const keys = Object.keys(m);
+    if (keys.length > PW_STATS_MAX) for (const id of keys.sort((a, b) => m[b] - m[a]).slice(PW_STATS_MAX)) delete m[id];
+    return { m, c: Math.max(0, (cur.c || 0) + k), e: Math.max(0, (cur.e || 0) + (r.est ? k : 0)) };
+  }
+  // The leaderboard's ranking: [{ id, s }], most watched first
+  const perfRanking = (stats) => Object.entries((stats && stats.pw && stats.pw.m) || {}).map(([id, s]) => ({ id, s: Number(s) || 0 }))
+    .filter((r) => r.s > 0 && /^\d+$/.test(r.id)).sort((a, b) => b.s - a.s || Number(a.id) - Number(b.id));
   // 2.17: a tag card keeps its tag's picture (`image_path`, its preview on
   // the card), when the tag has a real one (tagPic)
   const cardPic = (t) => (tagPic(t && t.image_path) ? { image_path: tagPic(t.image_path) } : {});
@@ -1057,10 +1262,11 @@
     const events = [];
     let h = hand;
     const edit = () => { if (h === hand) h = { ...hand, holds: hand.holds.slice(), tags: hand.tags.slice() }; return h; };
-    if (h.hold && HOLD_KINDS[h.hold.k] && w - h.hold.from >= HOLD_KINDS[h.hold.k].ms) {
+    if (h.hold && HOLD_KINDS[h.hold.k] && holdSpent(h.hold, w) >= HOLD_KINDS[h.hold.k].ms) {
       const k = h.hold.k;
       edit(); h.hold = null; h.passed += 1;
       if (HOLD_KINDS[k].stay) { h.stayPts = (h.stayPts || 0) + HOLD_KINDS[k].pts; h.stayKept = (h.stayKept || 0) + 1; }
+      else if (HOLD_KINDS[k].pics) { h.picPts = (h.picPts || 0) + HOLD_KINDS[k].pts; h.picKept = (h.picKept || 0) + 1; }   // 2.26.0
       else h.pts += HOLD_KINDS[k].pts;
       events.push({ t: "passed", k });
     }
@@ -1071,7 +1277,7 @@
       edit();
       // a full hand lets the deal go by (the next comes 10 minutes later)
       if (h.holds.length < HOLD_HAND) {
-        const k = dealKind(h.seed, due, !!(o && o.stays));
+        const k = dealKind(h.seed, due, !!(o && o.stays), !!h.pk);
         h.holds.push({ k, until: due * HOLD_EVERY_MS + HOLD_LASTS_MS }); events.push({ t: "dealt", k });
       }
       h.dealt = due;
@@ -1085,6 +1291,8 @@
       h.sdealt = sdue;
     }
     if (o && o.race && !h.race) { edit(); h.race = { st: "held" }; events.push({ t: "dealt", k: "race" }); }
+    // 2.27.0: Lock in, once a run (lockInDue)
+    if (o && o.lockin && !h.lk) { edit(); h.lk = { st: "held" }; events.push({ t: "dealt", k: "lockin" }); }
     if (h.race && h.race.st === "on" && o && o.now > h.race.until + RACE_GRACE_MS) {
       edit(); h.race = { ...h.race, st: "lost" }; h.racePts = (h.racePts || 0) - RACE_LOSE;
       events.push({ t: "race-lost", k: "race" });
@@ -1106,6 +1314,7 @@
     if (!hand || !hand.hold) return hand;
     const k = HOLD_KINDS[hand.hold.k], out = { ...hand, hold: null, failed: (hand.failed || 0) + 1, rev: (hand.rev || 0) + 1 };
     if (k && k.stay) out.stayBroke = (hand.stayBroke || 0) + 1;
+    if (k && k.pics) out.picLost = (hand.picLost || 0) + 1;   // 2.26.0
     return out;
   }
   // 2.20: skip cards (user: "every 10 minutes you should give 1 skip card
@@ -1168,7 +1377,7 @@
   const tagReadyIn = (t, w) => Math.max(0, (t && t.at ? t.at : 0) - w);
   // Ready cards, for the bar's badge.
   const SOON_MS = 2 * 60000;
-  const minTxt = (ms) => `${Math.max(1, Math.ceil(ms / 60000))} min`;
+  const minTxt = (ms) => tc(`${Math.max(1, Math.ceil(ms / 60000))} 分钟`, `${Math.max(1, Math.ceil(ms / 60000))} min`);
   // 2.21 (user: "I dont notice them at all ... wider with slots so I know at a glance my inventory"): the hand as
   // slots, kind by kind, with the room left in it: `on` a card, `live` one running, `wait` a tag card recharging, none
   // of them an empty slot. `f` is the thin line under a slot, 0 to 1: time left, or how far recharged. `o.skips`: this
@@ -1178,9 +1387,13 @@
     const out = [], clamp = (x) => Math.max(0, Math.min(1, x)), r = hand.race;
     if (r && r.st === "held") out.push({ g: "race", on: true, tip: tc("竞赛牌：可以打出", "Race card: ready to play") });
     if (r && r.st === "on") out.push({ g: "race", on: true, live: true, f: clamp((r.until - ((o && o.now) || 0)) / RACE_MS), tip: tc("竞赛进行中：现在完成", "Race: running, finish now") });
+    // 2.27.0
+    const lk = hand.lk;
+    if (lk && lk.st === "held") out.push({ g: "lockin", on: true, tip: tc("锁定牌：可以打出", "Lock in card: ready to play") });
+    if (lk && lk.st === "on") out.push({ g: "lockin", on: true, live: true, tip: tc(`已锁定在 ${lk.name || "?"}`, `Locked in on ${lk.name || "?"}`) });
     if (hand.hold && HOLD_KINDS[hand.hold.k]) {
       const k = HOLD_KINDS[hand.hold.k];
-      out.push({ g: "hold", k: hand.hold.k, on: true, live: true, f: clamp(1 - (w - hand.hold.from) / k.ms), tip: tc(`${k.name}：坚持中`, `${k.name}: holding`) });
+      out.push({ g: "hold", k: hand.hold.k, on: true, live: true, f: clamp(1 - holdSpent(hand.hold, w) / k.ms), tip: tc(`${k.name}：坚持中`, `${k.name}: holding`) });
     }
     for (const c of hand.holds) {
       const k = HOLD_KINDS[c.k] || HOLD_KINDS.eyes, left = c.until - w;
@@ -1198,7 +1411,7 @@
   // The slots in words, for the button's name and tooltip: "1 running, 2 hold cards, 1 skip card, 2 tag cards ready"
   function handWords(slots) {
     const n = (f) => slots.filter(f).length, on = (g) => n((s) => s.g === g && s.on && !s.live);
-    const parts = [n((s) => s.live) ? tc(`${n((s) => s.live)} 张进行中`, `${n((s) => s.live)} running`) : "", on("race") ? tc("竞赛牌", "the Race card") : "", on("hold") ? tc(`${on("hold")} 张坚持牌`, plural(on("hold"), "hold card", "hold cards")) : "",
+    const parts = [n((s) => s.live) ? tc(`${n((s) => s.live)} 张进行中`, `${n((s) => s.live)} running`) : "", on("race") ? tc("竞赛牌", "the Race card") : "", on("lockin") ? tc("锁定牌", "the Lock in card") : "", on("hold")? tc(`${on("hold")} 张坚持牌`, plural(on("hold"), "hold card", "hold cards")) : "",
       on("skip") ? tc(`${on("skip")} 张跳过牌`, plural(on("skip"), "skip card", "skip cards")) : "", on("tag") ? tc(`${on("tag")} 张标签牌可用`, `${plural(on("tag"), "tag card", "tag cards")} ready`) : ""].filter(Boolean);
     return parts.length ? parts.join(tc("、", ", ")) : tc("还没有牌", "No cards yet");
   }
@@ -1206,7 +1419,8 @@
   function slotsFresh(slots, until, now) {
     return slots.map((s, i) => ({ ...s, fresh: !!s.on && !s.live && (until[s.g] || 0) > now && !slots.slice(i + 1).some((x) => x.g === s.g && x.on && !x.live) }));
   }
-  const handReady = (hand, w) => (hand ? hand.holds.length + hand.tags.filter((t) => !tagReadyIn(t, w)).length + (hand.race && hand.race.st === "held" ? 1 : 0) : 0);
+  const handReady = (hand, w) => (hand ? hand.holds.length + hand.tags.filter((t) => !tagReadyIn(t, w)).length + (hand.race && hand.race.st === "held" ? 1 : 0) +
+    (hand.lk && hand.lk.st === "held" ? 1 : 0) : 0);
 
   // ── 2.17: the new layout's pure parts (setup steps, run page, bar) ──
   // A tag's picture: Stash adds `default=true` to the URL of the placeholder
@@ -1320,7 +1534,7 @@
       else { p.big = fmtClock(ot); p.of = tc(`加时（+${pts}）`, `overtime (+${pts})`); p.short = `+${pts}`; p.pct = cap ? Math.min(100, Math.round((ot / cap) * 100)) : 0; }
     } else if (g.hidden) {
       const need = edgeNeedMs(L);
-      p.cap = tc("已观看（未结束）", "Watched without finishing"); p.big = fmtClock(w); p.of = tc("已观看", "watched"); p.short = tc("已观看", "watched"); p.left = edgeHint(need ? w / need : 0);
+      p.cap = tc("已观看（未结束）", "Watched without finishing"); p.big = fmtClock(w); p.of = tc("已观看", "watched"); p.short = tc("已观看", "watched"); p.left = edgeHint(edgeFrac(L));
     } else {
       const need = edgeNeedMs(L), d = Math.min(need, w);
       p.cap = tc("已观看（未结束）", "Watched without finishing"); p.big = fmtClock(d); p.of = tc(`共 ${fmtClock(need)} 已观看`, `of ${fmtClock(need)} watched`); p.short = tc(`共 ${fmtClock(need)}`, `of ${fmtClock(need)}`);
@@ -1358,7 +1572,7 @@
     if (g.type === "edge" && !L.over) { need = edgeNeedMs(L); done = Math.min(w, need); }
     else if (g.type === "timer") { need = g.ms || 0; done = g.by === "watched" ? w : now - L.startedAt; }
     if (g.type === "edge" && g.hidden) {
-      if (!L.over && need && done / need >= 0.75) add("near", tc("快到了", "Nearly there"));
+      if (!L.over && need && edgeFrac(L) >= 0.75) add("near", tc("快到了", "Nearly there"));
     } else if (need >= 10 * 60000) {
       const left = need - done;
       if (left <= 60000) add("one", tc("还剩 1 分钟", "1 minute to go"));
@@ -1393,7 +1607,10 @@
     if (wayBest > 0 && me > wayBest) out.push(tc(`新纪录 · ${lbGoal(g)}`, `New best · ${LB_WAY[g] || g}`));
     else if (tBest > 0 && me > tBest) out.push(tc(`在 ${entry.name} 的最佳`, `Best on ${entry.name}`));
     const heats = (list || []).filter((e) => e && e.id !== entry.id && e.result === "done" && typeof e.heat === "number").map((e) => e.heat);
-    if (typeof entry.heat === "number" && entry.heat > 0 && heats.length && entry.heat > Math.max(...heats)) out.push(tc(`至今最高热度 · ${entry.heat}`, `Highest heat yet · ${entry.heat}`));
+    if (typeof entry.heat === "number" && entry.heat > 0 && heats.length && entry.heat > Math.max(...heats)) out.push(tc(`最高热度 · ${entry.heat}`, `Highest heat yet · ${entry.heat}`));
+    // 2.26.0: the longest past an Edge target, once there is an earlier one to beat
+    const past = pastOf(entry), pastBefore = longestPast((list || []).filter((e) => e && e.id !== entry.id));
+    if (past >= 60000 && pastBefore > 0 && past > pastBefore) out.push(tc(`最久超目标 · ${fmtMinutes(Math.round(past / 60000))}`, `Longest past target · ${fmtMinutes(Math.round(past / 60000))}`));
     if (stats && stats.streak >= 2) out.push(tc(`连胜 ${stats.streak}`, `Streak ${stats.streak}`));
     return out;
   }
@@ -1523,6 +1740,12 @@
       // 2.3: Slow burn counts watched time from `slowFrom` (moved on by an
       // early O); a lock without `slowBy` (2.2) keeps counting time locked
       slowBy: "watched", slowFrom: 0,
+      // 2.26.0: time past an Edge target scores (`pt`), and the run learns
+      // from what it skips (`lw`, the setup's Learn from skips); a lock from
+      // before has neither and runs as it did
+      pt: 1, ...(setup.learn !== false ? { lw: 1 } : {}),
+      // 2.27.0: watched time per performer (pwWho); a lock without it records none
+      pw: {},
     };
     // 2.3: a target with images and no scenes is an image run: O's on its
     // images count, there is nothing to watch, and no conditions apply
@@ -1548,6 +1771,8 @@
       L.ids = L.mode === "or" ? [...new Set(L.groups.flat())] : L.groups[0];
       L.name = tagsName(L.tags, L.mode);
     }
+    // 2.25.0: the tag (or tags) on the scene's performers, not on the scene
+    if (perfTags(target)) L.tagOn = "performers";
     const duo = duoOf(target);
     if (duo) {
       L.duo = duoMembers(duo);
@@ -1561,6 +1786,20 @@
     return L;
   }
   const tagsName = (tags, mode) => tags.map((t) => t.name).join(mode === "or" ? tc(" 或 ", " or ") : " + ");
+  // 2.25.0 (user: "it would be nice to be able to pick performer tags. so if i select bimbo it
+  // will show scenes of performers with those tags"): a tag run, lock, entry or target with
+  // `tagOn: "performers"` takes a scene (image, gallery) when one of its performers has the
+  // tag, sub-tags counting; without the field (every run before 2.25) the tag is on the scene.
+  // Stash's filters: performer_tags in place of tags. Such a run has no page of its own (the
+  // tag's page lists the scenes that carry it): it lives in Stash's lists, like several tags.
+  const perfTags = (x) => !!x && x.kind === "tag" && x.tagOn === "performers";
+  const listed = (L) => !!(L && (L.groups || perfTags(L)));
+  const tagKey = (x) => (perfTags(x) ? "performer_tags" : "tags");
+  // one tag, or several with OR: any; several with AND: all
+  const tagsMod = (L) => (L.mode === "or" || !(L.tags && L.tags.length > 1) ? "INCLUDES" : "INCLUDES_ALL");
+  // how it is told apart from the same tag on the scenes, after the name or the kind
+  const onWord = (x) => (perfTags(x) ? tc("（按演员）", " · performers") : "");
+  const kindNote = (x) => (perfTags(x) ? tc("标签在演员上", "tag on performers") : x && x.kind && x.kind !== "performer" && KINDS[x.kind] ? kl(x.kind) : "");
   // 2.14: a duo (user: "pick 2 performers ... sometimes I have performers
   // that dont have many scenes"): `duo` [{id, name, image_path}], two
   // performers, and a scene, image or gallery of either belongs (the user's
@@ -1579,7 +1818,8 @@
   const duoNoun = (n) => (n <= 2 ? tc("双人", "duo") : n === 3 ? tc("三人", "trio") : tc(n === 4 ? "四人组" : `${n} 人组`, `group of ${n}`));
   // What makes a target, lock or entry several: its tags (2.2) or its duo
   // (2.14), to spread into a copy of it; {} for one.
-  const setOf = (x) => (duoOf(x) ? { duo: duoMembers(x.duo) } : x && x.tags ? { tags: x.tags, mode: x.mode } : {});
+  const setOf = (x) => ({ ...(duoOf(x) ? { duo: duoMembers(x.duo) } : x && x.tags ? { tags: x.tags, mode: x.mode } : {}),
+                          ...(perfTags(x) ? { tagOn: "performers" } : {}) });   // 2.25.0
   // The ids a route may open: every chosen tag's page.
   const routeIds = (L) => (L.groups ? [...new Set(L.groups.flat())] : (L.ids || []).map(String));
 
@@ -1643,12 +1883,19 @@
       L.slips = (L.slips || 0) + d;
       // 2.2: each slip adds a share of the target, or sets what is left back
       // to all of it (two at once: the second finds it already full)
+      // 2.26.0: "add" adds its fixed minutes; with a grace left (First O
+      // forgiven) an O adds nothing and uses it up (`graced`, only grows, like
+      // slips; a take-back gives it back through back.g). lastSlip.g marks it.
       if (g.slip) {
         for (let i = 0; i < d; i++) {
-          const progress = Math.max(0, (L.watchedMs || 0) - (L.slipMs || 0));
-          L.slipMs = (L.slipMs || 0) + (g.slip === "reset" ? progress : g.slip === "half" ? g.watchMs / 2 : g.watchMs / 3);
+          const forgive = (g.grace || 0) > netGraced(L);
+          const progress = Math.max(0, (L.watchedMs || 0) - netSlipMs(L));
+          const add = forgive ? 0 : g.slip === "reset" ? progress : g.slip === "add" ? (g.addMs || SOFT_ADD_MS) : g.slip === "half" ? g.watchMs / 2 : g.watchMs / 3;
+          if (forgive) L.graced = (L.graced || 0) + 1;
+          L.slipMs = (L.slipMs || 0) + add;
+          if (i === d - 1) L.lastSlip = { n: L.slips, ms: add, ...(forgive ? { g: 1 } : {}) };
         }
-      }
+      } else L.lastSlip = { n: L.slips, ms: 0 };
       return { lock: L, end: null };
     }
     if (g.type === "timer") { L.os = (L.os || 0) + d; return { lock: L, end: null }; }
@@ -1667,8 +1914,63 @@
   // Edge: the watch time still owed grows by the penalty with every slip.
   function edgeNeedMs(lock) {
     const g = lock.goal || {};
-    if (g.slip) return (g.watchMs || 0) + (lock.slipMs || 0);
-    return (g.watchMs || 0) + (lock.slips || 0) * (g.addMs || 0);
+    if (g.slip) return (g.watchMs || 0) + netSlipMs(lock);
+    return (g.watchMs || 0) + netSlips(lock) * (g.addMs || 0);
+  }
+  // 2.25.1 (user: "the O that counted was a mistake"): an O taken back.
+  // slips and slipMs only grow (mergeLock takes the larger of two copies), so
+  // a take-back is counted apart in L.back { n, ms, last }, which only grows
+  // too, and subtracted. last is the slip (its number) taken back, once.
+  const netSlips = (L) => Math.max(0, ((L && L.slips) || 0) - ((L && L.back && L.back.n) || 0));
+  const netSlipMs = (L) => Math.max(0, ((L && L.slipMs) || 0) - ((L && L.back && L.back.ms) || 0));
+  // The last O of an Edge run before its target, if it can be taken back:
+  // { n, ms } (ms what it added). A run from before 2.25.1 has no lastSlip:
+  // its one O can be (what it added is all of slipMs).
+  // 2.26.0: { g: true } when that O was the forgiven one; taking it back
+  // gives the grace back (back.g)
+  function takeBackInfo(L) {
+    if (!L || L.over || !L.goal || L.goal.type !== "edge" || !netSlips(L)) return null;
+    const last = L.lastSlip, done = L.back && L.back.last;
+    if (last && last.n === L.slips) return done === last.n ? null : { n: last.n, ms: last.ms || 0, ...(last.g ? { g: true } : {}) };
+    if (!last && L.slips === 1 && !done) return { n: 1, ms: L.goal.slip ? (L.slipMs || 0) : 0 };
+    return null;
+  }
+  function takeBack(L) {
+    const t = takeBackInfo(L);
+    if (!t) return false;
+    const b = L.back || {};
+    L.back = { n: (b.n || 0) + 1, ms: (b.ms || 0) + t.ms, last: t.n };
+    if (t.g || b.g) L.back.g = (b.g || 0) + (t.g ? 1 : 0);
+    return true;
+  }
+  // 2.26.0: the O's forgiven, less those taken back
+  const netGraced = (L) => Math.max(0, ((L && L.graced) || 0) - ((L && L.back && L.back.g) || 0));
+  // What the last O did, in words, for its toast and the run page; "" when
+  // there is none. A hidden target never gets its length or what is left
+  // (+10 min is fine: that says nothing about the target). `before`: the
+  // lock before the O, to tell how much a share added.
+  function slipNote(L, before) {
+    const g = (L && L.goal) || {}, last = L && L.lastSlip;
+    if (g.type !== "edge" || !last || !(L.slips > ((before && before.slips) || 0))) return "";
+    const left = Math.max(0, edgeNeedMs(L) - (L.watchedMs || 0));
+    const tail = g.hidden ? "" : tc(` · 还剩 ${fmtClock(left)}`, ` · ${fmtClock(left)} to go`);
+    if (last.g) return tc(`首 O 已宽恕：没有加时${tail}`, `First O forgiven: nothing added${tail}`);
+    if (g.slip === "reset") return tc(`一次 O：整个目标再来一遍${tail}`, `An O: the whole target again${tail}`);
+    if (g.slip === "add") return tc(`一次 O：+${Math.round((last.ms || 0) / 60000)} 分钟可看${tail}`, `An O: +${Math.round((last.ms || 0) / 60000)} min to watch${tail}`);
+    return g.hidden ? tc("一次 O：可看时间变多（具体多少保密）", "An O: more to watch (how much stays hidden)") : tc(`一次 O：+${Math.round((edgeNeedMs(L) - edgeNeedMs(before || L)) / 60000)} 分钟可看${tail}`, `An O: ${Math.round((edgeNeedMs(L) - edgeNeedMs(before || L)) / 60000)} min more to watch${tail}`);
+  }
+  // The run page's line: the last O and the grace, while it means something.
+  function slipLine(L) {
+    const g = (L && L.goal) || {};
+    if (g.type !== "edge" || L.over) return "";
+    const out = [];
+    if (g.grace) out.push(netGraced(L) >= g.grace ? tc("首 O 宽恕：已用掉", "First O forgiven: used") : tc("首 O 宽恕：还未用", "First O forgiven: still there"));
+    const last = L.lastSlip, back = L.back && L.back.last === (last && last.n);
+    if (last && last.n === L.slips && !back && netSlips(L)) {
+      out.push(last.g ? tc("上一次 O：已宽恕，没有加时", "last O: forgiven, nothing added") : g.slip === "reset" ? tc("上一次 O：从头开始", "last O: started it over")
+        : g.slip === "add" || !g.hidden ? tc(`上一次 O：+${fmtMinutes(Math.round((last.ms || 0) / 60000))}`, `last O: +${fmtMinutes(Math.round((last.ms || 0) / 60000))}`) : tc("上一次 O：可看时间变多", "last O: more to watch"));
+    }
+    return out.join(" · ");
   }
 
   // Timer and Edge end on time; Finish only on an O (applyO).
@@ -1984,6 +2286,35 @@
   const overtimeScored = (L) => Math.min(overtimeCap(L), overtimeMs(L));
   const overtimeFull = (L) => edgeState(L) === "over" && overtimeMs(L) >= overtimeCap(L);
   const overtimePts = (ms) => Math.round(((ms || 0) / 60000) * 10);
+  // 2.26.0 (the user's history: runs went 10 to 30 minutes past the target
+  // and that time earned nothing: watched before Keep going, or past a full
+  // overtime): time past the target that overtime does not already score
+  // earns PAST_PTS a minute, half of the 10 inside the target (so watching
+  // past a short target never beats holding out for a longer one), up to
+  // PAST_CAP_MS (the 10 to 30 minutes seen; a tab left playing cannot pile
+  // up points). Only for runs started on 2.26.0 or later (`pt` on the lock,
+  // `pastMs` on the entry): an older entry is never rescored.
+  const PAST_PTS = 5, PAST_CAP_MS = 30 * 60000;
+  // Watched past the target: from the target reached on (Edge, `over`)
+  function pastMs(L) {
+    if (!L || !L.over || !L.goal || L.goal.type !== "edge") return 0;
+    return Math.max(0, (L.watchedMs || 0) - edgeNeedMs(L));
+  }
+  // An entry's time past the target that scores (overtime's scored part out)
+  const pastExtra = (e) => Math.max(0, (Number(e && e.pastMs) || 0) - Math.min((e && e.overtimeMs) || 0, (e && e.goal && e.goal.watchMs) || 0));
+  const pastPts = (e) => Math.round((Math.min(PAST_CAP_MS, pastExtra(e)) / 60000) * PAST_PTS);
+  // How far past the target an entry went, for History and its record: the
+  // stored pastMs, else (runs before 2.26) worked out from what it kept:
+  // watched less the target with its slips, or its overtime if longer
+  function pastOf(e) {
+    if (!e || e.result !== "done" || goalType(e) !== "edge") return 0;
+    if (typeof e.pastMs === "number") return Math.max(0, e.pastMs);
+    if (!e.reachedAt && !(e.overtimeMs > 0)) return 0;
+    const g = e.goal, share = g.slip === "half" ? 1 / 2 : g.slip === "third" ? 1 / 3 : 0;
+    const need = edgeNeedMs({ goal: g, slips: e.slips || 0, slipMs: e.slipMs !== undefined ? e.slipMs : (e.slips || 0) * share * (g.watchMs || 0) });
+    return Math.max(e.overtimeMs || 0, (e.watchedMs || 0) - need);
+  }
+  const longestPast = (list) => (list || []).reduce((a, e) => Math.max(a, pastOf(e)), 0);
   const reachEdge = (L, now) => (L.over ? L : { ...L, over: { at: now, on: 0, w0: 0 } });
   const startOvertime = (L, now) => (edgeState(L) === "reached" ? { ...L, over: { ...L.over, on: now, w0: L.watchedMs || 0 } } : L);
   // How a run that is out ends: never given up (Give up there, or on a
@@ -2033,7 +2364,8 @@
     if (!remote || !local) return local || remote || null;
     const base = (local.rev || 0) >= (remote.rev || 0) ? local : remote, other = base === local ? remote : local;
     const h = { ...base };
-    for (const k of ["pts", "stayPts", "passed", "failed", "dealt", "sdealt", "skUsed", "stayKept", "stayBroke"]) {
+    // 2.26.0: the Pictures cards' points and counts, and `pk` (they can be dealt)
+    for (const k of ["pts", "stayPts", "passed", "failed", "dealt", "sdealt", "skUsed", "stayKept", "stayBroke", "picPts", "picKept", "picLost", "pk"]) {
       if (base[k] != null || other[k] != null) h[k] = Math.max(Number(base[k]) || 0, Number(other[k]) || 0);
     }
     if (base.race || other.race) {
@@ -2041,6 +2373,18 @@
       const from = ob > oa ? other : base;
       h.race = from.race;
       if (from.racePts != null) h.racePts = from.racePts; else delete h.racePts;
+    }
+    // 2.27.0: the Lock in by its state (held < on < broke); the same state
+    // keeps the base's, with the larger earned time of a break and a `free`
+    // scene either copy has
+    if (base.lk || other.lk) {
+      const oa = base.lk ? LOCKIN_ORDER[base.lk.st] || 0 : 0, ob = other.lk ? LOCKIN_ORDER[other.lk.st] || 0 : 0;
+      let lk = ob > oa ? other.lk : base.lk;
+      if (oa === ob && base.lk && other.lk) {
+        if (lk.st === "broke") lk = { ...lk, ms: Math.max(Number(base.lk.ms) || 0, Number(other.lk.ms) || 0) };
+        if (!lk.free && other.lk.free && other.lk.id === lk.id) lk = { ...lk, free: other.lk.free };
+      }
+      h.lk = lk;
     }
     if (base.sk != null || other.sk != null) {
       const used = Math.max(0, (other.skUsed || 0) - (base.skUsed || 0)), dealt = Math.max(0, (other.sdealt || 0) - (base.sdealt || 0));
@@ -2074,6 +2418,12 @@
         if (i >= 0) h.holds = base.holds.filter((_, j) => j !== i);
       }
     }
+    // 2.26.0: a Pictures card's slideshow time only grows (the device showing it adds it)
+    const same = (x) => x && h.hold && x.k === h.hold.k && x.from === h.hold.from;
+    if (h.hold && (same(base.hold) || same(other.hold))) {
+      const pms = Math.max((same(base.hold) && base.hold.pms) || 0, (same(other.hold) && other.hold.pms) || 0);
+      if (pms) h.hold = { ...h.hold, pms };
+    }
     if (JSON.stringify(h) !== JSON.stringify(base)) h.rev = Math.max(local.rev || 0, remote.rev || 0) + 1;
     return h;
   }
@@ -2087,6 +2437,17 @@
     if (seen(remote) > seen(local)) { out.baseO = remote.baseO; if (remote.oBase) out.oBase = remote.oBase; }
     for (const k of ["os", "early", "slips", "slipMs", "watchedMs", "slowFrom", "settings"]) out[k] = Math.max(remote[k] || 0, local[k] || 0);
     if (!out.settings) delete out.settings;
+    // 2.25.1: O's taken back only grow; the last slip is the one of the copy that saw more
+    if (remote.back || local.back) {
+      const a = remote.back || {}, b = local.back || {};
+      out.back = { n: Math.max(a.n || 0, b.n || 0), ms: Math.max(a.ms || 0, b.ms || 0), last: Math.max(a.last || 0, b.last || 0) };
+      if (a.g || b.g) out.back.g = Math.max(a.g || 0, b.g || 0);   // 2.26.0: graces given back
+    }
+    // 2.26.0: the O's forgiven only grow
+    if (remote.graced || local.graced) out.graced = Math.max(remote.graced || 0, local.graced || 0);
+    // 2.27.0: watched time per performer only grows, per performer
+    if (remote.pw || local.pw) out.pw = pwMerge(remote.pw, local.pw);
+    if ((remote.slips || 0) > (local.slips || 0)) { if (remote.lastSlip) out.lastSlip = remote.lastSlip; else delete out.lastSlip; }
     // 2.13.0: Eyes on screen's look-aways only grow (the playing device counts them)
     if (remote.away || local.away) out.away = { n: Math.max((remote.away && remote.away.n) || 0, (local.away && local.away.n) || 0),
                                                 ms: Math.max(awayMsOf(remote), awayMsOf(local)) };
@@ -2158,9 +2519,11 @@
       const has = (g) => tags.some((t) => g.includes(String(t.id)));
       return lock.mode === "or" ? lock.groups.some(has) : lock.groups.every(has);
     };
+    // 2.25.0: on the performers: every tag of every performer in it (as Stash's performer_tags)
+    const tagsOf = (d) => (perfTags(lock) ? ((d && d.performers) || []).flatMap((p) => (p && p.tags) || []) : (d && d.tags) || []);
     const own = (d) => (lock.kind === "studio" ? !!(d && d.studio) && want.includes(String(d.studio.id))
-      : lock.kind === "tag" ? (lock.groups && lock.groups.length > 1 ? groupsOk((d && d.tags) || [])
-                                                                     : ((d && d.tags) || []).some((t) => want.includes(String(t.id))))
+      : lock.kind === "tag" ? (lock.groups && lock.groups.length > 1 ? groupsOk(tagsOf(d))
+                                                                     : tagsOf(d).some((t) => want.includes(String(t.id))))
       : ((d && d.performers) || []).some((p) => want.includes(String(p.id))));
     // An image counts through its gallery too: a studio's gallery often has
     // the studio on the gallery only, not on each image (user report).
@@ -2225,7 +2588,12 @@
                              ...(e.stayPts ? { stayPts: e.stayPts } : {}), ...(e.stays ? { stays: e.stays } : {}),
                              ...(e.racePts ? { racePts: e.racePts } : {}), ...(e.race ? { race: e.race } : {}),
                              // 2.20: skip cards kept (scored) and played
-                             ...(e.skipCards ? { skipCards: e.skipCards } : {}) });
+                             ...(e.skipCards ? { skipCards: e.skipCards } : {}),
+                             // 2.26.0: time past the target and Pictures cards, for rescoring
+                             ...(e.pastMs > 0 ? { pastMs: e.pastMs } : {}), ...(e.picPts > 0 ? { picPts: e.picPts } : {}),
+                             ...(e.picCards ? { picCards: e.picCards } : {}), ...(e.forgiven ? { forgiven: e.forgiven } : {}),
+                             // 2.27.0: the Lock in, for rescoring and the breakdown
+                             ...(e.lockIn ? { lockIn: e.lockIn } : {}), ...(e.lockPts > 0 ? { lockPts: e.lockPts } : {}) });
   function addTop(top, e) {
     if (!e || e.result !== "done" || !(e.score > 0)) return (top || []).slice();
     // 20 of each way out: Finish runs filling the list emptied the Edge and
@@ -2274,7 +2642,8 @@
   // tags get a prefix, so the same number never mixes two kinds.
   // 2.14: a duo is its own target, `p:3&12` (ids in order, so A & B and
   // B & A are the same pair), apart from each performer's own runs.
-  const perfKey = (e) => (e.kind && e.kind !== "performer" ? `${e.kind.charAt(0)}:${e.tags && e.tags.length > 1 ? e.tags.map((t) => t.id).join(e.mode === "or" ? "|" : "+") : e.tid}`
+  // 2.25.0: a run on the performers' tags `t:5@p`, apart from the same tag on the scenes
+  const perfKey = (e) => (e.kind && e.kind !== "performer" ? `${e.kind.charAt(0)}:${e.tags && e.tags.length > 1 ? e.tags.map((t) => t.id).join(e.mode === "or" ? "|" : "+") : e.tid}${perfTags(e) ? "@p" : ""}`
                           : duoOf(e) ? `p:${duoIds(e.duo).join("&")}`
                           : e.pid || e.tid ? String(e.pid || e.tid) : `name:${e.name || "?"}`);
   const duoIds = (duo) => duo.map((p) => String(p.id)).sort((a, b) => Number(a) - Number(b) || (a < b ? -1 : a > b ? 1 : 0));
@@ -2306,6 +2675,9 @@
     }
     const k = perfKey(e);
     st.perf[k] = { name: e.name || (st.perf[k] && st.perf[k].name) || "?", n: ((st.perf[k] && st.perf[k].n) || 0) + 1 };
+    // 2.27.0: the watched time per performer (only once the totals have it:
+    // completeStats builds it from the list first)
+    if (st.pw) st.pw = pwStatsAdd(st.pw, e, 1);
     return st;
   }
 
@@ -2322,8 +2694,14 @@
     if (!st.wins) { const f = statsFromHistory(list); st = { ...st, wins: f.wins, longestEdgeMs: f.longestEdgeMs }; }
     if (!Array.isArray(st.top)) st = { ...st, top: topFrom(list) };
     if (typeof st.bestHeat !== "number") st = { ...st, bestHeat: statsFromHistory(list).bestHeat || 0 };
+    // 2.27.0: the watched time per performer, from the list the first time;
+    // again when the list holds every run counted and the part counted a
+    // different number (a tab still on 2.26 ended a run without adding it)
+    const n = (st.done || 0) + (st.gaveUp || 0), whole = (list || []).filter(isEntry).length === n;
+    if (!st.pw || typeof st.pw !== "object" || (whole && st.pw.c !== n)) st = { ...st, pw: pwFromHistory(list) };
     return st;
   }
+  const pwFromHistory = (list) => (list || []).reduce((pw, e) => pwStatsAdd(pw, e, 1), { m: {}, c: 0, e: 0 });
 
   // Current and best run of completions, from a list in time order.
   function streaksOf(list) {
@@ -2358,6 +2736,7 @@
       const n = (st.perf[k].n || 0) - 1;
       if (n > 0) st.perf[k] = { ...st.perf[k], n }; else delete st.perf[k];
     }
+    if (st.pw) st.pw = pwStatsAdd(st.pw, e, -1);   // 2.27.0
     const s = streaksOf(rest);
     st.streak = s.streak;
     st.bestStreak = complete ? s.best : Math.max(s.best, st.bestStreak);
@@ -2460,19 +2839,24 @@
   // counts Stay cards too, so theirs are taken off); "" with none played.
   function cardsText(e) {
     if (!e) return "";
-    const st = e.stays || {}, h = e.holds || {}, out = [];
-    const kept = Math.max(0, (h.passed || 0) - (st.kept || 0)), broke = Math.max(0, (h.failed || 0) - (st.broke || 0));
-    if (kept || broke) out.push(tc(`${kept} / ${kept + broke} 张坚持牌守住`, `${kept} of ${plural(kept + broke, "hold", "holds")} kept`));
-    if (st.kept) out.push(tc(`${st.kept} 张停留牌守住`, `${st.kept > 1 ? `${st.kept} Stay cards` : "a Stay card"} kept`));
-    if (st.broke) out.push(tc(`${st.broke} 张停留牌破了`, `${st.broke > 1 ? `${st.broke} Stay cards` : "a Stay card"} broken`));
+    const st = e.stays || {}, h = e.holds || {}, pc = e.picCards || {}, out = [];
+    const kept = Math.max(0, (h.passed || 0) - (st.kept || 0) - (pc.kept || 0)), broke = Math.max(0, (h.failed || 0) - (st.broke || 0) - (pc.lost || 0));
+    if (kept || broke) out.push(tc(`守住 ${kept}／${plural(kept + broke, "次", "次")}坚持`, `${kept} of ${plural(kept + broke, "hold", "holds")} kept`));
+    if (st.kept) out.push(st.kept > 1 ? tc(`留了 ${st.kept} 张坚持牌`, `${st.kept} Stay cards kept`) : tc("留了一张坚持牌", "a Stay card kept"));
+    if (st.broke) out.push(st.broke > 1 ? tc(`断了 ${st.broke} 张坚持牌`, `${st.broke} Stay cards broken`) : tc("断了一张坚持牌", "a Stay card broken"));
+    // 2.26.0
+    if (pc.kept) out.push(pc.kept > 1 ? tc(`留了 ${pc.kept} 张图片牌`, `${pc.kept} Pictures cards kept`) : tc("留了一张图片牌", "a Pictures card kept"));
+    if (pc.lost) out.push(pc.lost > 1 ? tc(`丢掉 ${pc.lost} 张图片牌`, `${pc.lost} Pictures cards lost`) : tc("丢了一张图片牌", "a Pictures card lost"));
     const marks = Math.round((e.tagPts || 0) / TAG_MATCH_PTS);
-    if (e.tagPlays) out.push(tc(`${e.tagPlays} 张标签牌${marks ? `（${marks} 个标记）` : ""}`, `${plural(e.tagPlays, "tag card", "tag cards")}${marks ? ` (${plural(marks, "marker", "markers")})` : ""}`));
-    if (e.race) out.push(e.race.st === "won" ? tc(`在 ${fmtClock(e.race.ms || 0)} 内赢得竞赛`, `won the Race in ${fmtClock(e.race.ms || 0)}`) : tc("竞赛失败", "lost the Race"));
+    if (e.tagPlays) out.push(`${plural(e.tagPlays, "tag card", "tag cards")}${marks ? tc(`（${marks} 个标记）`, ` (${plural(marks, "marker", "markers")})`) : ""}`);
+    if (e.race) out.push(e.race.st === "won" ? tc(`竞赛 ${fmtClock(e.race.ms || 0)} 内完成`, `won the Race in ${fmtClock(e.race.ms || 0)}`) : tc("竞赛失败", "lost the Race"));
+    // 2.27.0
+    if (e.lockIn) out.push(tc(`锁定在 ${lockInText(e.lockIn)}`, `locked in on ${lockInText(e.lockIn)}`));
     // 2.20
     const sk = e.skipCards || {};
     if (sk.used) out.push(tc(`${sk.used} 张跳过牌已用`, `${plural(sk.used, "skip card", "skip cards")} used`));
     if (sk.kept) out.push(tc(`${sk.kept} 张跳过牌留着`, `${plural(sk.kept, "skip card", "skip cards")} kept`));
-    return out.length ? tc(`牌：${out.join(", ")}`, `cards: ${out.join(", ")}`) : "";
+    return out.length ? tc(`牌：${out.join("、")}`, `cards: ${out.join(", ")}`) : "";
   }
   // The small print under an entry's name: what happened along the way.
   function entryDetail(e) {
@@ -2482,17 +2866,28 @@
     if (g === "edge" && e.slips) {
       const gl = e.goal, share = gl.slip === "half" ? 1 / 2 : gl.slip === "third" ? 1 / 3 : 0;
       const add = e.slipMs !== undefined ? e.slipMs : gl.slip ? e.slips * share * (gl.watchMs || 0) : e.slips * (gl.addMs || 0);
-      out.push(tc(gl.slip === "reset" ? `${e.slips} 次失误，重新计时` : `${e.slips} 次失误，+${fmtMinutes(Math.round(add / 60000))}`, gl.slip === "reset" ? `${plural(e.slips, "slip", "slips")}, started over` : `${plural(e.slips, "slip", "slips")}, +${fmtMinutes(Math.round(add / 60000))}`));
+      // 2.26.0: the forgiven ones said (they added nothing)
+      const fg = Math.min(e.slips, e.forgiven || 0);
+      out.push(fg >= e.slips ? tc(`${plural(e.slips, "slip", "slips")}，已宽恕`, `${plural(e.slips, "slip", "slips")}, forgiven`)
+        : (gl.slip === "reset" ? tc(`${plural(e.slips, "slip", "slips")}，从头开始`, `${plural(e.slips, "slip", "slips")}, started over`) : tc(`${plural(e.slips, "slip", "slips")}，+${fmtMinutes(Math.round(add / 60000))}`, `${plural(e.slips, "slip", "slips")}, +${fmtMinutes(Math.round(add / 60000))}`)) +
+          (fg ? tc(`，其中 ${fg} 次宽恕`, `, ${fg} forgiven`) : ""));
     }
     if (e.loops) out.push(tc(`${plural(e.loops + 1, "play", "plays")}同一个场景`, `${plural(e.loops + 1, "play", "plays")} of one scene`));
     if (g === "timer" && e.os) out.push(tc(`过程中 ${plural(e.os, "O", "O's")}`, `${plural(e.os, "O", "O's")} along the way`));
     if (g === "edge" && e.overtimeMs > 0) out.push(overtimeText(e));
-    if (e.early) out.push(tc(`过早 ${plural(e.early, "O", "O's")}`, `${plural(e.early, "O", "O's")} too early`));
-    if (e.skipsUsed) out.push(tc(`已用 ${plural(e.skipsUsed, "skip", "skips")}`, `${plural(e.skipsUsed, "skip", "skips")} used`));
+    // 2.26.0: the time past the target that overtime does not say (all of it
+    // for a run that never pressed Keep going), with its points on a 2.26 run
+    // (an older entry with overtime keeps its line as it was)
+    const past = pastOf(e), pm = (ms) => fmtMinutes(Math.round(ms / 60000));
+    if (g === "edge" && typeof e.pastMs === "number" && pastExtra(e) >= 60000) {
+      out.push(e.overtimeMs > 0 ? tc(`超出目标 ${pm(past)}，其中 ${pm(pastExtra(e))} 在加时之外（+${pastPts(e)}）`, `${pm(past)} past the target, ${pm(pastExtra(e))} of it beyond overtime (+${pastPts(e)})`) : tc(`超出目标 ${pm(past)}（+${pastPts(e)}）`, `${pm(past)} past the target (+${pastPts(e)})`));
+    } else if (g === "edge" && typeof e.pastMs !== "number" && !(e.overtimeMs > 0) && past >= 60000) out.push(tc(`超出目标 ${pm(past)}`, `${pm(past)} past the target`));
+    if (e.early) out.push(tc(`提前 O ${plural(e.early, "次", "次")}`, `${plural(e.early, "O", "O's")} too early`));
+    if (e.skipsUsed) out.push(tc(`跳过 ${plural(e.skipsUsed, "次", "次")}`, `${plural(e.skipsUsed, "skip", "skips")} used`));
     if (e.rules && e.rules.fresh) out.push(tc("仅未看过", "unwatched only"));
     // 2.12
     if (e.toy) out.push(toyText(e));
-    if (e.away) out.push(awayMsOf(e) ? awayText(e).replace(/^Away/, "away") : tc("盯着画面：干净", "eyes on screen: clean"));   // 2.13.0
+    if (e.away) out.push(awayMsOf(e) ? tc(awayText(e), awayText(e).replace(/^Away/, "away")) : tc("盯着画面：干净", "eyes on screen: clean"));   // 2.13.0
     const cards = cardsText(e);   // 2.19.1
     if (cards) out.push(cards);
     if (e.settings > 0) out.push(e.settings > 1 ? tc(`访问设置 ${e.settings} 次`, `visited Settings ${e.settings} times`) : tc("访问过设置", "visited Settings"));
@@ -2503,10 +2898,11 @@
   function entryFromLock(L, result, now) {
     const e = { id: L.id, v: 3, kind: L.kind, tid: L.tid, name: L.name, image: L.image || "", how: L.how,
                 result, ms: Math.max(0, now - L.startedAt), at: L.startedAt, goal: L.goal, rules: L.rules,
-                difficulty: L.difficulty, heat: L.heat, conds: L.conds, os: L.os || 0, early: L.early || 0, slips: L.slips || 0,
+                difficulty: L.difficulty, heat: L.heat, conds: L.conds, os: L.os || 0, early: L.early || 0, slips: netSlips(L),
                 watchedMs: Math.round(L.watchedMs || 0), skipsUsed: skipsUsed(L) };
     if (L.kind === "performer") e.pid = L.tid;
     if (L.tags) { e.tags = L.tags; e.mode = L.mode; }
+    if (perfTags(L)) e.tagOn = "performers";
     if (duoOf(L)) e.duo = duoMembers(L.duo);
     // 2.16: hold cards passed and broken; the tag cards chosen in the setup
     if (L.hand && L.hand.pts) e.holdPts = L.hand.pts;
@@ -2525,7 +2921,23 @@
     if (L.hand && (L.hand.sk || L.hand.skUsed)) e.skipCards = { kept: L.hand.sk || 0, used: L.hand.skUsed || 0 };
     if (L.cardSet) e.cardSet = L.cardSet;
     if (L.media) e.media = L.media;
-    if (L.slipMs) e.slipMs = Math.round(L.slipMs);
+    if (netSlipMs(L)) e.slipMs = Math.round(netSlipMs(L));
+    if (L.back && L.back.n) e.tookBack = L.back.n;
+    // 2.26.0: O's forgiven (First O forgiven), the time past the target (a run
+    // started on 2.26.0, `pt`), the Pictures cards kept and lost
+    if (netGraced(L)) e.forgiven = netGraced(L);
+    if (L.pt && pastMs(L) > 0) e.pastMs = Math.round(pastMs(L));
+    if (L.hand && L.hand.picPts) e.picPts = L.hand.picPts;
+    if (L.hand && (L.hand.picKept || L.hand.picLost)) e.picCards = { kept: L.hand.picKept || 0, lost: L.hand.picLost || 0 };
+    // 2.27.0: who was locked in, kept or broken, the time on them since and
+    // its points; the watched time per performer (a lock that records it)
+    const lk = L.hand && L.hand.lk;
+    if (lk && lk.id && (lk.st === "on" || lk.st === "broke")) {
+      const ms = Math.round(lockInMs(L)), kept = lk.st === "on";
+      e.lockIn = { id: String(lk.id), name: lk.name || "?", st: kept ? "kept" : "broke", ms };
+      e.lockPts = lockInPts(ms, kept);
+    }
+    if (L.pw && typeof L.pw === "object") e.pw = pwSlim(L.pw);
     if (L.one && L.one.loops) e.loops = L.one.loops;
     // 2.6: where the target was reached, the overtime watched, the moments
     if (L.over && L.over.at) e.reachedAt = L.over.at;
@@ -2636,7 +3048,8 @@
     const t = target ? { kind: target.kind, id: String(target.id), name: target.name, image_path: target.image_path || "",
                          scene_count: target.scene_count, image_count: target.image_count,
                          ...(target.tags ? { tags: target.tags.map((x) => ({ id: String(x.id), name: x.name })), mode: target.mode } : {}),
-                         ...(duoOf(target) ? { duo: duoMembers(target.duo) } : {}) } : null;
+                         ...(duoOf(target) ? { duo: duoMembers(target.duo) } : {}),
+                         ...(perfTags(target) ? { tagOn: "performers" } : {}) } : null;
     return { id: `p${now.toString(36)}`, name: String(name).trim().slice(0, 40), at: now, setup: normaliseSetup(setup),
              target: t, src: !t && src ? { type: src.type, ...(src.type === "filter" ? { id: String(src.id), name: src.name } : {}),
                                            ...(src.type === "rec" ? { chip: recChipOk(src.chip) } : {}) } : null };
@@ -2679,8 +3092,10 @@
     const r = bad ? { list, top: full.top, changed: false } : rescore(list, full.top);
     // 2.9: the pictures earlier runs counted (`pics`), as stored and as a Set
     const pc = parsePics(mine.pics);
+    // 2.26.0: what was skipped and stayed on (`learn`)
+    const ln = parseLearn(mine.learn);
     return { list: r.list, stats: r.changed ? { ...full, top: r.top } : full, active: parseActive(mine.active), bad, presets: pr || [], presetsBad: pr === null, rescored: r.changed,
-             pics: pc || [], picsBad: pc === null, picsSeen: pc === null ? new Set() : picsSet(mine.pics) };
+             pics: pc || [], picsBad: pc === null, picsSeen: pc === null ? new Set() : picsSet(mine.pics), learn: ln || EMPTY_LEARN(), learnBad: ln === null };
   }
 
   // The whole new map for a change `next` ({ list?, stats?, active?,
@@ -2690,16 +3105,19 @@
   // except one that only clears the active lock, so an unreadable history
   // can never leave every device locked.
   function packConfig(mine, cur, next) {
-    if (!next || (!("list" in next) && !("stats" in next) && !("active" in next) && !("presets" in next) && !("pics" in next))) return null;
-    if ((next.list || next.stats) && cur.bad) throw new Error(tc("已保存的历史无法读取，保持原样", "saved history could not be read; left as it was"));
-    if (next.presets && cur.presetsBad) throw new Error(tc("已保存的预设无法读取，保持原样", "saved presets could not be read; left as they were"));
-    if (next.pics && cur.picsBad) throw new Error(tc("已保存的图片记录无法读取，保持原样", "saved pictures could not be read; left as they were"));
+    if (!next || (!("list" in next) && !("stats" in next) && !("active" in next) && !("presets" in next) && !("pics" in next) && !("learn" in next))) return null;
+    if ((next.list || next.stats) && cur.bad) throw new Error("saved history could not be read; left as it was");
+    if (next.presets && cur.presetsBad) throw new Error("saved presets could not be read; left as they were");
+    if (next.pics && cur.picsBad) throw new Error("saved pictures could not be read; left as they were");
+    // 2.26.0: an unreadable `learn` is replaced only by Forget what I skip (`learnForget`), which is asked for
+    if (next.learn && cur.learnBad && !next.learnForget) throw new Error("what you skip could not be read; left as it was");
     const input = { ...mine };
     if (next.list) input.history = JSON.stringify(next.list.slice(-HISTORY_MAX));
     if (next.stats) input.stats = JSON.stringify(next.stats);
     if ("active" in next) input.active = next.active ? JSON.stringify(next.active) : "";
     if (next.presets) input.presets = JSON.stringify(next.presets.slice(0, PRESETS_MAX).concat(presetsOdd(mine.presets)));
     if (next.pics) input.pics = JSON.stringify(next.pics);
+    if (next.learn) input.learn = JSON.stringify(next.learn);
     return input;
   }
 
@@ -3173,8 +3591,94 @@
     for (let i = 0; i < list.length; i++) { at -= w[i]; if (at < 0) return list[i]; }
     return list[list.length - 1];
   }
+  // ── 2.26.0: learning from skips ──────────────────────────────────────────
+  // (the user's history: 150 to 190 skips a run under Roulette.) At the end of
+  // a run (got out or given up, not a cancel) each scene it opened adds how
+  // long it was watched to data key `learn`: under LEARN_QUICK_MS it counts as
+  // skipped quickly (the scene last shown is left out when that short: the run
+  // ended on it, nothing skipped it), longer as stayed on, a full share at
+  // LEARN_STAY_MS. Per scene { q, u: skipped / stayed, decayed by half every
+  // LEARN_HALF_MS; n, k, ms: opened, skipped quickly, watched, raw, for the
+  // lists; at }, the LEARN_MAX most recent scenes. Roulette's deal and the tag
+  // cards pick by weight: (1 + UP * stayed) / (1 + DOWN * skipped), between
+  // LEARN_FLOOR and LEARN_CEIL, so a scene skipped three times comes up about
+  // a third as often and nothing is ever left out (a round still deals every
+  // scene once; the weight is which comes first). On by default (the setup's
+  // `learn`, carried on the run as `lw`); a run from before 2.26 has no `lw`
+  // and deals exactly as before. Lockdown plays no markers on their own (a
+  // moment opens its scene), so there is nothing to weigh for them.
+  const LEARN_QUICK_MS = 10000, LEARN_STAY_MS = 5 * 60000, LEARN_HALF_MS = 30 * DAY_MS, LEARN_MAX = 800;
+  const LEARN_FLOOR = 0.15, LEARN_CEIL = 3, LEARN_DOWN = 0.6, LEARN_UP = 0.5, LEARN_UP_MAX = 4, LEARN_SHOW = 4;
+  const EMPTY_LEARN = () => ({ v: 1, s: {} });
+  const learnDecay = (age) => Math.pow(0.5, Math.max(0, age) / LEARN_HALF_MS);
+  // An empty store for none stored; null when stored but unreadable (never overwritten, rule 5)
+  function parseLearn(raw) {
+    if (raw === undefined || raw === null || raw === "") return EMPTY_LEARN();
+    try {
+      const v = JSON.parse(raw);
+      return v && typeof v === "object" && !Array.isArray(v) && v.s && typeof v.s === "object" ? v : null;
+    } catch (_) { return null; }
+  }
+  // The run's scenes as [{ id, ms }], what each was watched
+  function learnFromRun(L) {
+    const last = lastShown(L), out = [];
+    for (const [id, r] of Object.entries((L && L.scenes) || {})) {
+      if (!/^\d+$/.test(id) || !r) continue;
+      const ms = Math.round(watchedSec(rangesOf(r)) * 1000);
+      if (id === last && ms < LEARN_QUICK_MS) continue;
+      out.push({ id, ms });
+    }
+    return out;
+  }
+  // The store with a run's scenes added; other keys of it ride through
+  function learnAdd(store, visits, now) {
+    const st = store && typeof store === "object" && store.s ? store : EMPTY_LEARN();
+    const s = { ...st.s };
+    for (const v of visits || []) {
+      const r = s[v.id] && typeof s[v.id] === "object" ? s[v.id] : {};
+      const d = learnDecay(now - (r.at || now)), quick = v.ms < LEARN_QUICK_MS;
+      s[v.id] = { q: Math.round(((r.q || 0) * d + (quick ? 1 : 0)) * 1000) / 1000,
+                  u: Math.round(((r.u || 0) * d + (quick ? 0 : Math.min(1, v.ms / LEARN_STAY_MS))) * 1000) / 1000,
+                  n: (r.n || 0) + 1, k: (r.k || 0) + (quick ? 1 : 0), ms: (r.ms || 0) + Math.max(0, v.ms), at: now };
+    }
+    const ids = Object.keys(s);
+    if (ids.length > LEARN_MAX) {
+      ids.sort((a, b) => (s[b].at || 0) - (s[a].at || 0));
+      for (const id of ids.slice(LEARN_MAX)) delete s[id];
+    }
+    return { ...st, v: 1, s };
+  }
+  // A scene's weight now (1 for one never seen)
+  function learnWeight(r, now) {
+    if (!r || typeof r !== "object") return 1;
+    const d = learnDecay(now - (r.at || now));
+    const w = (1 + LEARN_UP * Math.min(LEARN_UP_MAX, (r.u || 0) * d)) / (1 + LEARN_DOWN * (r.q || 0) * d);
+    return Math.min(LEARN_CEIL, Math.max(LEARN_FLOOR, Math.round(w * 1000) / 1000));
+  }
+  // The weight function for a run's picks, or null (deal as before)
+  const learnWeights = (L, store, now) => (L && L.lw && store && store.s ? (id) => learnWeight(store.s[String(id)], now) : null);
+  // One of `list` by weight `wf(id)`, `r` in [0, 1)
+  function pickWeighted(list, wf, r) {
+    const w = list.map((x) => Math.max(0, Number(wf(x.id)) || 0));
+    const sum = w.reduce((a, b) => a + b, 0);
+    if (!(sum > 0)) return list[Math.min(list.length - 1, Math.floor(r * list.length))];
+    let at = r * sum;
+    for (let i = 0; i < list.length; i++) { at -= w[i]; if (at < 0) return list[i]; }
+    return list[list.length - 1];
+  }
+  // History's lists: skipped quickly most often (twice or more), and watched
+  // longest in all (5 minutes or more); LEARN_SHOW of each
+  function learnLists(store) {
+    const rows = Object.entries((store && store.s) || {}).map(([id, r]) => ({ id, n: r.n || 0, k: r.k || 0, ms: r.ms || 0, at: r.at || 0 }));
+    return {
+      skipped: rows.filter((r) => r.k >= 2).sort((a, b) => b.k - a.k || a.ms - b.ms || b.at - a.at).slice(0, LEARN_SHOW),
+      stayed: rows.filter((r) => r.ms >= LEARN_STAY_MS).sort((a, b) => b.ms - a.ms || b.at - a.at).slice(0, LEARN_SHOW),
+      n: rows.length,
+    };
+  }
+
   // A day's cache of the lists, per browser (localStorage `lockdownRecs`).
-  const recFresh = (c, now) => !!c && c.v === REC_V && typeof c.at === "number" && now - c.at < DAY_MS && now >= c.at && !!c.lists;
+  const recFresh =(c, now) => !!c && c.v === REC_V && typeof c.at === "number" && now - c.at < DAY_MS && now >= c.at && !!c.lists;
 
   // ── 2.9: the player's own "next" controls under Roulette ──────────────────
   // Stash's skip buttons (video.js, shown with a queue), the queue panel's
@@ -3278,6 +3782,7 @@
     if (out.os === undefined && typeof h.os === "number") out.os = h.os;
     if (!("moments" in out) && h.v >= 3) out.moments = h.moments || [];
     if (!out.tags && h.tags) { out.tags = h.tags; out.mode = h.mode; }
+    if (!out.tagOn && perfTags(h)) out.tagOn = "performers";
     if (!out.duo && duoOf(h)) out.duo = h.duo;
     if (!out.image && h.image) out.image = h.image;
     return out;
@@ -3325,7 +3830,7 @@
   function keyTarget(key) {
     const k = String(key || "");
     if (/^s:\d+$/.test(k)) return { kind: "studio", id: k.slice(2) };
-    if (/^t:/.test(k)) return { kind: "tag", id: /^t:\d+$/.test(k) ? k.slice(2) : "" };
+    if (/^t:/.test(k)) return { kind: "tag", id: /^t:\d+(@p)?$/.test(k) ? k.slice(2).replace(/@p$/, "") : "" };
     if (/^p:\d+(&\d+)+$/.test(k)) return { kind: "performer", id: "", duo: k.slice(2).split("&") };   // 2.14: a duo
     if (/^\d+$/.test(k)) return { kind: "performer", id: k };
     return { kind: "performer", id: "" };
@@ -3366,7 +3871,12 @@
     if (sc.stays || x.stays) lines.push({ k: tc("停留牌", "Stay cards"), d: staysText(x.stays), v: sc.stays, c: sc.stays < 0 ? "re" : "cy" });
     if (sc.race || x.race) lines.push({ k: tc("竞赛牌", "Race"), d: raceText(x.race), v: sc.race, c: sc.race < 0 ? "re" : "or" });
     // 2.20
-    if (sc.skipc) lines.push({ k: tc("跳过牌保留", "Skip cards kept"), d: `${x.skipCards.kept} × ${SKIP_CARD_PTS}`, v: sc.skipc, c: "cy" });
+    if (sc.skipc) lines.push({ k: tc("留着跳过牌", "Skip cards kept"), d: `${x.skipCards.kept} × ${SKIP_CARD_PTS}`, v: sc.skipc, c: "cy" });
+    // 2.26.0: time past the target, Pictures cards
+    if (sc.past) lines.push({ k: tc("超出目标", "Past the target"), d: `${fmtMinutes(Math.round(Math.min(PAST_CAP_MS, pastExtra(x)) / 60000))} × ${PAST_PTS}`, v: sc.past, c: "ma" });
+    if (sc.picc) lines.push({ k: tc("图片牌", "Pictures cards"), d: tc(`留了 ${(x.picCards && x.picCards.kept) || 1} 张`, `${(x.picCards && x.picCards.kept) || 1} kept`), v: sc.picc, c: "cy" });
+    // 2.27.0
+    if (sc.lockin || x.lockIn) lines.push({ k: tc("锁定牌", "Lock in"), d: lockInText(x.lockIn), v: sc.lockin, c: "pu" });
     lines.push({ k: tc("出局", "Got out"), d: "", v: sc.out, c: "gr" });
     const sub = lines.reduce((a, l) => a + l.v, 0);
     const stored = typeof x.score === "number" ? x.score : sc.total;
@@ -3429,6 +3939,7 @@
     return cache;
   }
   const lbPics = new Map();            // this session's looked-up pictures
+  const lbPerfs = new Map();           // 2.27.0: the most watched: id -> { name, image_path } | null (not found)
   const runPic = (x, cache) => x.image || (x.tid && (cache || lbPics).get(picKey(x.kind, x.tid))) || "";
 
   // A picture's frame: a performer's photo from the top (faces show), a
@@ -3468,7 +3979,13 @@
   function pfHtml(x, name, image, size, kind) {
     const k = kind || (x && x.kind) || "performer", sz = size || "h";
     const duo = k === "performer" ? duoOf(x) : null;
-    if (duo) return `<span class="ld-pf2 ld-pf2-${sz}">${duo.slice(0, 2).map((p) => pfHtml(null, p.name, p.image_path || p.image, sz, "performer")).join("")}${duo.length > 2 ? `<b class="ld-pfmore">+${duo.length - 2}</b>` : ""}</span>`;
+    // 2.25.0 (user: "I think it can show up to 4 performers then fold"): every face up to
+    // DUO_MAX, +N only past it; three or four sit in a row on one top line (ld-pfn3/4)
+    if (duo) {
+      const shown = duo.slice(0, DUO_MAX), more = duo.length - shown.length;
+      return `<span class="ld-pf2 ld-pf2-${sz} ld-pfn${shown.length}">${shown.map((p) => pfHtml(null, p.name, p.image_path || p.image, sz, "performer")).join("")}` +
+        `${more > 0 ? `<b class="ld-pfmore">+${more}</b>` : ""}</span>`;
+    }
     const src = k === "tag" ? tagPic(image) : image ? String(image) : "";
     const t = escapeHtml(name || "");
     if (src) return `<span class="ld-pf ld-pf-${sz}${k === "studio" ? " ld-pfplate" : ""}" title="${t}"><img src="${escapeHtml(src)}" alt="" loading="lazy"></span>`;
@@ -3482,8 +3999,8 @@
     // max now; its meter is full and the title says no "of"
     return `<span class="ld-lbmeter" title="${tc(`热度 ${h}${h <= HEAT_MAX ? ` / ${HEAT_MAX}` : ""}`, `Heat ${h}${h <= HEAT_MAX ? ` of ${HEAT_MAX}` : ""}`)}">${s}</span>`;
   }
-  const heatRow = (h) => `<span class="ld-lbheat">${lbIc(LB_FLAME, "ld-lbflame")}<b>${tc("热度 " + h, "Heat " + h)}</b>${meterHtml(h)}<em>×${heatMult(h)}</em></span>`;
-  const kindLabel = (x) => (x.kind === "studio" ? tc("工作室", "Studio") : x.kind === "tag" ? tc("标签", "Tag") : "");
+  const heatRow = (h) => `<span class="ld-lbheat">${lbIc(LB_FLAME, "ld-lbflame")}<b>${tc(`热度 ${h}`, `Heat ${h}`)}</b>${meterHtml(h)}<em>×${heatMult(h)}</em></span>`;
+  const kindLabel = (x) => (x.kind === "studio" ? tc("工作室", "Studio") : perfTags(x) ? tc("标签在演员上", "Tag on performers") : x.kind === "tag" ? tc("标签", "Tag") : "");
   const shortDate = (at, now) => (typeof at === "number" ? fmtWhen(at, now).replace(/\s\d{1,2}:\d{2}(\s?[AP]M)?$/i, "") : "");
 
   function podiumHtml(v, now, cache, open) {
@@ -3513,17 +4030,43 @@
       tile("ma", LB_DROP, rec.edgeMs ? escapeHtml(fmtMinutes(rec.edgeMs / 60000)) : "–", tc("最长的一次边缘", "longest edge")) +
       tile("ye", LB_CUP, rec.best ? tc(`${rec.best} 连胜`, `${rec.best} in a row`) : "–", tc(`最佳连胜${rec.now ? ` · 当前 ${rec.now}` : ""}`, `best streak${rec.now ? ` · now ${rec.now}` : ""}`)) +
       (m ? `<div class="ld-lbtile ld-lbmost"><span class="ld-lbthumb ld-k-${mt.kind}">${lbPicHtml(mt.kind, m.name, mImg, false)}</span>` +
-             `<span><b>${escapeHtml(m.name)}</b><small>${tc(`锁定最多 · ${m.n} 次`, `most locked to · ${plural(m.n, "time", "times")}`)}</small></span></div>`
-         : tile("pu", LB_CROWN, "–", tc("锁定最多", "most locked to"))) +
-      tile("re", LB_LOCK, tc(`${rec.runs} 次对局`, plural(rec.runs, "run", "runs")), tc(`${rec.done} 次出局 · ${rec.gaveUp} 次放弃`, `${rec.done} got out · ${rec.gaveUp} gave up`)) +
+             `<span><b>${escapeHtml(m.name)}${/^t:.*@p$/.test(m.key) ? tc("（按演员）", " · performers") : ""}</b><small>${tc(`最常锁定 · ${plural(m.n, "次", "次")}`, `most locked to · ${plural(m.n, "time", "times")}`)}</small></span></div>`
+         : tile("pu", LB_CROWN, "–", tc("最常锁定", "most locked to"))) +
+      tile("re", LB_LOCK, plural(rec.runs, "run", "runs"), tc(`出局 ${rec.done} · 放弃 ${rec.gaveUp}`, `${rec.done} got out · ${rec.gaveUp} gave up`)) +
       `</div></section>`;
+  }
+
+  // 2.27.0 (user: "In the leaderboard it should also show a ranking of most
+  // watched during lockdown (sum of it all) for performers"): the lifetime
+  // totals' `pw`, most watched first, each a link to their Stash page. `who`
+  // maps an id to { name, image_path } as Stash has them (null: not found,
+  // left out; missing: not read yet). `more`: up to LB_PERF_MORE. One note
+  // line when older runs were estimated (pwOfEntry).
+  function perfRankHtml(stats, who, more) {
+    const all = perfRanking(stats).filter((r) => !who || !who.has(r.id) || who.get(r.id));
+    if (!all.length) return "";
+    const rows = all.slice(0, more ? LB_PERF_MORE : LB_PERF_ROWS), top = rows[0].s || 1;
+    const est = (stats && stats.pw && stats.pw.e) || 0;
+    const left = Math.min(all.length, LB_PERF_MORE) - rows.length;
+    return `<section class="ld-lbperf" aria-label="${tc("锁局里看得最多", "Most watched in Lockdown")}"><div class="ld-lblhead"><div class="ld-lbcapt">${tc("锁局里看得最多", "Most watched in Lockdown")}</div>` +
+      `<span>${tc("按演员统计每局观看时长", "Every run's watched time, by performer")}</span></div><ol class="ld-lbpgrid">` +
+      rows.map((r, i) => {
+        const p = (who && who.get(r.id)) || null, name = p ? p.name : "…", pct = Math.max(4, Math.round((r.s / top) * 100));
+        return `<li><a class="ld-lbprow" href="/performers/${encodeURIComponent(r.id)}" data-lbopen="1" aria-label="${escapeHtml(tc(`第 ${i + 1} 名：${name}，观看 ${fmtMinutes(r.s / 60)}`, `${i + 1}. ${name}, ${fmtMinutes(r.s / 60)} watched`))}">` +
+          `<span class="ld-lbrank">${i + 1}</span><span class="ld-lbthumb ld-k-performer">${lbPicHtml("performer", name, (p && p.image_path) || "", false)}</span>` +
+          `<span class="ld-lbmain"><b class="ld-lbpname">${escapeHtml(name)}</b><span class="ld-lbptime">${escapeHtml(fmtMinutes(r.s / 60))}</span>` +
+          `<span class="ld-lbbar"><i style="width:${pct}%"></i></span></span></a></li>`;
+      }).join("") + `</ol>` +
+      (left > 0 ? `<button type="button" class="ld-lbbtn ld-lbshow" data-a="lbpmore">${tc(`再看 ${left} 位`, `Show ${left} more`)}</button>` : "") +
+      (est ? `<div class="ld-lbnote">${tc("2.27 之前的局为估算：单人局把观看时长全算给他，双人或多人局平分；当时的演员标签局与工作室局不计。", "Runs from before 2.27 are estimated: a run on one performer gives them all its watched time, a duo or group splits it evenly; studio and tag runs from then are not counted.")}</div>` : "") +
+      `</section>`;
   }
 
   function rowHtml2(r, now, open, cache) {
     const x = r.x, h = runHeat(x), kl = kindLabel(x);
     const chips = runConds(x).slice(0, 3).map((p) => `<span class="ld-lbcond" title="${escapeHtml(`${p.name}: ${p.rank}`)}">${escapeHtml(condChip(p))}</span>`).join("");
     const small = [shortDate(x.at, now), tc(`${fmtMinutes((x.watchedMs || 0) / 60000)} 观看`, `${fmtMinutes((x.watchedMs || 0) / 60000)} watched`),
-                   x.skipsUsed ? plural(x.skipsUsed, "skip", "skips") : tc("未跳过", "no skips"), x.pics > 0 ? tc(`${x.pics} 张图片`, plural(x.pics, "picture", "pictures")) : ""].filter(Boolean).join(" · ");
+                   x.skipsUsed ? tc(`${x.skipsUsed} 次跳过`, plural(x.skipsUsed, "skip", "skips")) : tc("未跳过", "no skips"), x.pics > 0 ? tc(`${x.pics} 张图片`, plural(x.pics, "picture", "pictures")) : ""].filter(Boolean).join(" · ");
     return `<div class="ld-lbitem${open ? " ld-open" : ""}"><button type="button" class="ld-lbrow${r.latest ? " ld-latest" : ""}" data-open="${escapeHtml(x.id)}" aria-expanded="${open}">` +
       `<span class="ld-lbrank">${r.rank}</span>` +
       `<span class="ld-lbthumb ld-k-${escapeHtml(x.kind || "performer")}">${lbPicHtml(x.kind, x.name, runPic(x, cache), false, duoOf(x))}</span>` +
@@ -3559,10 +4102,15 @@
     return `<div class="ld-lbmore"><div class="ld-lbcol"><div class="ld-lbcapt">${tc("得分怎么算的", "How the score adds up")}</div><div class="ld-lbsum">${sum}</div>` +
         `<div class="ld-lbnote">${escapeHtml(note)}</div></div>` +
       `<div class="ld-lbcol"><div class="ld-lbcapt">${tc("这一局", "The run")}</div><div class="ld-lbfacts">` +
-        fact(fmtMinutes((x.watchedMs || 0) / 60000), tc("观看", "watched"), "cy") + fact(x.skipsUsed || 0, tc("已跳过", "skips used")) +
-        (typeof x.os === "number" ? fact(x.os, tc("次O", "O's"), "bl") : "") + (Array.isArray(x.moments) ? fact(x.moments.length, tc("瞬间", "moments")) : "") +
+        fact(fmtMinutes((x.watchedMs || 0) / 60000), tc("观看", "watched"), "cy") + fact(x.skipsUsed || 0, tc("跳过", "skips used")) +
+        (typeof x.os === "number" ? fact(x.os, tc("O", "O's"), "bl") : "") + (Array.isArray(x.moments) ? fact(x.moments.length, tc("瞬间", "moments")) : "") +
         fact(x.pics || 0, tc("图片", "pictures")) + fact(fmtMinutes((x.ms || 0) / 60000), tc("锁定", "locked")) + `</div>` +
-        (links.length ? `<div class="ld-lbmom"><span>${tc(`找到 ${plural(links.length, "moment", "moments")}`, `Found ${plural(links.length, "moment", "moments")}`)}</span>` +
+        // 2.27.0: who was locked in
+        (x.lockIn ? (() => { const p = (duoOf(x) || []).find((m) => String(m.id) === String(x.lockIn.id)) || {};
+          return `<div class="ld-lblock"><span class="ld-lbthumb ld-k-performer">${lbPicHtml("performer", x.lockIn.name, p.image_path || "", false)}</span>` +
+            `<span>${tc("锁定在 ", "Locked in on ")}<a href="/performers/${encodeURIComponent(x.lockIn.id)}" data-lbopen="1">${escapeHtml(x.lockIn.name || "?")}</a> · ` +
+            `${x.lockIn.st === "broke" ? tc("已断开", "broken") : tc("保持住了", "kept")} · ${escapeHtml(tc(`其中 ${fmtMinutes(Math.round((x.lockIn.ms || 0) / 60000))} 看他`, `${fmtMinutes(Math.round((x.lockIn.ms || 0) / 60000))} on them`))}</span></div>`; })() : "") +
+        (links.length ? `<div class="ld-lbmom"><span>${tc(`找到 ${plural(links.length, "个瞬间", "个瞬间")}`, `Found ${plural(links.length, "moment", "moments")}`)}</span>` +
           links.map((l) => `<a class="ld-mlink" href="${escapeHtml(l.href)}">${escapeHtml(l.label)}</a>`).join("") + `</div>` : "") +
         (typeof x.at === "number" ? `<div class="ld-lbwhen">${escapeHtml(fmtStamp(x.at))}</div>` : "") +
         `<div class="ld-lbacts">${openHref ? `<a class="ld-lbbtn" href="${escapeHtml(openHref)}" data-lbopen="1">${tc(`打开 ${x.name || "?"}`, `Open ${x.name || "?"}`)}</a>` : ""}` +
@@ -3583,7 +4131,7 @@
 
   // The whole tab. `s`: { goal, period, more, open (a run id) }; `notice`:
   // markup above the foot (an unreadable history).
-  function boardHtml(top, list, stats, s, now, cache, notice) {
+  function boardHtml(top, list, stats, s, now, cache, notice, who) {
     const v = boardView(top, { goal: s.goal, period: s.period, more: s.more, now, list });
     const rec = boardRecords(stats);
     const label = v.period === "month" ? new Date(now).toLocaleDateString(undefined, { month: "long" }) : tc("全部时间", "All time");
@@ -3603,7 +4151,8 @@
       (v.rest.length ? `<section class="ld-lblist" aria-label="${tc(`第 4 到 ${last} 名`, `Places 4 to ${last}`)}"><div class="ld-lblhead"><div class="ld-lbcapt">${tc(`第 4 到 ${last} 名`, `Places 4 to ${last}`)}</div>` +
           `<span>${tc("点开一盘可以看到得分怎么算的", "Click a run to see how its score adds up")}</span></div>` +
           v.rest.map((r) => rowHtml2(r, now, s.open === r.x.id, cache)).join("") +
-          (v.more > 0 ? `<button type="button" class="ld-lbbtn ld-lbshow" data-a="lbmore">${tc(`再显示 ${v.more} 盘`, `Show ${v.more} more`)}</button>` : "") + `</section>` : "") +
+          (v.more > 0 ? `<button type="button" class="ld-lbbtn ld-lbshow" data-a="lbmore">Show ${v.more} more</button>` : "") + `</section>` : "") +
+      perfRankHtml(stats, who, s.pmore) +   // 2.27.0
       (notice || "") +
       `<div class="ld-lbfoot">${tc(`只有出局的对局才参与排名：每种出口方式取你的前 ${LB_MAX} 名。2.1 之前的对局没有观看时长，不计分。`, `Only runs you got out of are ranked: your ${LB_MAX} best of each way out. Runs from before 2.1 have no watch time and aren't scored.`)}</div></div>`;
   }
@@ -3652,6 +4201,8 @@
       // 2.9: a run got out of uses up its pictures: no later run counts
       // them again (a given-up run scored nothing for them, so they stay new)
       if (entry.result === "done" && L.pics && L.pics.length && !picsBad) out.pics = addPicsChunk(pics, done.id, L.pics, now);
+      // 2.26.0: what it skipped and stayed on, when the run learns (`lw`)
+      if (L.lw && !cur.learnBad) { const v = learnFromRun(L); if (v.length) out.learn = learnAdd(cur.learn, v, now); }
     }
     // 2.23.0: a cancel leaves no entry, so its id is noted (never over totals
     // that did not parse)
@@ -3917,8 +4468,8 @@
                               belongVerdict, backoffMs, endChange, pendingAdd, pendingDrop, syncPlan, syncDecision, pollOwner, pollIntervals,
                               oCheckPlan, oSceneMoved, fetchWithin, SYNC_IDLE_MS, SYNC_LOCKED_MS, SYNC_FOLLOW_MS, SYNC_FULL_MS, OWNER_TTL_MS, GQL_TIMEOUT_MS,
                               // 2.12
-                              isSettingsPath, overtimeScored, hiddenTarget, HIDE_LO, HIDE_HI, TOY_SHARE, toyStyles, toyJourneys, TOY_LENGTHS, toyPaces, TOY_DEFAULT, TOY_NEEDS, BLIND_NEEDS,
-                              normaliseToy, toyEarned, toyText, edgeHint, liveGoalLabel, goonApi, toyController,
+                              isSettingsPath, overtimeScored, hiddenTarget, HIDE_LO, HIDE_HI, TOY_SHARE, TOY_STYLES: toyStyles(), TOY_JOURNEYS: toyJourneys(), TOY_LENGTHS, TOY_PACES: toyPaces(), TOY_DEFAULT, TOY_NEEDS, BLIND_NEEDS,
+                              normaliseToy, toyEarned, toyText, edgeHint, edgeFrac, liveGoalLabel, goonApi, toyController,
                               // 2.12.1
                               hiddenPast, dragStep, holdSeek, heldSeek, barLinks, SEEK_SLACK, SKIPS_AT,
                               // 2.13.0
@@ -3932,13 +4483,21 @@
                               handTick, handPlayHold, handBreakHold, handPlayTag, handReady, handSlots, handWords, slotsFresh, tagReadyIn, newHand, normaliseCardTags, HOLD_KINDS,
                               HOLD_DEAL, dealKind, raceDue, handPlayRace, raceWon, RACE_MS, RACE_WIN, RACE_LOSE, RACE_GRACE_MS, RACE_FINISH_AFTER_MS,
                               staysText, raceText, cardsText, handPlaySkip, SKIP_CARD_EVERY_MS, SKIP_CARD_MAX, SKIP_CARD_PTS,
-                              CARD_RECHARGE_MS, HOLD_EVERY_MS, HOLD_LASTS_MS, HOLD_HAND, CARD_TAGS_MAX, paceBest, milestonesDue, cancelResult, CANCEL_MS, lastShown,
+                              CARD_RECHARGE_MS, HOLD_EVERY_MS, HOLD_LASTS_MS, HOLD_HAND, CARD_TAGS_MAX, paceBest, milestonesDue, takeBackInfo, takeBack, netSlips, netSlipMs, cancelResult, CANCEL_MS, lastShown,
                               goalHtml, recordsOf,
                               // 2.17
                               tagPic, picAnimated, skipTokens, ownerWord, cardCountText, tagCardStats, bodyTabOk, bodyIds, popPlace, stepStates,
                               dealWords, goalParts, pfHtml, cardPic,
                               // 2.18
-                              tagMatches, TAG_MATCH_PTS, TAG_PLAYS_KEEP, paceParts };
+                              tagMatches, TAG_MATCH_PTS, TAG_PLAYS_KEEP, paceParts,
+                              // 2.26.0
+                              SOFT_ADD_MS, slipRule, slipNote, slipLine, netGraced, PAST_PTS, PAST_CAP_MS, pastMs, pastExtra, pastPts, pastOf, longestPast,
+                              PICS_CARD_MIN, holdSpent, LEARN_QUICK_MS, LEARN_STAY_MS, LEARN_HALF_MS, LEARN_MAX, LEARN_FLOOR, LEARN_CEIL, LEARN_SHOW,
+                              EMPTY_LEARN, learnDecay, parseLearn, learnFromRun, learnAdd, learnWeight, learnWeights, pickWeighted, learnLists,
+                              // 2.27.0
+                              LOCKIN_PER_MIN, LOCKIN_CAP_MS, LOCKIN_KEEP, LOCKIN_KEEP_MIN_MS, LOCKIN_FINISH_MS, lockInDue, lockedIn, handPlayLockIn, lockInMs, handBreakLock,
+                              lockInPts, lockBreaks, lockInText, lockPool, PW_KEEP, PW_STATS_MAX, LB_PERF_ROWS, LB_PERF_MORE, pwGet, pwWho, pwAdd, pwMerge, pwSlim, pwOfEntry,
+                              pwStatsAdd, pwFromHistory, perfRanking, perfRankHtml };
     return;
   }
 
@@ -4058,15 +4617,16 @@
   // from every studio's parent, since the studio filter has no depth), a
   // tag's sub-tags (depth -1 does it).
   // Scenes with all (AND) or any (OR) of these tags, sub-tags counting.
-  async function countTagScenes(tags, mode) {
+  // 2.25.0: `on` "performers": the tags on their performers (performer_tags)
+  async function countTagScenes(tags, mode, on) {
     const d = await gql(`query ($x: SceneFilterType) { findScenes(scene_filter: $x, filter: { per_page: 0 }) { count } }`,
-                        { x: { tags: { value: tags.map((t) => String(t.id)), modifier: mode === "or" ? "INCLUDES" : "INCLUDES_ALL", depth: -1 } } });
+                        { x: { [on === "performers" ? "performer_tags" : "tags"]: { value: tags.map((t) => String(t.id)), modifier: mode === "or" || tags.length < 2 ? "INCLUDES" : "INCLUDES_ALL", depth: -1 } } });
     return d?.findScenes?.count ?? 0;
   }
   // 2.3: and their images, for a combination with images only
-  async function countTagImages(tags, mode) {
+  async function countTagImages(tags, mode, on) {
     const d = await gql(`query ($x: ImageFilterType) { findImages(image_filter: $x, filter: { per_page: 0 }) { count } }`,
-                        { x: { tags: { value: tags.map((t) => String(t.id)), modifier: mode === "or" ? "INCLUDES" : "INCLUDES_ALL", depth: -1 } } });
+                        { x: { [on === "performers" ? "performer_tags" : "tags"]: { value: tags.map((t) => String(t.id)), modifier: mode === "or" || tags.length < 2 ? "INCLUDES" : "INCLUDES_ALL", depth: -1 } } });
     return d?.findImages?.count ?? 0;
   }
 
@@ -4090,8 +4650,8 @@
     const f = duo ? { performers: { value: duo.map((p) => String(p.id)), modifier: "INCLUDES" } }
       : L.kind === "studio" ? { studios: { value: one, modifier: "INCLUDES", depth: -1 } }
       : L.kind === "tag" && L.tags && L.tags.length > 1
-        ? { tags: { value: L.tags.map((t) => String(t.id)), modifier: L.mode === "or" ? "INCLUDES" : "INCLUDES_ALL", depth: -1 } }
-      : L.kind === "tag" ? { tags: { value: one, modifier: "INCLUDES", depth: -1 } }
+        ? { [tagKey(L)]: { value: L.tags.map((t) => String(t.id)), modifier: L.mode === "or" ? "INCLUDES" : "INCLUDES_ALL", depth: -1 } }
+      : L.kind === "tag" ? { [tagKey(L)]: { value: one, modifier: "INCLUDES", depth: -1 } }
       : { performers: { value: one, modifier: "INCLUDES" } };
     if (fresh) f.play_count = { modifier: "EQUALS", value: 0 };
     return f;
@@ -4176,7 +4736,7 @@
   const slideshowApi = () => { const s = window.Slideshow; return s && typeof s.open === "function" ? s : null; };
   function picturesFor(L) {
     // imageFilterFor(L), spelled out: a const, and the test hook returns before it
-    const src = { kind: L.kind, id: String(L.tid), name: L.name, filter: sceneFilterFor(L, false) };
+    const src = { kind: L.kind, id: String(L.tid), name: L.name + onWord(L), filter: sceneFilterFor(L, false) };
     if (L.tags && L.tags.length > 1) { src.tags = L.tags.map((t) => ({ id: String(t.id), name: t.name })); src.mode = L.mode; }
     if (duoOf(L)) src.duo = duoMembers(L.duo).map((p) => ({ id: p.id, name: p.name }));
     return src;
@@ -4281,17 +4841,25 @@
   // they were picked, not the least watched time. The one whose turn it was
   // is the open scene's performer (one of them only), else that of the last
   // scene shown with only one of them; nothing shown yet: any of them.
-  function deckPick(all, L, notId, r, now) {
+  // 2.26.0 `wf`: the weights learnt from skips (learnWeights); without it
+  // every scene of the pool is as likely, as before.
+  // 2.27.0: locked in (lockedIn), only that performer's side deals; with
+  // nothing of theirs left but the open scene, every side as before and
+  // `lkOut` says so (the scene it deals does not break the lock-in).
+  function deckPick(all, L, notId, r, now, wf) {
     const duo = duoOf(L);
-    const sides = duo ? duo.map((p) => String(p.id)) : ["all"];
+    let sides = duo ? duo.map((p) => String(p.id)) : ["all"];
     const scenes = (all || []).filter((x) => x && x.id);
     const recs = (L && L.scenes) || {};
     const deck = { ...((L && L.deck) || {}) };
     const of = (side) => (side === "all" ? scenes : scenes.filter((x) => (x.who || []).includes(side)));
     const shownAt = (id) => { const x = recs[id]; return x ? x.at || x.t0 || 0 : 0; };
     const not = notId == null ? null : String(notId);
+    const lk = duo ? lockedIn(L) : null;
+    let lkOut = false;
+    if (lk && sides.includes(lk)) { if (of(lk).some((x) => x.id !== not)) sides = [lk]; else lkOut = true; }
     const usable = sides.filter((sd) => of(sd).some((x) => x.id !== not));
-    if (!usable.length) return { id: null, only: scenes.length > 0, side: null, deck };
+    if (!usable.length) return { id: null, only: scenes.length > 0, side: null, deck, ...(lkOut ? { lkOut } : {}) };
     let side = usable[0];
     if (usable.length > 1) {
       const one = (id) => { const x = scenes.find((y) => y.id === id); const w = x ? sides.filter((sd) => (x.who || []).includes(sd)) : []; return w.length === 1 ? w[0] : null; };
@@ -4312,10 +4880,10 @@
       pool = of(side).filter((x) => x.id !== not);
       fresh = true;
     }
-    const pick = pool[Math.min(pool.length - 1, Math.floor(r * pool.length))];
+    const pick = wf ? pickWeighted(pool, wf, r) : pool[Math.min(pool.length - 1, Math.floor(r * pool.length))];
     // 2.16: where the round is ("scene 7 of 40 this round")
     const total = of(side).length;
-    return { id: pick.id, only: false, side, deck, round: { n: fresh ? 1 : total - pool.length + 1, of: total } };
+    return { id: pick.id, only: false, side, deck, round: { n: fresh ? 1 : total - pool.length + 1, of: total }, ...(lkOut ? { lkOut } : {}) };
   }
 
   // 2.15: Roulette deals from a deck (deckPick): the target's scenes, ids
@@ -4343,7 +4911,7 @@
       all = rows(d, "findScenes");
       dry = true;
     }
-    return { ...deckPick(all, L, notId, Math.random(), Date.now()), dry };
+    return { ...deckPick(all, L, notId, Math.random(), Date.now(), learnWeights(L, learnNow, Date.now())), dry };
   }
 
   // Which items belong to the lock, in one request: aliases of findScene /
@@ -4352,10 +4920,12 @@
   const ITEM_FIELDS = { scene: "id play_count performers { id } studio { id } tags { id }",
                         image: "id performers { id } studio { id } tags { id } galleries { id performers { id } studio { id } tags { id } }",
                         gallery: "id performers { id } studio { id } tags { id }" };
+  // 2.25.0: a run on the performers' tags reads their tags too
+  const itemFields = (kind, L) => (perfTags(L) ? ITEM_FIELDS[kind].replace(/performers \{ id \}/g, "performers { id tags { id } }") : ITEM_FIELDS[kind]);
   async function itemsMatch(items, L) {
     const field = { scene: "findScene", image: "findImage", gallery: "findGallery" };
     const ok = items.map((it) => /^\d+$/.test(it.id) && field[it.kind]);
-    const parts = items.map((it, i) => ok[i] ? `a${i}: ${field[it.kind]}(id: "${it.id}") { ${ITEM_FIELDS[it.kind]} }` : "")
+    const parts = items.map((it, i) => ok[i] ? `a${i}: ${field[it.kind]}(id: "${it.id}") { ${itemFields(it.kind, L)} }` : "")
       .filter(Boolean);
     if (!parts.length) return items.map(() => false);
     const d = await gql(`query { ${parts.join(" ")} }`);
@@ -4798,7 +5368,10 @@
   let picEarlier = new Set();
   // 2.11: and the history from the last read (the result card's suggestion)
   let lastList = [];
-  const seenFrom = (u) => { if (u && u.picsSeen && !u.picsBad) picEarlier = u.picsSeen; if (u && Array.isArray(u.list) && !u.failed) lastList = u.list; return u; };
+  // 2.26.0: and what was skipped (Roulette's weights)
+  let learnNow = EMPTY_LEARN();
+  const seenFrom = (u) => { if (u && u.picsSeen && !u.picsBad) picEarlier = u.picsSeen; if (u && Array.isArray(u.list) && !u.failed) lastList = u.list;
+    if (u && u.learn && !u.learnBad && !u.failed) learnNow = u.learn; return u; };
 
   // ═══ Theme tokens (suiteTheme) ═════════════════════════════════════════════
   // The suite's colours, taken from whatever theme Stash shows (docs/THEME.md
@@ -5197,6 +5770,9 @@ body.ld-on .top-nav { visibility: hidden !important; }
 #ld-bar .ld-giveup span { position: relative; }
 /* 2.5: Play pictures (Slideshow); cyan is play across the suite */
 #ld-bar .ld-pics .ld-ico { width: 14px; height: 14px; color: var(--sx-cy); margin-right: 6px; flex: none; }
+/* 2.27.2: Todo, green as Todo's own accent; its label goes first when space is short */
+#ld-bar .ld-todobtn .ld-ico { width: 14px; height: 14px; color: var(--sx-gr); margin-right: 6px; flex: none; }
+@media (max-width: 1080px) { #ld-bar .ld-todobtn { padding: 0 9px; } #ld-bar .ld-todobtn span { display: none; } #ld-bar .ld-todobtn .ld-ico { margin-right: 0; } }
 @media (max-width: 760px) {
   #ld-bar { gap: 8px; padding: 0 8px; font-size: 13px; }
   #ld-bar .ld-links .ld-more { display: none; }
@@ -5692,6 +6268,22 @@ body.ld-checking #ld-veil { display: block; }
 .ld-story li { padding: 2px 0; }
 .ld-story li span { float: right; font-variant-numeric: tabular-nums; color: var(--sx-tx2); margin-left: 8px; }
 .ld-story .ld-storymore { list-style: none; color: var(--sx-tx2b); }
+/* 2.26.0: History's What you skip (Most skipped, Stayed longest) and the run page's last-O line */
+.ld-learn { margin-top: 14px; padding: 14px; border-radius: 12px; background: var(--sx-ui); background: linear-gradient(180deg, var(--sx-raise) 0, var(--sx-ui) 64px);
+  border: 1px solid var(--sx-line); border-top-color: var(--sx-edge); box-shadow: var(--sx-sh); }
+.ld-learnhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.ld-learnhead .ld-hint { padding: 0; }
+.ld-learnhead .ld-danger { margin-left: auto; }
+.ld-learncols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.ld-learnlist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ld-learnrow { display: flex; align-items: center; gap: 10px; min-width: 0; text-decoration: none; color: var(--sx-tx); }
+.ld-learnrow:hover b { color: var(--sx-hi); }
+.ld-learnpic { flex: none; width: 64px; height: 36px; border-radius: 6px; overflow: hidden; background: var(--sx-bg2); border: 1px solid var(--sx-deep); }
+.ld-learnpic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ld-learntxt { display: flex; flex-direction: column; min-width: 0; }
+.ld-learntxt b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ld-learntxt small { font-size: 11.5px; color: var(--sx-tx2); }
+.ld-lvslip { padding: 0 2px; }
 .ld-resbtns { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
 .ld-resbtns .ld-close { margin: 0; flex: 1; }
 .ld-resbtns .ld-link { white-space: nowrap; flex: none; }
@@ -5711,7 +6303,32 @@ body.ld-checking #ld-veil { display: block; }
 .ld-hname b { color: var(--sx-hi); font-weight: 600; }
 .ld-hname small, .ld-hname .ld-moments { color: var(--sx-tx2); font-size: 11.5px; display: block; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; max-width: 440px; }
-@media (max-width: 640px) { .ld-hname small, .ld-hname .ld-moments { max-width: 46vw; } }
+/* 2.25.1 (user screenshot: History cut off on the right in a narrow window):
+   the one-line details set the column's minimum (46vw on a phone, 440px
+   wider), which four faces next to them pushed past the box. Sized by the
+   column, not by their text, they shorten with an ellipsis instead. */
+.ld-hname small, .ld-hname .ld-moments { contain: inline-size; }
+/* and three or four faces go above the name there, so the name keeps the width */
+@media (max-width: 640px) { .ld-hwho:has(> .ld-pfn3), .ld-hwho:has(> .ld-pfn4) { flex-direction: column; align-items: flex-start; gap: 5px; }
+  .ld-hwho:has(> .ld-pfn3) > .ld-hname, .ld-hwho:has(> .ld-pfn4) > .ld-hname { align-self: stretch; } }
+/* On a phone the table needed about 450px for its five columns: each run is
+   a card there, who on top, heat, score, when and the buttons under it. */
+@media (max-width: 575.98px) {
+  .ld-htable, .ld-htable tbody { display: block; }
+  .ld-htable thead { display: none; }
+  .ld-htable .ld-hmonth { display: block; }
+  .ld-htable .ld-hmonth th { display: block; padding: 14px 2px 6px; }
+  .ld-htable tr.ld-row { display: grid; grid-template-columns: 22px auto auto minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
+    padding: 8px 2px; border-bottom: 1px solid var(--sx-deep); }
+  .ld-htable tr.ld-row > td { border: 0; padding: 2px 0; }
+  .ld-htable tr.ld-row > td.ld-hopt { display: none; }
+  .ld-htable tr.ld-row > td.ld-hico { grid-column: 1; grid-row: 1 / 3; align-self: start; padding-top: 6px; }
+  .ld-htable tr.ld-row > td:nth-child(2) { grid-column: 2 / -1; grid-row: 1; }
+  .ld-htable tr.ld-row > td:nth-child(4) { grid-column: 2; grid-row: 2; }
+  .ld-htable tr.ld-row > td:nth-child(5) { grid-column: 3; grid-row: 2; }
+  .ld-htable tr.ld-row > td.ld-hwhen { grid-column: 4; grid-row: 2; }
+  .ld-htable tr.ld-row > td.ld-hact { grid-column: 5; grid-row: 2; }
+}
 .ld-hico .ld-ico { width: 16px; height: 16px; }
 .ld-hwhen { white-space: nowrap; color: var(--sx-tx2); }
 .ld-hgave { color: var(--sx-re-tx); }
@@ -5839,6 +6456,19 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
 #ld-bar .ld-hint3 { color: var(--sx-tx2); font-size: 12px; margin-left: 4px; }
 .ld-spin .ld-msg.ld-reveal { color: var(--sx-hi); }
 .ld-spin .ld-msg.ld-reveal b { color: var(--sx-cy); }
+/* 2.27.0: who was locked in, on the end screen */
+.ld-spin .ld-lockres { display: inline-flex; align-items: center; gap: 10px; margin: 8px auto 0; padding: 6px 12px 6px 6px; border-radius: 10px;
+  background: color-mix(in srgb, var(--sx-pu) 16%, var(--sx-ui)); border: 1px solid color-mix(in srgb, var(--sx-pu) 45%, transparent); color: var(--sx-tx); font-size: 13px; text-align: left; }
+.ld-spin .ld-lockres b { color: var(--sx-pu-tx); }
+/* 2.27.0: the Lock in chooser: one big button per performer, their picture on top */
+.ld-modal .ld-lkgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin: 4px 0 2px; }
+.ld-modal .ld-lkopt { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 8px 10px; min-height: 44px; cursor: pointer; color: var(--sx-tx);
+  background: linear-gradient(180deg, var(--sx-raise) 0, var(--sx-ui) 64px); border: 1px solid var(--sx-line); border-top-color: var(--sx-edge); box-shadow: var(--sx-sh); border-radius: 12px; }
+.ld-modal .ld-lkopt:hover { border-top-color: var(--sx-tx3); background: var(--sx-ui2); }
+.ld-modal .ld-lkopt:focus-visible { outline: 2px solid var(--sx-pu); outline-offset: 2px; }
+.ld-modal .ld-lkopt b { font-size: 14px; color: var(--sx-hi); text-align: center; overflow-wrap: anywhere; }
+.ld-pcard.ld-plock .ld-pf { align-self: center; }
+@media (max-width: 575.98px) { .ld-modal .ld-lkgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 #ld-bar .ld-toybtn .ld-ico { width: 14px; height: 14px; color: var(--sx-ma); margin-right: 6px; flex: none; }
 #ld-bar .ld-toybtn { border-color: var(--sx-ma-d); }
 @media (max-width: 760px) {
@@ -6089,6 +6719,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
 .ld-lbv.ld-lbtot { font-weight: 800; font-size: 20px; }
 .ld-lb .ld-c-cy { color: var(--sx-cy-tx); } .ld-lb .ld-c-ma { color: var(--sx-ma-tx); } .ld-lb .ld-c-re { color: var(--sx-re-tx); }
 .ld-lb .ld-c-gr { color: var(--sx-gr-tx); } .ld-lb .ld-c-or { color: var(--sx-or-tx); } .ld-lb .ld-c-bl { color: var(--sx-bl-tx); }
+.ld-lb .ld-c-pu { color: var(--sx-pu-tx); }
 .ld-lbnote, .ld-lbwhen { font-size: 12px; color: var(--sx-tx2); line-height: 1.5; }
 .ld-lbfacts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .ld-lbfact { background: var(--sx-ui); border-radius: 9px; padding: 8px 10px; min-width: 0; }
@@ -6099,6 +6730,25 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
 .ld-lb .ld-lbmom a { color: var(--sx-bl-tx); text-decoration: none; }
 .ld-lb .ld-lbmom a:hover { text-decoration: underline; }
 .ld-lbacts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+/* 2.27.0: who was locked in (an opened run), the most watched performers */
+.ld-lblock { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--sx-tx1b); }
+.ld-lblock .ld-lbthumb { width: 30px; height: 45px; border-radius: 6px; }
+.ld-lb .ld-lblock a { color: var(--sx-pu-tx); font-weight: 600; text-decoration: none; }
+.ld-lb .ld-lblock a:hover { text-decoration: underline; }
+.ld-lbperf { display: flex; flex-direction: column; gap: 8px; }
+.ld-lbpgrid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 8px; }
+.ld-lb .ld-lbprow { display: grid; grid-template-columns: 34px 44px minmax(0, 1fr); align-items: center; gap: 12px; padding: 8px 14px 8px 8px; border-radius: 12px;
+  text-decoration: none; color: var(--sx-tx); box-sizing: border-box; min-height: 44px;
+  background: linear-gradient(180deg, var(--sx-raise) 0, var(--sx-ui) 64px); border: 1px solid var(--sx-line); border-top-color: var(--sx-edge); box-shadow: var(--sx-sh); }
+.ld-lb .ld-lbprow:hover { border-top-color: var(--sx-tx3); }
+.ld-lb .ld-lbprow:focus-visible { outline: 2px solid var(--sx-bl); outline-offset: 2px; }
+.ld-lbprow .ld-lbrank { font-size: 18px; }
+.ld-lbprow .ld-lbthumb { width: 44px; height: 66px; border-radius: 7px; }
+.ld-lbprow .ld-lbmain { gap: 4px; }
+.ld-lbpname { font-size: 15px; color: var(--sx-hi); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ld-lbptime { font-size: 12px; color: var(--sx-cy-tx); font-variant-numeric: tabular-nums; }
+.ld-lbprow .ld-lbbar i { background: linear-gradient(90deg, var(--sx-cy-d), var(--sx-cy-tx)); }
+.ld-lb .ld-lbperf .ld-lbshow { align-self: center; }
 .ld-lbfoot { font-size: 12px; color: var(--sx-tx2); text-align: center; border-top: 1px solid var(--sx-ui2); padding-top: 14px; }
 @media (max-width: 960px) {
   /* the podium becomes a swipe row, #1 first, with dots */
@@ -6184,6 +6834,23 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
 .ld-pf2-m > .ld-pf + .ld-pf { margin-left: -30px; }
 .ld-pf2-b > .ld-pf + .ld-pf { margin-left: -14px; }
 .ld-pf2-xl > .ld-pf + .ld-pf, .ld-pf2-l > .ld-pf + .ld-pf { box-shadow: 0 0 0 4px var(--sx-bg2), 0 18px 44px -12px color-mix(in srgb, var(--sx-re) 70%, transparent); }
+/* 2.25.0 (user: "line them up a bit better so we can see them better"): three or four
+   faces in a row on one top line, smaller and evenly overlapped, so each face shows
+   (a duo keeps its diagonal); the widths stay within the run card and the hero */
+.ld-pf2.ld-pfn3, .ld-pf2.ld-pfn4 { align-items: flex-start; }
+.ld-pf2.ld-pfn3 > .ld-pf + .ld-pf, .ld-pf2.ld-pfn4 > .ld-pf + .ld-pf { margin-top: 0; }
+.ld-pf2-xl.ld-pfn3 > .ld-pf, .ld-pf2-l.ld-pfn3 > .ld-pf { width: 80px; height: 120px; border-radius: 10px; }
+.ld-pf2-xl.ld-pfn4 > .ld-pf, .ld-pf2-l.ld-pfn4 > .ld-pf { width: 64px; height: 96px; border-radius: 10px; }
+.ld-pf2-xl.ld-pfn3 > .ld-pf + .ld-pf, .ld-pf2-l.ld-pfn3 > .ld-pf + .ld-pf { margin-left: -8px; }
+.ld-pf2-xl.ld-pfn4 > .ld-pf + .ld-pf, .ld-pf2-l.ld-pfn4 > .ld-pf + .ld-pf { margin-left: -6px; }
+.ld-pf2-m.ld-pfn3 > .ld-pf { width: 56px; height: 84px; border-radius: 8px; }
+.ld-pf2-m.ld-pfn4 > .ld-pf { width: 46px; height: 69px; border-radius: 8px; }
+.ld-pf2-m.ld-pfn3 > .ld-pf + .ld-pf, .ld-pf2-m.ld-pfn4 > .ld-pf + .ld-pf { margin-left: -6px; box-shadow: 0 0 0 2px var(--sx-re), 0 0 0 4px var(--sx-bg2); }
+.ld-pf2-b.ld-pfn3 > .ld-pf + .ld-pf, .ld-pf2-b.ld-pfn4 > .ld-pf + .ld-pf { margin-left: -8px; }
+.ld-pf2-s.ld-pfn3 > .ld-pf + .ld-pf, .ld-pf2-s.ld-pfn4 > .ld-pf + .ld-pf { margin-left: -10px; }
+.ld-pf2-h.ld-pfn3 > .ld-pf + .ld-pf, .ld-pf2-h.ld-pfn4 > .ld-pf + .ld-pf { margin-left: -9px; }
+.ld-pf2-xs.ld-pfn3 > .ld-pf + .ld-pf, .ld-pf2-xs.ld-pfn4 > .ld-pf + .ld-pf { margin-left: -7px; }
+.ld-pf2-xxs > .ld-pf + .ld-pf { margin-left: -5px; }
 .ld-cap { display: block; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--sx-tx2); }
 .ld-cap.ld-capre { color: var(--sx-re-tx); }
 .ld-muted { color: var(--sx-tx2); }
@@ -6288,6 +6955,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
 .ld-pprev { position: relative; display: flex; align-items: center; justify-content: center; height: 86px; margin: -4px -4px 4px; border-radius: 8px; overflow: hidden; flex: none;
   background: linear-gradient(135deg, color-mix(in srgb, var(--c) 34%, var(--sx-ui2)), var(--sx-bg2)); }
 .ld-pprev img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 2.27.1: a tag card without a picture keeps the same picture space, its tag icon in it, so every tag card is the same size */
+.ld-pnopic { color: var(--c); }
+.ld-pnopic .ld-ico { width: 38px; height: 38px; opacity: .8; }
 .ld-gif { position: absolute; top: 6px; left: 6px; font-size: 10px; font-weight: 800; letter-spacing: .04em; padding: 1px 5px; border-radius: 6px;
   background: rgba(16,15,15,.82); color: var(--sx-paper); }
 .ld-modal .ld-px { position: absolute; top: 8px; right: 8px; z-index: 1; display: inline-flex; padding: 3px; border: 0; border-radius: 6px; cursor: pointer;
@@ -6346,6 +7016,11 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   .ld-runcard .ld-rcwho.ld-hero { flex-direction: row; text-align: left; }
   .ld-pf-xl { width: 96px; height: 144px; border-width: 2px; }
   .ld-pf2-xl > .ld-pf { width: 76px; height: 114px; } .ld-pf2-xl > .ld-pf + .ld-pf { margin-left: -30px; margin-top: 30px; }
+  /* 2.25.0: a row of three or four goes above the name (beside it the name wrapped a word a line) */
+  .ld-runcard .ld-rcwho.ld-hero:has(> .ld-pfn3), .ld-runcard .ld-rcwho.ld-hero:has(> .ld-pfn4) { flex-direction: column; text-align: center; }
+  .ld-pf2-xl.ld-pfn3 > .ld-pf { width: 64px; height: 96px; border-width: 2px; } .ld-pf2-xl.ld-pfn4 > .ld-pf { width: 54px; height: 81px; border-width: 2px; }
+  .ld-pf2-xl.ld-pfn3 > .ld-pf + .ld-pf, .ld-pf2-xl.ld-pfn4 > .ld-pf + .ld-pf { margin-left: -6px; margin-top: 0; }
+  .ld-pf2-m.ld-pfn3 > .ld-pf { width: 48px; height: 72px; } .ld-pf2-m.ld-pfn4 > .ld-pf { width: 40px; height: 60px; }
 }
 /* the page while locked: the lock pill; Body stats */
 .ld-lockpill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 8px; font-size: 12.5px; color: var(--sx-hi); white-space: nowrap;
@@ -6436,6 +7111,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   .ld-lvhero { gap: 14px; padding: 14px; }
   .ld-lvhero .ld-pf-l, .ld-lvhero .ld-pf2-l > .ld-pf { width: 80px; height: 120px; border-width: 2px; }
   .ld-lvhero .ld-pf2-l > .ld-pf + .ld-pf { margin-left: -30px; margin-top: 30px; }
+  .ld-lvhero .ld-pf2-l.ld-pfn3 > .ld-pf { width: 50px; height: 75px; } .ld-lvhero .ld-pf2-l.ld-pfn4 > .ld-pf { width: 40px; height: 60px; }
+  .ld-lvhero .ld-pf2-l.ld-pfn3 > .ld-pf + .ld-pf, .ld-lvhero .ld-pf2-l.ld-pfn4 > .ld-pf + .ld-pf { margin-left: -6px; margin-top: 0; }
   .ld-lvname { font-size: 22px; }
   .ld-live .ld-tiles.ld-lvtiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ld-handpage .ld-pcards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -6484,6 +7161,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   background: transparent; border: 1px dashed var(--sx-ui3); color: var(--sx-tx3); font-style: normal; }
 #ld-bar .ld-slot.ld-sskip, #ld-bar .ld-slot.ld-srace { --c: var(--sx-or); }
 #ld-bar .ld-slot.ld-stag { --c: var(--sx-ma); }
+#ld-bar .ld-slot.ld-slockin { --c: var(--sx-pu); }
 #ld-bar .ld-slot.ld-soon { --c: var(--sx-ye); }
 #ld-bar .ld-slot .ld-ico { width: 13px; height: 13px; }
 #ld-bar .ld-slot.ld-on { border: 1px solid color-mix(in srgb, var(--c) 65%, transparent); color: var(--c); background: color-mix(in srgb, var(--c) 26%, var(--sx-ui)); }
@@ -6657,7 +7335,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   // are checked either way; this just keeps the page from looking empty).
   const FRESH_Q = "?c=" + encodeURIComponent('("type":"play_count","modifier":"EQUALS","value":("value":0))');
   function listUrl(L) {
-    if ((L.tags && L.tags.length > 1) || duoOf(L)) return tagsListUrl(L, L.media === "images" ? "images" : "scenes");
+    if ((L.tags && L.tags.length > 1) || duoOf(L) || perfTags(L)) return tagsListUrl(L, L.media === "images" ? "images" : "scenes");
     return `/${KINDS[L.kind].path}/${L.tid}/${L.media === "images" ? "images" : `scenes${L.rules && L.rules.fresh ? FRESH_Q : ""}`}`;
   }
   // Several tags have no page of their own: Stash's Scenes list, filtered to
@@ -6668,8 +7346,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   function tagsListUrl(L, page) {
     const duo = duoOf(L);
     const crit = [duo ? { type: "performers", modifier: "INCLUDES", value: { items: duo.map((p) => ({ id: String(p.id), label: p.name })), excluded: [] } }
-      : { type: "tags", modifier: L.mode === "or" ? "INCLUDES" : "INCLUDES_ALL",
-          value: { items: L.tags.map((t) => ({ id: String(t.id), label: t.name })), excluded: [], depth: -1 } }];
+      // 2.25.0: one tag or several, on the scenes or (performer_tags) on their performers
+      : { type: tagKey(L), modifier: tagsMod(L),
+          value: { items: (L.tags && L.tags.length ? L.tags : [{ id: L.tid, name: L.name }]).map((t) => ({ id: String(t.id), label: t.name })), excluded: [], depth: -1 } }];
     if (page === "scenes" && L.rules && L.rules.fresh) crit.push({ type: "play_count", modifier: "EQUALS", value: { value: 0 } });
     return `/${page}?${crit.map((c) => `c=${encodeCriterion(c)}`).join("&")}`;
   }
@@ -6687,8 +7366,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     else if (!(L.rules && L.rules.random)) out.push({ href: listUrl(L), label: tc("场景", "Scenes") });
     // 2.16: Roulette's scene last shown, to get back to it from a gallery
     else if (lastShown(L)) out.push({ href: `/scenes/${lastShown(L)}`, label: tc("场景", "Scene") });
-    out.push({ href: L.groups ? tagsListUrl(L, "galleries") : `${base}/galleries`, label: tc("画廊", "Galleries"), cls: "ld-more" });
-    if (L.media !== "images") out.push({ href: L.groups ? tagsListUrl(L, "images") : `${base}/images`, label: tc("图片", "Images"), cls: "ld-more" });
+    out.push({ href: listed(L) ? tagsListUrl(L, "galleries") : `${base}/galleries`, label: tc("画廊", "Galleries"), cls: "ld-more" });
+    if (L.media !== "images") out.push({ href: listed(L) ? tagsListUrl(L, "images") : `${base}/images`, label: tc("图片", "Images"), cls: "ld-more" });
     out.push({ href: "/settings", label: tc("Stash 设置", "Stash settings"), title: tc("Stash 设置", "Stash settings"), cls: "ld-gear", icon: "gear" });
     return out;
   }
@@ -6697,10 +7376,13 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   function keepsListFilter(search, L, page) {
     const cs = new URLSearchParams(search || "").getAll("c").map((c) => c.replace(/\(/g, "{").replace(/\)/g, "}"));
     const duo = duoOf(L);
-    const mod = duo || L.mode === "or" ? '"INCLUDES"' : '"INCLUDES_ALL"';
-    // a duo's criterion holds the two and nobody else (a third would widen it)
-    const tags = cs.some((c) => c.includes(`"type":"${duo ? "performers" : "tags"}"`) && c.includes(`"modifier":${mod}`) &&
-      (duo || L.tags || []).every((t) => c.includes(`"id":"${t.id}"`)) && (!duo || (c.match(/"id":"/g) || []).length === duo.length));
+    const mod = duo || tagsMod(L) === "INCLUDES" ? '"INCLUDES"' : '"INCLUDES_ALL"';
+    // a duo's criterion holds the two and nobody else (a third would widen it); 2.25.0: the
+    // same for one tag on the performers (performer_tags; another tag added would widen it)
+    const want = duo || (L.tags && L.tags.length ? L.tags : [{ id: L.tid }]);
+    const exact = duo || (perfTags(L) && !(L.tags && L.tags.length > 1));
+    const tags = cs.some((c) => c.includes(`"type":"${duo ? "performers" : tagKey(L)}"`) && c.includes(`"modifier":${mod}`) &&
+      want.every((t) => c.includes(`"id":"${t.id}"`)) && (!exact || (c.match(/"id":"/g) || []).length === want.length));
     const fresh = (page && page !== "scenes") || !(L.rules && L.rules.fresh) ||
       cs.some((c) => c.includes('"type":"play_count"') && c.includes('"modifier":"EQUALS"'));
     return tags && fresh;
@@ -6776,6 +7458,21 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   const PICS_ICON = line('<path d="M5 3.3v9.4L12.6 8z"/>');
   // 2.12.1: the bar's Stash settings (a cog) and its "..." menu on a phone;
   // Give up's "(hold)" goes on a phone (the title still says to hold it)
+  // 2.27.2: Todo's own nav icon is under the hidden top nav during a run
+  const TODO_ICON = line('<rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M5.3 8.1l1.8 1.8 3.6-3.8"/>');
+  // Todo closes its panel on any pointerdown outside it, before this click
+  // arrives; a click that would only reopen it is dropped (the panel was open
+  // when the press began). A keyboard press has no pointerdown: it toggles.
+  let todoWasOpen = false;
+  window.addEventListener("pointerdown", (ev) => {
+    if (ev.target && ev.target.closest && ev.target.closest('#ld-bar [data-a="todo"]')) todoWasOpen = !!document.querySelector("#todo-panel.todo-open");
+  }, true);
+  function todoClick(ev) {
+    ev.preventDefault(); ev.stopPropagation();
+    const was = todoWasOpen; todoWasOpen = false;
+    if (was && !document.querySelector("#todo-panel.todo-open")) return;
+    document.querySelector(".todo-nav a")?.click();
+  }
   const GEAR_ICON = line('<circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/><circle cx="8" cy="8" r="4.3"/>');
   const MORE_ICON = '<svg class="ld-ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="12.5" cy="8" r="1.4"/></svg>';
   const GIVEUP_LABEL = tc(`放弃<span class="ld-gulong">（按住）</span>`, `Give up<span class="ld-gulong"> (hold)</span>`);
@@ -6849,6 +7546,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     hide: line('<path d="M4 14V2.5M4 3h7l-1.5 2.5L11 8H4"/><path d="M2 11.5h12" stroke-dasharray="1.5 1.5"/>'),
     toy: line('<path d="M1.5 8c1.2-3 2.4-3 3.6 0s2.4 3 3.6 0 2.4-3 3.6 0 1.4 2.2 2.2 1.2"/>'),
     blindj: line('<path d="M1.5 8s2.4-4 6.5-4 6.5 4 6.5 4-2.4 4-6.5 4-6.5-4-6.5-4zM3 13L13 3"/>'),
+    // 2.26.0: a plus on a clock (An O adds 10 min), an open hand's heart (First O forgiven)
+    soft: line('<circle cx="7" cy="8.5" r="5"/><path d="M7 6v2.5l1.6 1M12.5 2v4M10.5 4h4"/>'),
+    grace: line('<path d="M8 13.4S2.2 10 2.2 6.1A2.9 2.9 0 0 1 8 4.6a2.9 2.9 0 0 1 5.8 1.5C13.8 10 8 13.4 8 13.4z"/><path d="M5.8 8.2l1.6 1.6 3-3"/>'),
     // 2.13.0: an eye
     eyes: line('<path d="M1.5 8S3.9 3.5 8 3.5 14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>'),
   };
@@ -6856,9 +7556,18 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   const CARD_ICON = {
     stay: line('<path d="M8 14.5V9"/><circle cx="8" cy="5.5" r="3.5"/><circle cx="8" cy="5.5" r=".8"/>'),
     race: line('<circle cx="8" cy="9.2" r="5"/><path d="M8 9.2V6.6M6.4 2h3.2M12.2 4.6l1-1"/>'),
+    // 2.26.0: a picture (Pictures cards)
+    pics: line('<rect x="2.5" y="3" width="11" height="10" rx="1.5"/><circle cx="6" cy="6.5" r="1.1"/><path d="M2.5 11.5l3.5-3 2.5 2 2-1.5 3 2.5"/>'),
+    // 2.27.0: a person in crosshairs (Lock in: the one you lean on)
+    lockin: line('<circle cx="8" cy="8" r="6"/><path d="M8 1v2.5M8 12.5V15M1 8h2.5M12.5 8H15"/><circle cx="8" cy="6.6" r="1.5"/><path d="M5.4 11c.5-1.4 1.4-2.1 2.6-2.1s2.1.7 2.6 2.1"/>'),
   };
-  const holdIcon = (k) => (HOLD_KINDS[k] && HOLD_KINDS[k].stay ? CARD_ICON.stay : COND_ICON.eyes);
-  const heatPill = (h) => `<span class="ld-pill ld-heatpill" title="${tc("热度", "Heat")}">${FLAME} ${h}</span>`;
+  const holdIcon = (k) => (HOLD_KINDS[k] && HOLD_KINDS[k].stay ? CARD_ICON.stay : HOLD_KINDS[k] && HOLD_KINDS[k].pics ? CARD_ICON.pics : COND_ICON.eyes);
+  // 2.26.0: Learn from skips, a switch in the setup's No heat row (on unless turned off)
+  const LEARN_ICON = line('<path d="M2.5 12.5l3.5-4 2.5 2.5 5-6"/><path d="M10 5h3.5v3.5"/>');
+  const learnChipHtml = (on) => `<button class="ld-nhchip${on ? " ld-on" : ""}" data-learn="1" aria-pressed="${on ? "true" : "false"}" ` +
+    `title="${tc(`轮盘与标签牌会从你的跳过里学习：${LEARN_QUICK_MS / 1000} 秒内反复跳过的场景出现得更少，停留更久的出现得更多。任何场景都不会被排除。历史里有清单，也有「忘掉我的跳过」。`, `Roulette and tag cards learn from what you skip: a scene skipped within ${LEARN_QUICK_MS / 1000} seconds again and again comes up less often, one you stay on more often. Nothing is ever left out. History has the lists and Forget what I skip.`)}">` +
+    `<i></i>${LEARN_ICON} ${tc("从跳过中学习", "Learn from skips")}</button>`;
+  const heatPill = (h) => `<span class="ld-pill ld-heatpill" title="Heat">${FLAME} ${h}</span>`;
 
   // The suite's empty state: a raised card, one bold line, one muted line.
   const emptyHtml = (title, line) => `<div class="ld-emptycard"><b>${escapeHtml(title)}</b>${line ? `<span>${escapeHtml(line)}</span>` : ""}</div>`;
@@ -6871,21 +7580,24 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     `Runs still lock and end; they are not recorded until the history is readable again.</div>`) : "");
 
 
-  function tilesHtml(st) {
+  function tilesHtml(st, list) {
     const top = mostLocked(st);
     const tile = (ico, big, label, cls = "") => `<div class="ld-tile ${cls}">${ico}<b>${big}</b><span>${label}</span></div>`;
     return `<div class="ld-tiles">` +
       tile(DROPS, st.done, tc("已出局", "got out")) +
       tile(CROSS, st.gaveUp, tc("已放弃", "gave up")) +
-      tile(CROWN, top ? escapeHtml(top.name) : "–", top ? tc(`最常锁定 · ${top.n}×`, `most locked · ${top.n}×`) : tc("最常锁定", "most locked"), "ld-tname") +
-      tile(FLAME, st.bestStreak, tc(`最长连胜${st.streak ? ` · 当前 ${st.streak}` : ""}`, `best streak${st.streak ? ` · now ${st.streak}` : ""}`)) +
-      `</div>` + winsHtml(st);
+      tile(CROWN, top ? escapeHtml(top.name) : "–", top ? tc(`最常锁定 · ${top.n} 次`, `most locked · ${top.n}×`) : tc("最常锁定", "most locked"), "ld-tname") +
+      tile(FLAME, st.bestStreak, tc(`最佳连胜${st.streak ? ` · 当前 ${st.streak}` : ""}`, `best streak${st.streak ? ` · now ${st.streak}` : ""}`)) +
+      `</div>` + winsHtml(st, list);
   }
 
-  function winsHtml(st) {
+  function winsHtml(st, list) {
     const parts = [];
-    if (st.bestHeat) parts.push(tc(`${heatPill(st.bestHeat)} 出局时的最高热度`, `${heatPill(st.bestHeat)} highest heat you got out of`));
-    if (st.longestEdgeMs) parts.push(`<span class="ld-long">${tc("最长边缘", "Longest edge")} ${escapeHtml(fmtMinutes(st.longestEdgeMs / 60000))}</span>`);
+    if (st.bestHeat) parts.push(tc(`${heatPill(st.bestHeat)} 出局时拿到的最高热度`, `${heatPill(st.bestHeat)} highest heat you got out of`));
+    if (st.longestEdgeMs) parts.push(`<span class="ld-long">${tc(`最长的一次边缘 ${escapeHtml(fmtMinutes(st.longestEdgeMs / 60000))}`, `Longest edge ${escapeHtml(fmtMinutes(st.longestEdgeMs / 60000))}`)}</span>`);
+    // 2.26.0: from the history kept (older entries too: pastOf works it out from what they kept)
+    const lp = longestPast(list);
+    if (lp >= 60000) parts.push(`<span class="ld-long">${tc(`最久超出目标 ${escapeHtml(fmtMinutes(Math.round(lp / 60000)))}`, `Longest past target ${escapeHtml(fmtMinutes(Math.round(lp / 60000)))}`)}</span>`);
     return parts.length ? `<div class="ld-wins">${parts.join("")}</div>` : "";
   }
 
@@ -6904,8 +7616,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       `<th class="ld-num ld-hopt">${tc("观看", "Watched")}</th><th class="ld-num ld-hopt">${tc("锁定", "Locked")}</th><th>${tc("何时", "When")}</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : "";
   }
   function histRowHtml(e, now) {
-    const kind = e.kind && e.kind !== "performer" && KINDS[e.kind] ? kl(e.kind) : "";
-    const from = /^(random from |从收藏中随机|从推荐中随机|从\u201c)/.test(e.how || "") ? e.how : "";
+    const kind = kindNote(e);
+    const from = /^random from /.test(e.how || "") ? e.how : "";
     const note = [kind, from].filter(Boolean).join(" · ");
     const detail = entryDetail(e);
     return `<tr class="ld-row ld-hrow ${e.result}" data-key="${escapeHtml(entryKey(e))}"><td class="ld-hico">${icon(e)}</td>` +
@@ -6924,8 +7636,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   }
 
   function rowHtml(e, now) {
-    const kind = e.kind && e.kind !== "performer" && KINDS[e.kind] ? kl(e.kind) : "";
-    const from = /^(random from |从收藏中随机|从推荐中随机|从\u201c)/.test(e.how || "") ? e.how : "";
+    const kind = kindNote(e);
+    const from = /^random from /.test(e.how || "") ? e.how : "";
     const note = [kind, from].filter(Boolean).join(" · ");
     const pills = (e.goal ? `<span class="ld-pill">${escapeHtml(goalLabel(e.goal))}</span>` : "") +
       (typeof e.heat === "number" ? heatPill(e.heat)
@@ -7037,8 +7749,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   const guideHtml = () => tc(`<div class="ld-guide" data-a="guide">
       <b>一盘是怎么运作的</b>
       <ol>
-        <li><b>锁给谁。</b> 一名演员、2 至 4 人组合（任一位的场景都算）、一个工作室（含其子工作室）或一个标签（含其子标签）。锁定期间，
-          Stash 只打开他们的场景、图片和画廊，在你所有设备上都是如此。</li>
+        <li><b>锁给谁。</b> 一名演员、2 至 4 人组合（任一位的场景都算）、一个工作室（含其子工作室）或一个标签（含其子标签；
+          可挂在场景上，也可挂在演员上）。锁定期间，Stash 只打开他们的场景、图片和画廊，在你所有设备上都是如此。</li>
         <li><b>怎么出去。</b> <i>完成</i>：射出来就出局。<i>计时</i>：等它走完。<i>边缘</i>：在设定时间内忍住不射；
           每次 O 都算一次失误，会加时间。一旦达标你就出局、分数入账；你可以在那里射出来，也可以进入加时继续：
           每多看一分钟再加 10 分（乘以热度），最多再补一个目标时长。再往后不再加分，锁定会一直持续到一次 O 或按「停止加时」。</li>
@@ -7058,13 +7770,14 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
           （+40 / +100；中途打开别的场景会丢掉这张牌，场景放完则重播）。标签牌（你的收藏标签或你挑的标签）
           会打开一个带该标签的场景，10 分钟后回来。有跳过配额时，每 10 分钟来一张跳过牌（最多 3 张）：
           给跳过次数用尽的场景再补一次，或每张留到出局 +15。对局后段还会有「竞赛」：播放它，然后在
-          3 分钟内射出来 +100，否则 −50。</li>
+          3 分钟内射出来 +100，否则 −50。锁 2 至 4 人时，过了三分之一会来「锁定牌」：选你更倚重的那一位，
+          从此只发他的场景，在他身上每分钟 +2，留到出局再 +50（打开别人的场景会破掉它，已得的分不扣）。</li>
         <li><b>卡住了？</b> 在顶栏里长按 <i>放弃</i> 5 秒。会记为一次放弃；前 2 分钟内则算取消，什么都不记。</li></ol>
       <button class="ld-link" data-a="gotit">知道了</button></div>`, `<div class="ld-guide" data-a="guide">
       <b>How a run works</b>
       <ol>
         <li><b>Who.</b> A performer, or two to four of them (a scene of any of them counts, and Roulette takes turns between them in order), a studio (with its sub-studios) or a
-          tag (with its sub-tags). While you're locked, Stash only opens their scenes, images and galleries, on every device.</li>
+          tag (with its sub-tags; on the scenes, or on their performers). While you're locked, Stash only opens their scenes, images and galleries, on every device.</li>
         <li><b>Way out.</b> <i>Finish</i>: finish to get out. <i>Timer</i>: wait it out. <i>Edge</i>: watch for the set time
           without finishing; each O is a slip that adds time. Once you reach it you're out and the score is banked; you can
           finish there or keep going in overtime: each minute watched adds 10 more (times heat), up to the target's length
@@ -7087,7 +7800,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
           that long on one scene (+40 / +100; opening another scene loses the card, if the scene ends it plays again). Tag cards (your favourite tags, or the ones you pick)
           open a scene with that tag and come back after 10 minutes watched. With a Skip budget, a skip card comes every 10 minutes (3 at most):
           one more skip on a scene that is out of them, or +15 each kept to the end. Late in the run comes the Race: play it, then finish within
-          3 minutes for +100, or lose 50.</li>
+          3 minutes for +100, or lose 50. With 2 to 4 performers, a third of the way in comes Lock in: pick the one you lean on, only their
+          scenes are dealt, +2 a minute on them and +50 if you keep it (another performer's scene breaks it, nothing lost).</li>
         <li><b>Stuck?</b> Hold <i>Give up</i> in the bar for 5 seconds. It counts as a give-up; in the first 2 minutes it is a cancel and counts for nothing.</li></ol>
       <button class="ld-link" data-a="gotit">Got it</button></div>`);
 
@@ -7137,6 +7851,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     let tagList = target && target.kind === "tag"
       ? (target.tags && target.tags.length ? target.tags.map((x) => ({ id: String(x.id), name: x.name })) : [{ ...target }]) : [];
     if (target && target.mode) S.tagMode = target.mode === "or" ? "or" : "and";
+    // 2.25.0: a tag target says where its tags are (Play again, a preset)
+    if (target && target.kind === "tag") S.tagOn = perfTags(target) ? "performers" : "scenes";
+    tagList = tagList.map(({ tagOn, ...x }) => x);
     let tagCount = null, countSeq = 0;
     // 2.14: a duo: `pairing` while the next pick becomes the second
     // performer; `duoCount` their scenes and images (null while counted)
@@ -7317,7 +8034,10 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     const cardList = () => (S.cards ? S.cards : (cardFavs || []).slice(0, CARD_TAGS_MAX));
     const cardTarget = () => (S.pick === "choose" && target && target.kind === S.kind ? target : null);
     const tKey = (t) => perfKey({ ...t, tid: String(t.id), pid: (t.kind || "performer") === "performer" ? String(t.id) : undefined });
-    const tProbe = (t, fresh) => ({ kind: t.kind, tid: String(t.id), tags: t.tags, mode: t.mode, duo: t.duo, rules: { fresh: !!fresh } });
+    const tProbe = (t, fresh) => ({ kind: t.kind, tid: String(t.id), tags: t.tags, mode: t.mode, duo: t.duo, rules: { fresh: !!fresh },
+                                    ...(perfTags(t) ? { tagOn: "performers" } : {}) });
+    // 2.25.0: targets whose counts are worked out (tagCount): several tags, or tags on the performers
+    const counted = (t) => !!t && t.kind === "tag" && ((t.tags && t.tags.length > 1) || perfTags(t));
     const noTagCards = () => !!(S.conds && S.conds.one && S.goal === "timer");
     const recountCards = () => {
       const t = cardTarget(), list = cardList(), fresh = rulesOf(S).fresh;
@@ -7342,8 +8062,12 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     const cardsInHand = () => {
       if (pickedImageOnly()) return 0;
       const list = noTagCards() ? [] : cardList(), by = cardTarget() ? cardCounts.by : null;
-      return 2 + (S.conds && S.conds.skip ? 1 : 0) + (by && !cardCounts.failed ? list.filter((x) => by[x.id] > 0).length : list.length);
+      return 2 + (S.conds && S.conds.skip ? 1 : 0) + (lockCardOn() ? 1 : 0) + (by && !cardCounts.failed ? list.filter((x) => by[x.id] > 0).length : list.length);
     };
+    // 2.27.0: the Lock in card comes for a duo or group (not under One scene), a third of the way in
+    const lockCardOn = () => !!(cardTarget() && duoOf(cardTarget())) && !(S.conds && S.conds.one && S.goal === "timer");
+    const lockWhen = () => (S.goal === "timer" ? tc("过了三分之一时间", "a third of the way in") : S.goal === "edge" ? tc("到目标的三分之一", "a third of the way to the target")
+      : tc(`看满 ${LOCKIN_FINISH_MS / 60000} 分钟${S.conds && S.conds.slow ? "，或慢热的三分之一，取较晚者" : ""}`, `after ${LOCKIN_FINISH_MS / 60000} min watched${S.conds && S.conds.slow ? " or a third of Slow burn, whichever is later" : ""}`));
     // 2.19: when the Race comes, by way out
     const raceWhen = () => (S.goal === "timer" ? tc("过了大半时间", "past half the time") : S.goal === "edge" ? tc("加时开始时", "when overtime starts")
       : tc(`看满 ${RACE_FINISH_AFTER_MS / 60000} 分钟${S.conds && S.conds.slow ? "，O 已计入" : ""}`, `after ${RACE_FINISH_AFTER_MS / 60000} min watched${S.conds && S.conds.slow ? ", once O's count" : ""}`));
@@ -7356,12 +8080,20 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       const stays = !(S.conds && ((S.conds.one && S.goal === "timer") || S.conds.stay));
       // 2.19: the deal brings Eyes on screen or a Stay card
       let h = `<div class="ld-pcard ld-pchold${io ? " ld-off" : ""}" style="--c:var(--sx-cy)"><span class="ld-pkind">${tc("坚持牌", "Hold cards")}</span><span class="ld-pico">${COND_ICON.eyes}</span>` +
-        `<span class="ld-pcname">${stays ? tc("盯着画面或 Stay", "Eyes on screen or Stay") : tc("盯着画面", escapeHtml(hold.name))}</span><span class="ld-pmeta">${io ? tc("图片对局没有牌", "No cards in a run of images")
-          : stays ? tc(`盯着画面：${Math.round(hold.ms / 60000)} 分钟，+${hold.pts}。在同一个场景 Stay 5 / 10：停留则 +${s5.pts} / +${s10.pts}。` + `每看满 ${HOLD_EVERY_MS / 60000} 分钟来一张。`, `Eyes: ${Math.round(hold.ms / 60000)} min, +${hold.pts}. Stay 5 / 10 on one scene: +${s5.pts} / +${s10.pts} if you stay. ` + `One every ${HOLD_EVERY_MS / 60000} min watched.`)
-          : tc(`播放 ${Math.round(hold.ms / 60000)} 分钟，+${hold.pts}。每看满 ${HOLD_EVERY_MS / 60000} 分钟来一张，保留 ${HOLD_LASTS_MS / 60000} 分钟。`, `${Math.round(hold.ms / 60000)} min of playing, +${hold.pts}. One every ${HOLD_EVERY_MS / 60000} min watched, kept ${HOLD_LASTS_MS / 60000} min.`)}</span></div>`;
+        `<span class="ld-pcname">${stays ? tc("盯着画面 或 停留", "Eyes on screen or Stay") : escapeHtml(hold.name)}</span><span class="ld-pmeta">${io ? tc("图片对局没有牌", "No cards in a run of images")
+          : stays ? tc(`盯着画面 ${Math.round(hold.ms / 60000)} 分钟，+${hold.pts}。在同一场景停留 5／10 分钟：守住 +${s5.pts}／+${s10.pts}。每看满 ${HOLD_EVERY_MS / 60000} 分钟发一张。`, `Eyes: ${Math.round(hold.ms / 60000)} min, +${hold.pts}. Stay 5 / 10 on one scene: +${s5.pts} / +${s10.pts} if you stay. One every ${HOLD_EVERY_MS / 60000} min watched.`)
+          : tc(`坚持 ${Math.round(hold.ms / 60000)} 分钟，+${hold.pts}。每看满 ${HOLD_EVERY_MS / 60000} 分钟发一张，保留 ${HOLD_LASTS_MS / 60000} 分钟。`, `${Math.round(hold.ms / 60000)} min of playing, +${hold.pts}. One every ${HOLD_EVERY_MS / 60000} min watched, kept ${HOLD_LASTS_MS / 60000} min.`)}</span></div>`;
+      // 2.26.0: Pictures cards, in the same deal, with Slideshow installed
+      if (slideshowApi()) h += `<div class="ld-pcard ld-pchold${io ? " ld-off" : ""}" style="--c:var(--sx-cy)"><span class="ld-pkind">${tc("坚持牌", "Hold cards")}</span><span class="ld-pico">${CARD_ICON.pics}</span>` +
+        `<span class="ld-pcname">${tc("图片牌", "Pictures")}</span><span class="ld-pmeta">${io ? tc("图片对局没有牌", "No cards in a run of images")
+          : tc(`在 Slideshow 里看本局的图片 ${Math.round(HOLD_KINDS.pics2.ms / 60000)} 或 ${Math.round(HOLD_KINDS.pics5.ms / 60000)} 分钟：+${HOLD_KINDS.pics2.pts}／+${HOLD_KINDS.pics5.pts}。图片达到 ${PICS_CARD_MIN} 张时进入坚持牌组。`, `Watch the run's pictures in Slideshow for ${Math.round(HOLD_KINDS.pics2.ms / 60000)} or ${Math.round(HOLD_KINDS.pics5.ms / 60000)} min: +${HOLD_KINDS.pics2.pts} / +${HOLD_KINDS.pics5.pts}. In the hold deal when there are ${PICS_CARD_MIN} pictures or more.`)}</span></div>`;
       h += `<div class="ld-pcard ld-pchold${io ? " ld-off" : ""}" style="--c:var(--sx-or)"><span class="ld-pkind">${tc("竞赛牌", "Race card")}</span><span class="ld-pico">${CARD_ICON.race}</span>` +
         `<span class="ld-pcname">${tc("竞赛", "Race")}</span><span class="ld-pmeta">${io ? tc("图片对局没有牌", "No cards in a run of images")
-          : tc(`每盘一次，${escapeHtml(raceWhen())}。播放它，然后在 ${RACE_MS / 60000} 分钟内射出来：+${RACE_WIN}，否则 −${RACE_LOSE}。`, `Once a run, ${escapeHtml(raceWhen())}. Play it, then finish within ${RACE_MS / 60000} min: +${RACE_WIN}, or −${RACE_LOSE}.`)}</span></div>`;
+          : tc(`每局一次，${escapeHtml(raceWhen())}。打出后 ${RACE_MS / 60000} 分钟内完成：+${RACE_WIN}，否则 −${RACE_LOSE}。`, `Once a run, ${escapeHtml(raceWhen())}. Play it, then finish within ${RACE_MS / 60000} min: +${RACE_WIN}, or −${RACE_LOSE}.`)}</span></div>`;
+      // 2.27.0: Lock in, for a duo or group
+      if (lockCardOn()) h += `<div class="ld-pcard ld-pchold${io ? " ld-off" : ""}" style="--c:var(--sx-pu)"><span class="ld-pkind">${tc("锁定牌", "Lock in card")}</span><span class="ld-pico">${CARD_ICON.lockin}</span>` +
+        `<span class="ld-pcname">${tc("锁定", "Lock in")}</span><span class="ld-pmeta">${io ? tc("图片对局没有牌", "No cards in a run of images")
+          : tc(`每局一次，${escapeHtml(lockWhen())}。选定你更倚重的那一位：只发他的场景，看他每分钟 +${LOCKIN_PER_MIN}，留到出局再 +${LOCKIN_KEEP}。`, `Once a run, ${escapeHtml(lockWhen())}. Pick the one you lean on: only their scenes are dealt, +${LOCKIN_PER_MIN} a minute on them, +${LOCKIN_KEEP} if you keep it.`)}</span></div>`;
       // 2.20: skip cards, with a Skip budget
       if (S.conds && S.conds.skip) h += `<div class="ld-pcard ld-pchold${io ? " ld-off" : ""}" style="--c:var(--sx-or)"><span class="ld-pkind">${tc("跳过牌", "Skip cards")}</span><span class="ld-pico">${COND_ICON.skip}</span>` +
         `<span class="ld-pcname">${tc("跳过牌", "Skip card")}</span><span class="ld-pmeta">${io ? tc("图片对局没有牌", "No cards in a run of images")
@@ -7375,9 +8107,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         const pct = n && cardCounts.total ? Math.max(3, Math.min(100, Math.round((n / cardCounts.total) * 100))) : 0;
         const bold = n > 0 && meta.startsWith(`${n} `);
         return `<div class="ld-pcard ld-pctag${off ? " ld-off" : ""}" style="--c:var(--sx-ma)">` +
-          `<button class="ld-px" data-uncard="${i}" aria-label="${tc("移除 ", "Remove ")}${escapeHtml(x.name)}" title="${tc("移除这张牌", "Remove this card")}">${X_SVG}</button>` +
+          `<button class="ld-px" data-uncard="${i}" aria-label="${tc(`移除 ${escapeHtml(x.name)}`, `Remove ${escapeHtml(x.name)}`)}" title="${tc("移除这张牌", "Remove this card")}">${X_SVG}</button>` +
           (pic ? `<span class="ld-pprev">${cardPicHtml(pic, x.name, renderCards)}</span><span class="ld-pkind">${tc("标签牌", "Tag card")}</span>`
-            : `<span class="ld-pkind">${tc("标签牌", "Tag card")}</span><span class="ld-pico">${TAG_ICON}</span>`) +
+            : `<span class="ld-pprev ld-pnopic">${TAG_ICON}</span><span class="ld-pkind">${tc("标签牌", "Tag card")}</span>`) +
           `<span class="ld-pcname">${escapeHtml(x.name)}</span>` +
           `<span class="ld-pmeta">${bold ? `<b>${n}</b>${escapeHtml(meta.slice(String(n).length))}` : escapeHtml(meta)}</span>` +
           (pct && !off ? `<span class="ld-pbar"><i style="width:${pct}%"></i></span>` : "") + `</div>`;
@@ -7446,15 +8178,26 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       const typed = $("q").value.trim();
       // the tags chosen so far, each with an x, and how they combine
       if (!typed && S.kind === "tag" && tagList.length) {
-        const two = tagList.length > 1;
+        const two = tagList.length > 1, onP = S.tagOn === "performers";
+        const all = S.tagMode === "or" ? "any" : "all";
+        // 2.25.0: the count line, for several tags or tags on the performers
+        const countLine = tagCount === null ? tc("统计中…", "Counting…") : !tagCount ? "" : !tagCount.s && !tagCount.i
+          ? `<b class="ld-coral">${escapeHtml(noneText())}</b>`
+          : tc(`${tagCount.s ? plural(tagCount.s, "scene", "scenes") : `${plural(tagCount.i, "image", "images")}（仅图片）`}，` +
+              `${onP ? `带${two ? "这些标签" : "这个标签"}的演员` : `带${all === "any" ? "其中任一" : "这些"}标签`}。`,
+              `${tagCount.s ? plural(tagCount.s, "scene", "scenes") : `${plural(tagCount.i, "image", "images")} (images only)`} ` +
+              `${onP ? `of performers with ${two ? `${all} of these` : "it"}` : `with ${all} of these`}.`);
         $("results").innerHTML = `<div class="ld-tagpick">${tagList.map((x, i) => `${i ? `<span class="ld-tagjoin">${S.tagMode === "or" ? tc("或", "or") : tc("且", "and")}</span>` : ""}` +
-            `<span class="ld-tagchip">${pfHtml(null, x.name, x.image_path, "xxs", "tag")}${escapeHtml(x.name)}<button data-untag="${i}" aria-label="${tc("移除 ", "Remove ")}${escapeHtml(x.name)}">×</button></span>`).join("")}
+            `<span class="ld-tagchip">${pfHtml(null, x.name, x.image_path, "xxs", "tag")}${escapeHtml(x.name)}<button data-untag="${i}" aria-label="${tc(`移除 ${escapeHtml(x.name)}`, `Remove ${escapeHtml(x.name)}`)}">×</button></span>`).join("")}
             <span class="ld-tagmore">${tagList.length < 6 ? tc("搜索以再加一个", "search to add another") : ""}</span></div>
-          ${two ? `<div class="ld-tagmode"><span class="ld-seg ld-mini"><button data-tm="and" class="${S.tagMode !== "or" ? "ld-on" : ""}">${tc("且", "AND")}</button>` +
-            `<button data-tm="or" class="${S.tagMode === "or" ? "ld-on" : ""}">${tc("或", "OR")}</button></span>` +
-            `<span class="ld-hint">${tagCount === null ? tc("统计中…", "Counting…") : !tagCount ? "" : !tagCount.s && !tagCount.i
-              ? `<b class="ld-coral">${tc(`没有场景或图片带这些标签中的${S.tagMode === "or" ? "任一个" : "全部"}。`, `No scene or image has ${S.tagMode === "or" ? "any" : "all"} of these.`)}</b>`
-              : `${tc(`${tagCount.s ? plural(tagCount.s, "scene", "scenes") : `${plural(tagCount.i, "image", "images")}（仅图片）`} ${S.tagMode === "or" ? "带其中任意一个" : "带全部"}。`, `${tagCount.s ? plural(tagCount.s, "scene", "scenes") : `${plural(tagCount.i, "image", "images")} (images only)`} ${S.tagMode === "or" ? "with any of these" : "with all of these"}.`)}`}</span></div>` : ""}`;
+          ${two ? `<div class="ld-tagmode"><span class="ld-seg ld-mini"><button data-tm="and" class="${S.tagMode !== "or" ? "ld-on" : ""}">AND</button>` +
+            `<button data-tm="or" class="${S.tagMode === "or" ? "ld-on" : ""}">OR</button></span>` +
+            `<span class="ld-hint">${countLine}</span></div>` : ""}
+          <div class="ld-tagmode ld-tagon"><span class="ld-cap">${tc("标签挂在", "Tag on")}</span><span class="ld-seg ld-mini" role="group" aria-label="${tc("标签挂在", "Tag on")}">` +
+            `<button data-ton="scenes" class="${onP ? "" : "ld-on"}" aria-pressed="${!onP}">${tc("场景", "Scenes")}</button>` +
+            `<button data-ton="performers" class="${onP ? "ld-on" : ""}" aria-pressed="${onP}">${tc("演员", "Performers")}</button></span>` +
+            `<span class="ld-hint">${onP ? tc(`带${two ? "这些标签" : "这个标签"}的演员的场景${two ? "" : ` · ${countLine}`}`, `Scenes of performers who have ${two ? "these tags" : "the tag"}${two ? "" : ` · ${countLine}`}`)
+              : tc(`自身带${two ? "这些标签" : "这个标签"}的场景`, `Scenes that carry ${two ? "these tags" : "the tag"} themselves`)}</span></div>`;
         $("results").querySelectorAll("[data-untag]").forEach((b) => b.addEventListener("click", (ev) => {
           ev.stopPropagation();
           tagList.splice(+b.dataset.untag, 1);
@@ -7463,6 +8206,12 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         $("results").querySelectorAll("[data-tm]").forEach((b) => b.addEventListener("click", (ev) => {
           ev.stopPropagation();
           S.tagMode = b.dataset.tm;
+          tagsChanged();
+        }));
+        $("results").querySelectorAll("[data-ton]").forEach((b) => b.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (S.tagOn === b.dataset.ton) return;
+          S.tagOn = b.dataset.ton === "performers" ? "performers" : "scenes";
           tagsChanged();
         }));
         return;
@@ -7571,7 +8320,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       const d = Math.floor((Date.now() - at) / DAY_MS);
       return tc(`上次锁定于 ${d < 1 ? "今天" : d === 1 ? "昨天" : `${d} 天前`}`, `last locked to ${d < 1 ? "today" : d === 1 ? "yesterday" : `${d} days ago`}`);
     };
-    const sceneN = (t) => (t.tags && t.tags.length > 1 ? (tagCount && tagCount.s) : duoOf(t) ? (duoCount && duoCount.s) : t.scene_count);
+    const sceneN = (t) => (counted(t) ? (tagCount && tagCount.s) : duoOf(t) ? (duoCount && duoCount.s) : t.scene_count);
     const chosenMeta = (t) => {
       if (imageOnly(t)) return `${plural(t.image_count, "image", "images")} · ${tc("仅图片", "images only")}`;
       const n = sceneN(t), u = whoN.key === tKey(t) ? whoN.u : null;
@@ -7601,25 +8350,35 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     };
     // The chosen tags as one target: the first tag's id and picture, all of them
     // in `tags`, how they combine in `mode`.
+    // 2.25.0: on the performers, `tagOn` and no counts of the tag's own (its scenes are not the run's)
     const tagTarget = () => {
       if (!tagList.length) return null;
-      if (tagList.length === 1) return { ...tagList[0], kind: "tag" };
-      return { ...tagList[0], kind: "tag", name: tagsName(tagList, S.tagMode), tags: tagList.map((x) => ({ id: x.id, name: x.name })),
-               mode: S.tagMode === "or" ? "or" : "and" };
+      const on = S.tagOn === "performers";
+      const t = tagList.length === 1 ? { ...tagList[0], kind: "tag" }
+        : { ...tagList[0], kind: "tag", name: tagsName(tagList, S.tagMode), tags: tagList.map((x) => ({ id: x.id, name: x.name })),
+            mode: S.tagMode === "or" ? "or" : "and" };
+      if (on) { t.tagOn = "performers"; delete t.scene_count; delete t.image_count; }
+      return t;
+    };
+    const noneText = () => (S.tagOn === "performers"
+      ? (tagList.length > 1 ? tc(`带${S.tagMode === "or" ? "其中任一" : "这些全部"}标签的演员都没有场景或图片。`, `No performer with ${S.tagMode === "or" ? "any" : "all"} of these tags has a scene or image.`) : tc("带这个标签的演员都没有场景或图片。", "No performer with this tag has a scene or image."))
+      : tc(`没有场景或图片带${S.tagMode === "or" ? "其中任一" : "这些全部"}标签。`, `No scene or image has ${S.tagMode === "or" ? "any" : "all"} of these tags.`));
+    const recountTags = () => {
+      tagCount = null;
+      if (!counted(target)) return;
+      const mine = ++countSeq;
+      const tl = tagList.slice(), tm = S.tagMode, on = S.tagOn;
+      keptCount(`tags|${on}|${tm === "or" ? "or" : "and"}|${tl.map((x) => x.id).sort().join(",")}`, () => Promise.all([countTagScenes(tl, tm, on), countTagImages(tl, tm, on)]))
+        .then(([n, ni]) => { if (mine === countSeq) { tagCount = { s: n, i: ni }; renderResults(); render(); } })
+        .catch(() => { if (mine === countSeq) { tagCount = undefined; renderResults(); } });
     };
     const tagsChanged = () => {
       target = tagTarget();
       if (target) picked();
-      tagCount = null;
       err("");
+      recountTags();
       renderResults();
       render();
-      if (tagList.length < 2) return;
-      const mine = ++countSeq;
-      const tl = tagList.slice(), tm = S.tagMode;
-      keptCount(`tags|${tm === "or" ? "or" : "and"}|${tl.map((x) => x.id).sort().join(",")}`, () => Promise.all([countTagScenes(tl, tm), countTagImages(tl, tm)]))
-        .then(([n, ni]) => { if (mine === countSeq) { tagCount = { s: n, i: ni }; renderResults(); render(); } })
-        .catch(() => { if (mine === countSeq) { tagCount = undefined; renderResults(); } });
     };
     const pickTarget = (p) => {
       if (S.kind === "tag") {
@@ -7821,7 +8580,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
 
     // the chosen target, or tag combination, has images and no scenes
     const pickedImageOnly = () => S.pick === "choose" && !!target && target.kind === S.kind &&
-      (target.tags ? !!tagCount && !tagCount.s && tagCount.i > 0 : duoOf(target) ? !!duoCount && !duoCount.s && duoCount.i > 0 : imageOnly(target));
+      (counted(target) ? !!tagCount && !tagCount.s && tagCount.i > 0 : duoOf(target) ? !!duoCount && !duoCount.s && duoCount.i > 0 : imageOnly(target));
     let lastImg = null, lastFresh = rulesOf(S).fresh;
     // 2.12: the conditions a run would start with: Toy in charge needs
     // Intiface Sync 1.49 (kept in the setup, so it comes back once it is there)
@@ -7906,16 +8665,17 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         const na = c.needs === "goon" && (!goonApi() || (c.k === "blindj" && !blindApi()));
         const needText = tc(c.k === "blindj" ? "需要 Intiface Sync 1.67 或更高版本" : "需要 Intiface Sync 1.49 或更高版本", c.k === "blindj" ? BLIND_NEEDS : TOY_NEEDS);
         const r = na ? 0 : S.conds[c.k] || 0;
-        return `<div class="ld-cond${r ? " ld-on" : ""}${na ? " ld-condna" : ""}" data-cond="${c.k}" role="button" tabindex="0" aria-label="${escapeHtml(c.name)}${r ? `: ${escapeHtml(c.ranks[r - 1])}` : ""}, raise a rank"${na ? ` aria-disabled="true" title="${needText}"` : ""}>` +
+        return `<div class="ld-cond${r ? " ld-on" : ""}${na ? " ld-condna" : ""}" data-cond="${c.k}" role="button" tabindex="0" aria-label="${tc(`${escapeHtml(c.name)}${r ? `：${escapeHtml(c.ranks[r - 1])}` : ""}，点一下升一档`, `${escapeHtml(c.name)}${r ? `: ${escapeHtml(c.ranks[r - 1])}` : ""}, raise a rank`)}"${na ? ` aria-disabled="true" title="${needText}"` : ""}>` +
           `<span class="ld-condico">${COND_ICON[c.k]}</span>` +
           `<span class="ld-condtxt"><b>${escapeHtml(c.name)}</b>${r ? `<em>${escapeHtml(c.ranks[r - 1])}</em>` : na ? `<em class="ld-na">${needText}</em>` : ""}<small title="${escapeHtml(c.text)}">${escapeHtml(c.text)}</small></span>` +
           `<span class="ld-pips">${c.ranks.map((rk, i) => `<button class="ld-pip${i < r ? " ld-on" : ""}" data-pip="${i + 1}" ` +
-            `title="${escapeHtml(rk)} · +${c.heat[i]} heat" aria-label="${escapeHtml(c.name)}: ${escapeHtml(rk)}"${na ? " disabled" : ""}></button>`).join("")}</span>` +
+            `title="${tc(`${escapeHtml(rk)} · 热度 +${c.heat[i]}`, `${escapeHtml(rk)} · +${c.heat[i]} heat`)}" aria-label="${tc(`${escapeHtml(c.name)}：${escapeHtml(rk)}`, `${escapeHtml(c.name)}: ${escapeHtml(rk)}`)}"${na ? " disabled" : ""}></button>`).join("")}</span>` +
           `<span class="ld-condheat">${r ? `+${c.heat[r - 1]}` : "0"}</span></div>` +
           (c.k === "toy" && r ? toyOptsHtml() : "");
-      }).join("") + (free.length ? `<div class="ld-noheat"><span>${tc("无热度", "No heat")}</span>${free.map((c) =>
-          `<button class="ld-nhchip${S.conds[c.k] ? " ld-on" : ""}" data-cond="${c.k}" title="${escapeHtml(c.text)}"><i></i>${COND_ICON[c.k]} ${escapeHtml(c.name)}</button>`).join("")}
-          <small>${tc("只是偏好，不是挑战", "a preference, not a challenge")}</small></div>` : "");
+      }).join("") + `<div class="ld-noheat"><span>${tc("不加热度", "No heat")}</span>${free.map((c) =>
+          `<button class="ld-nhchip${S.conds[c.k] ? " ld-on" : ""}" data-cond="${c.k}" title="${escapeHtml(c.text)}" aria-pressed="${S.conds[c.k] ? "true" : "false"}"><i></i>${COND_ICON[c.k]} ${escapeHtml(c.name)}</button>`).join("")}
+          ${learnChipHtml(S.learn !== false)}
+          <small>${tc("偏好，不是挑战", "a preference, not a challenge")}</small></div>`;
       $("conds").classList.toggle("ld-condsoff", io);
       if (io) $("conds").insertAdjacentHTML("afterbegin", `<div class="ld-hint ld-ionote">${tc(`${escapeHtml(target.name)} 只有图片、没有场景：`, `${escapeHtml(target.name)} has images only, no scenes: `)}` +
         `${imagesOk(S) ? tc("图片上的一次 O 也算。条件都是针对场景的，所以这一盘不启用。", "an O on one of the images counts. Conditions are about scenes, so they're off for this run.") : `<b class="ld-coral">${tc("请选完成，或按锁定时间的计时。", "pick Finish, or Timer by locked time.")}</b>`}</div>`);
@@ -7932,22 +8692,22 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       });
       const srcText = src ? (src.type === "fav" ? tc("你的收藏", "your favourites") : src.type === "rec" ? tc(`推荐（${escapeHtml(recChipLabel(src.chip))}）`, `Recommended (${escapeHtml(recChipLabel(src.chip))})`) : `“${escapeHtml(src.name)}”`) : "…";
       const who = S.pick === "choose"
-        ? (target && target.kind === S.kind ? `<b>${escapeHtml(target.name)}</b>${S.kind === "performer" ? "" : ` (${label()})`}` : tc(`你挑的${label()}`, `the ${label()} you pick`))
-        : tc(`从${srcText}随机抽取的${label()}`, `a random ${label()} from ${srcText}`);
+        ? (target && target.kind === S.kind ? `<b>${escapeHtml(target.name)}</b>${S.kind === "performer" ? "" : tc(`（${kindNote(target)}）`, ` (${kindNote(target)})`)}` : tc(`你选的那个${label()}`, `the ${label()} you pick`))
+        : tc(`从 ${srcText} 里随机一个${label()}`, `a random ${label()} from ${srcText}`);
       // the run card: who, the deal, heat, what it is worth
       const tgt = S.pick === "choose" && target && target.kind === S.kind ? target : null;
       if (tgt) wantWho(tgt);
       // 2.17: the steps' headers repeat the choice; their badges say where
       // the setup is (stepStates)
       const n1 = tgt ? sceneN(tgt) : null, u1 = tgt && whoN.key === tKey(tgt) ? whoN.u : null;
-      $("sum1").innerHTML = S.pick === "random" ? `<b>${tc(`随机${label()}`, `Random ${label()}`)}</b> · ${tc("来自", "from")} ${srcText}`
-        : tgt ? `<b>${escapeHtml(tgt.name)}</b>${imageOnly(tgt) ? tc(" · 仅图片", " · images only") : typeof n1 === "number" ? ` · ${plural(n1, "scene", "scenes")}${u1 !== null ? tc(`, ${u1.toLocaleString()} 张未看过`, `, ${u1.toLocaleString()} unwatched`) : ""}` : ""}`
-        : `<span class="ld-muted">${tc(`挑一个${label()}`, `pick a ${label()}`)}</span>`;
+      $("sum1").innerHTML = S.pick === "random" ? tc(`<b>随机${label()}</b> · 来自 ${srcText}`, `<b>Random ${label()}</b> · from ${srcText}`)
+        : tgt ? `<b>${escapeHtml(tgt.name + onWord(tgt))}</b>${imageOnly(tgt) ? tc(" · 仅图片", " · images only") : typeof n1 === "number" ? tc(` · ${plural(n1, "scene", "scenes")}${u1 !== null ? `，${u1.toLocaleString()} 个未看过` : ""}`, ` · ${plural(n1, "scene", "scenes")}${u1 !== null ? `, ${u1.toLocaleString()} unwatched` : ""}`) : ""}`
+        : `<span class="ld-muted">${tc(`选一个${label()}`, `pick a ${label()}`)}</span>`;
       $("sum2").innerHTML = `<b>${escapeHtml(goalLabel(goal))}</b> · ${escapeHtml(goalInfo()[S.goal][1])}`;
       renderSteps();
       const dw = dealWords(goal, false);
       $("rcwho").innerHTML = (tgt ? pfHtml(tgt, tgt.name, tgt.image_path, "xl") : pfHtml(null, "", "", "xl", S.kind)) +
-        `<div><b>${S.pick === "choose" ? (tgt ? escapeHtml(tgt.name) : tc(`挑一个${label()}`, `Pick a ${label()}`)) : who}</b>` +
+        `<div><b>${S.pick === "choose" ? (tgt ? escapeHtml(tgt.name + onWord(tgt)) : tc(`选一个${label()}`, `Pick a ${label()}`)) : who}</b>` +
         `<small>${escapeHtml(dw[0])}${dw[1] ? `<br>${escapeHtml(dw[1])}` : ""}</small></div>`;
       $("heat").textContent = String(heat);
       $("mult").textContent = `×${heatMult(heat)}`;
@@ -7970,9 +8730,10 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       // best, the highest heat got out of)
       const howOpen = !!$("howscore").querySelector("details[open]");
       const formulaText = tc(`分数：观看分钟数 × 10，每次跳过 −5（最多扣一半）`, `Score: watched minutes × 10, −5 per skip (at most half)`) +
-        `${S.goal === "edge" ? tc("，每次 O −100，加时分钟 × 10", ", −100 per O, overtime minutes × 10") : ""}, ` +
-        tc(`每张新图片 +1（最多 ${PICS_MAX}），每张坚持牌保留 +30（Stay +40 / +100），每张标签牌的标记 +${TAG_MATCH_PTS}，`, `+1 per new picture viewed (up to ${PICS_MAX}), +30 per hold card kept (Stay +40 / +100), +${TAG_MATCH_PTS} per tag card's marker, `) +
+        `${S.goal === "edge" ? tc(`，每次 O −100，加时分钟 × 10，超出目标的其它分钟 × ${PAST_PTS}（最多 ${PAST_CAP_MS / 60000}）`, `, −100 per O, overtime minutes × 10, other minutes past the target × ${PAST_PTS} (up to ${PAST_CAP_MS / 60000})`) : ""}，` +
+        tc(`每张新图片 +1（最多 ${PICS_MAX}），每张保留的坚持牌 +30（停留 +40 / +100，图片 +${HOLD_KINDS.pics2.pts} / +${HOLD_KINDS.pics5.pts}），每张标签牌上的标记 +${TAG_MATCH_PTS}，`, `+1 per new picture viewed (up to ${PICS_MAX}), +30 per hold card kept (Stay +40 / +100, Pictures +${HOLD_KINDS.pics2.pts} / +${HOLD_KINDS.pics5.pts}), +${TAG_MATCH_PTS} per tag card's marker, `) +
         tc(`竞赛 +${RACE_WIN} 或 −${RACE_LOSE}，`, `the Race +${RACE_WIN} or −${RACE_LOSE}, `) +
+        (tgt && duoOf(tgt) ? tc(`锁定牌每分钟 +${LOCKIN_PER_MIN}（只算被锁定的那一位，最多 ${LOCKIN_CAP_MS / 60000}），保留再加 +${LOCKIN_KEEP}，`, `the Lock in +${LOCKIN_PER_MIN} a minute on the one locked in (up to ${LOCKIN_CAP_MS / 60000}) and +${LOCKIN_KEEP} kept, `) : "") +
         `${C.skip ? tc(`每张保留的跳过牌 +${SKIP_CARD_PTS}，`, `+${SKIP_CARD_PTS} per skip card kept, `) : ""}${C.eyes ? tc("每离开 2 秒 −1，", "−1 per 2 s away, ") : ""}` +
         tc(`出局 +100，`, `+100 for getting out, `) +
         tc(`热度 ${heat} × ${heatMult(heat)}`, `× ${heatMult(heat)} for heat ${heat}`) +
@@ -8002,6 +8763,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         if (c.k === "blindj" && !blindApi() && next > 0) { err(tc("盲抽旅程需要 Intiface Sync 1.67 或更高版本。", `Blind Journey ${BLIND_NEEDS} or later.`)); return; }
         S.conds = { ...S.conds, [c.k]: next };
         if (!next) { delete S.conds[c.k]; for (const d of conditions()) if (d.with === c.k) delete S.conds[d.k]; }
+        // 2.26.0: "An O adds 10 min" and Harsh slips: turning one on turns the other off
+        else for (const d of conditions()) if (d.not === c.k || c.not === d.k) delete S.conds[d.k];
         err("");
         render();
         return;
@@ -8018,6 +8781,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       } else if (el.dataset.g) S.goal = el.dataset.g;
       else if (el.dataset.tb) S.timerBy = el.dataset.tb;
       else if (el.dataset.a === "clearheat") S.conds = {};
+      else if (el.dataset.learn !== undefined) S.learn = !S.learn;   // 2.26.0
       else if (el.parentElement && el.parentElement.dataset.s && el.dataset.d) {
         const k = el.parentElement.dataset.s;
         S[k] = STEP[k](S[k], +el.dataset.d);
@@ -8063,8 +8827,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       err("");
       if (lock) { err(tc("已经有一个锁局在进行了。", "A lockdown is already running.")); return; }
       if (S.pick === "choose") {
-        if (!target || target.kind !== S.kind) { err(tc(`请先选一个${label()}：在上方搜索。`, `Pick a ${label()} first: search for one above.`)); $("q").focus(); return; }
-        if (target.tags && tagCount && !tagCount.s && !tagCount.i) { err(tc(`没有任何场景或图片带${S.tagMode === "or" ? "其中任意一个" : "全部"}这些标签。`, `No scene or image has ${S.tagMode === "or" ? "any" : "all"} of these tags.`)); return; }
+        if (!target || target.kind !== S.kind) { err(tc(`先选一个${label()}：在上面搜索。`, `Pick a ${label()} first: search for one above.`)); $("q").focus(); return; }
+        if (counted(target) && tagCount && !tagCount.s && !tagCount.i) { err(noneText()); return; }
         if (duoOf(target) && duoCount && !duoCount.s && !duoCount.i) { err(tc("他们都没有场景或图片。", "None of them has a scene or image.")); return; }
         const io = pickedImageOnly();
         if (io && !imagesOk(S)) { err(tc(`${target.name} 只有图片：请选完成，或按锁定时间的计时。`, `${target.name} has images only: pick Finish, or Timer by locked time.`)); return; }
@@ -8110,6 +8874,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     loadSources();
     renderResults();
     if (duoOf(target)) duoChanged();
+    if (counted(target)) { recountTags(); renderResults(); }
     const ph = into && pageEl && pageEl.querySelector(".ld-pagehead");
     if (ph) { ph.querySelector(".ld-headslim")?.remove(); ph.insertBefore(box.querySelector(".ld-headslim"), ph.querySelector(".ld-tabs")); }
     if (here && !target) {
@@ -8158,8 +8923,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     const now = Date.now();
     box.innerHTML =
       `<div class="ld-hhead"><b>${tc("你的历史", "Your history")}</b><button class="ld-link ld-danger" data-a="clear">${TRASH} ${tc("清空历史", "Clear history")}</button></div>` +
-      tilesHtml(stats) +
-      `<div class="ld-strip" title="${tc("最近 " + Math.min(30, entries.length) + " 条，最早的在前", "Last " + Math.min(30, entries.length) + ", oldest first")}">` +
+      tilesHtml(stats, list) +
+      `<div class="ld-strip" title="${tc(`最近 ${Math.min(30, entries.length)} 局，最早的在前`, `Last ${Math.min(30, entries.length)}, oldest first`)}">` +
         entries.slice(-30).map((e) => `<span title="${escapeHtml(e.name || "")} · ${escapeHtml(fmtDuration(e.ms))}">${icon(e)}</span>`).join("") +
       `</div>` +
       `<div class="ld-total">${escapeHtml(fmtDuration(stats.totalMs))} ${tc("累计锁定", "locked in total")}</div>` +
@@ -8195,14 +8960,15 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         <div class="ld-search ld-small">${SEARCH}<input data-a="q" placeholder="${tc("名称", "Name")}" autocomplete="off"></div>
       </div>
       <div data-a="list"></div>
-      <div class="ld-foot">${tc("你最近的", "Your latest")} ${HISTORY_MAX} ${tc("个锁局会被保留。总计统计全部。", "lockdowns are kept. Totals count all of them.")}</div>`;
+      <div data-a="learn"></div>
+      <div class="ld-foot">${tc(`只保留最近 ${HISTORY_MAX} 局。总计统计全部。`, `Your latest ${HISTORY_MAX} lockdowns are kept. Totals count all of them.`)}</div>`;
     const box = into ? into : modal(html);
     if (into) into.innerHTML = html; else box.classList.add("ld-tall");
     const $ = (a) => box.querySelector(`[data-a="${a}"]`);
 
     const render = () => {
-      $("tiles").innerHTML = tilesHtml(stats);
-      $("total").textContent = `${tc(`${stats.done + stats.gaveUp} 次锁定`, `${stats.done + stats.gaveUp} lockdowns`)} · ${fmtDuration(stats.totalMs)} ${tc("累计锁定", "locked in total")}`;
+      $("tiles").innerHTML = tilesHtml(stats, list);
+      $("total").textContent = tc(`${stats.done + stats.gaveUp} 局 · 累计锁定 ${fmtDuration(stats.totalMs)}`, `${stats.done + stats.gaveUp} lockdowns · ${fmtDuration(stats.totalMs)} locked in total`);
       const matching = filterEntries(list, filter, q);
       const groups = groupByMonth(matching);
       const now = Date.now();
@@ -8228,6 +8994,69 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     wireRows($("list"), update, () => list);
     wireClear($("clear"), () => stats.done + stats.gaveUp, update);
     render();
+    learnBox($("learn"), data);
+  }
+
+  // 2.26.0: what Roulette has learnt (learnLists): Most skipped and Stayed
+  // longest, a few scenes each with their picture and title (read once), and
+  // Forget what I skip (click again). Under the history list, so the runs
+  // stay first.
+  function learnBox(el, data) {
+    if (!el) return;
+    const ls = learnLists(data && data.learn);
+    if (data && data.learnBad) { el.innerHTML = `<section class="ld-learn"><div class="ld-learnhead"><b>${tc("你会跳过什么", "What you skip")}</b></div>` +
+      `<div class="ld-notice">${tc("轮盘从你的跳过中学到的东西无法读取，因此保持原样。「忘掉我的跳过」可以让它重新开始。", "What Roulette learnt from your skips could not be read, so it is left as it is. Forget what I skip starts it again.")}</div>` +
+      `<button class="ld-link ld-danger" data-a="forget">${tc("忘掉我的跳过", "Forget what I skip")}</button></section>`; wireForget(el); return; }
+    if (!ls.n) { el.innerHTML = ""; return; }
+    const col = (title, rows, line) => `<div class="ld-learncol"><span class="ld-cap">${title}</span>` +
+      (rows.length ? `<ol class="ld-learnlist">${rows.map((r) => `<li><a class="ld-mlink ld-learnrow" href="/scenes/${encodeURIComponent(r.id)}" data-scene="${escapeHtml(r.id)}">` +
+        `<span class="ld-learnpic"></span><span class="ld-learntxt"><b>${tc(`场景 ${escapeHtml(r.id)}`, `Scene ${escapeHtml(r.id)}`)}</b><small>${escapeHtml(line(r))}</small></span></a></li>`).join("")}</ol>`
+        : `<div class="ld-hint">${tc("还没有。", "Nothing yet.")}</div>`) + `</div>`;
+    el.innerHTML = `<section class="ld-learn"><div class="ld-learnhead"><b>${tc("你会跳过什么", "What you skip")}</b>` +
+      `<span class="ld-hint">${tc(`已记住 ${plural(ls.n, "scene", "scenes")} · 轮盘与标签牌会更少或更多地抽到它们`, `${plural(ls.n, "scene", "scenes")} remembered · Roulette and tag cards pick these less or more often`)}</span>` +
+      `<button class="ld-link ld-danger" data-a="forget">${tc("忘掉我的跳过", "Forget what I skip")}</button></div>` +
+      `<div class="ld-learncols">${col(tc("跳过最多", "Most skipped"), ls.skipped, (r) => tc(`在 ${r.k}/${plural(r.n, "run", "runs")} 中于 ${LEARN_QUICK_MS / 1000} 秒内跳过`, `skipped within ${LEARN_QUICK_MS / 1000} s in ${r.k} of ${plural(r.n, "run", "runs")}`))}` +
+      `${col(tc("停留最久", "Stayed longest"), ls.stayed, (r) => tc(`共观看 ${fmtMinutes(Math.round(r.ms / 60000))}，${plural(r.n, "run", "runs")}`, `${fmtMinutes(Math.round(r.ms / 60000))} watched in all, ${plural(r.n, "run", "runs")}`))}</div></section>`;
+    if (!el.dataset.wired) { el.dataset.wired = "1"; el.addEventListener("click", (ev) => momentClick(ev)); }
+    wireForget(el);
+    const ids = [...new Set(ls.skipped.concat(ls.stayed).map((r) => r.id))];
+    if (!ids.length) return;
+    gql(`query { ${ids.map((id, i) => `a${i}: findScene(id: "${id}") { id title files { basename } paths { screenshot } }`).join(" ")} }`).then((d) => {
+      if (!el.isConnected) return;
+      ids.forEach((id, i) => {
+        const r = d && d[`a${i}`];
+        for (const row of el.querySelectorAll(`[data-scene="${CSS.escape(id)}"]`)) {
+          const name = r ? r.title || (r.files && r.files[0] && r.files[0].basename) || tc(`场景 ${id}`, `Scene ${id}`) : tc(`场景 ${id}（已不在）`, `Scene ${id} (gone)`);
+          row.querySelector("b").textContent = name;
+          row.title = name;
+          const pic = r && r.paths && r.paths.screenshot;
+          if (pic) row.querySelector(".ld-learnpic").innerHTML = `<img src="${escapeHtml(pic)}" alt="" loading="lazy">`;
+        }
+      });
+    }).catch((e) => log(`Skipped scenes not read: ${e.message}`));
+  }
+  function wireForget(el) {
+    const btn = el.querySelector('[data-a="forget"]');
+    if (!btn) return;
+    let armed = 0, t = null;
+    btn.addEventListener("click", async () => {
+      if (!armed) {
+        armed = Date.now();
+        btn.textContent = tc("再点一次忘掉你的跳过", "Click again to forget what you skip");
+        btn.classList.add("ld-armed");
+        t = setTimeout(() => { armed = 0; btn.textContent = tc("忘掉我的跳过", "Forget what I skip"); btn.classList.remove("ld-armed"); }, ARM_MS);
+        return;
+      }
+      if (!armOk(armed, Date.now())) return;
+      clearTimeout(t);
+      btn.textContent = tc("正在忘记…", "Forgetting…");
+      try {
+        const cfg = await updateConfig(() => ({ learn: EMPTY_LEARN(), learnForget: true }), false, true);
+        learnNow = cfg.learn || EMPTY_LEARN();
+        ldToast(tc("已忘掉你的跳过：轮盘对每个场景一视同仁", "Forgot what you skip: Roulette deals every scene alike again"), "done");
+        learnBox(el, cfg);
+      } catch (e) { btn.textContent = tc("失败", "Failed"); log(`Forget failed: ${e.message}`, "error"); ldToast(tc(`未忘掉：${e.message}`, `Not forgotten: ${e.message}`), "error"); }
+    });
   }
 
   // ═══ The Lockdown page ═════════════════════════════════════════════════════
@@ -8317,6 +9146,14 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   // more and the opened run last while the tab is open. Pictures the runs on
   // screen lack (old runs, the most locked tile) are looked up in one query
   // for all of them, cached for the session, and the board drawn again.
+  // 2.27.0: names and pictures for the most watched, into lbPerfs (null: not in Stash any more)
+  function readPerfs(ids) {
+    return gql(`query ($p: [ID!]) { findPerformers(ids: $p, filter: { per_page: -1 }) { performers { id name image_path } } }`, { p: ids })
+      .then((d) => {
+        for (const r of (d && d.findPerformers && d.findPerformers.performers) || []) lbPerfs.set(String(r.id), { name: r.name || "?", image_path: r.image_path || "" });
+        for (const id of ids) if (!lbPerfs.has(id)) lbPerfs.set(id, null);
+      }, (e) => { log(`Most watched not read: ${e.message}`, "error"); });
+  }
   function renderBoard(box, data) {
     const s = { goal: "all", period: "all", more: false, open: null };
     const top = (data.stats && data.stats.top) || [], list = data.list || [];
@@ -8340,11 +9177,20 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         .catch((e) => { log(`Leaderboard pictures not read: ${e.message}`, "error"); portraitFill(lbPics, need, null); })
         .then(() => { asking = false; if (box.isConnected) draw(); });
     };
+    // 2.27.0: the most watched performers' names and pictures (readPerfs, its own query)
+    let askingP = false;
+    const askPerfs = () => {
+      const ids = perfRanking(data.stats).slice(0, LB_PERF_MORE).map((r) => r.id).filter((id) => !lbPerfs.has(id));
+      if (askingP || !ids.length) return;
+      askingP = true;
+      readPerfs(ids).then(() => { askingP = false; if (box.isConnected && ids.some((id) => lbPerfs.has(id))) draw(); });
+    };
     const draw = () => {
       const now = Date.now();
-      box.innerHTML = boardHtml(top, list, data.stats, s, now, lbPics, notReadHtml(data));
+      box.innerHTML = boardHtml(top, list, data.stats, s, now, lbPics, notReadHtml(data), lbPerfs);
       wireDots(box);
       askPics(boardView(top, { goal: s.goal, period: s.period, more: true, now, list }));
+      askPerfs();
     };
     box.addEventListener("click", (ev) => {
       const t = ev.target;
@@ -8355,6 +9201,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       const p = t.closest("[data-p]");
       if (p) { s.period = p.dataset.p; s.open = null; s.more = false; draw(); return; }
       if (t.closest('[data-a="lbmore"]')) { s.more = true; draw(); return; }
+      if (t.closest('[data-a="lbpmore"]')) { s.pmore = true; draw(); return; }
       if (t.closest('[data-a="lbstart"]')) { pageTab = "new"; renderPage(); return; }
       const a = t.closest("a[data-lbopen]");
       if (a) {
@@ -8411,7 +9258,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     if (!lock.hand) liveTab = "moments";
     box.innerHTML = `<div class="ld-live" data-st="${st}">
       <section class="ld-lvhero">${pfHtml(lock, lock.name, lock.image, "l")}
-        <div class="ld-lvwho"><span class="ld-cap ld-capre">${tc("锁定到", "Locked to")}</span><b class="ld-lvname">${escapeHtml(lock.name)}</b>
+        <div class="ld-lvwho"><span class="ld-cap ld-capre">${tc(`已锁定到${perfTags(lock) ? "（标签在演员上）" : ""}`, `Locked to${perfTags(lock) ? " performers tagged" : ""}`)}</span><b class="ld-lvname">${escapeHtml(lock.name)}</b>
           <span class="ld-lvdeal" data-a="lvdeal"></span><div class="ld-rcchips" data-a="lvrules"></div></div>
         <div class="ld-lvprog" data-a="lvprog"></div></section>
       ${st ? overCardHtml(st, "lv") : ""}
@@ -8442,7 +9289,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
           <div class="ld-lvround" data-a="lvround"></div>
         </section>
         <div data-a="lvtoy"></div>
-        <div class="ld-foot">${st ? tc("你已出局：已入账的分数都不会丢失。", "You're out: nothing banked can be lost now.") : tc("在顶栏长按放弃 5 秒即可退出。", "Hold Give up in the bar for 5 seconds to quit.")}</div>
+        <div class="ld-hint ld-lvslip" data-a="lvslip" role="status" hidden></div>
+        <button class="ld-start ld-lvgo ld-lvalt" data-a="lvback" hidden title="${tc("O 计数被误触（点错了 O 计数）：让它不再计数", "An O counted by mistake (a misclick on the O counter): it stops counting")}">${tc("撤回上一次 O", "Take back the last O")}</button>
+        <div class="ld-foot">${st ? tc("你已出局：已入账的分数不再会丢。", "You're out: nothing banked can be lost now.") : tc("在状态条上按住「放弃」5 秒即可提前结束。", "Hold Give up in the bar for 5 seconds to quit.")}</div>
       </aside></div></div>`;
     // 2.16: under Roulette the target's list is closed (a reprimand and a
     // new scene): back to the scene last shown, or a new deal
@@ -8452,6 +9301,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       navigate(listUrl(lock));
     });
     box.querySelector('[data-a="lvnext"]')?.addEventListener("click", () => goRandom());
+    box.querySelector('[data-a="lvback"]')?.addEventListener("click", () => takeBackNow());
     box.querySelector('[data-a="lvhand"]').addEventListener("click", handClick);
     box.querySelector('[data-a="lvpics"]').addEventListener("click", playPictures);
     box.querySelectorAll("[data-lvtab]").forEach((b) => b.addEventListener("click", () => { liveTab = b.dataset.lvtab; updateLive(); }));
@@ -8507,19 +9357,21 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   function overCardHtml(st, p) {
     const cap = otUpTo(lock);
     return st === "reached"
-      ? `<div class="ld-otcard"><div class="ld-othead">${DROP}<b>${tc("已达边缘目标：你出局了", "Edge target reached: you're out")}</b></div>
-          <div class="ld-otbank">${tc("分数已入账", "Score banked")} <b class="ld-gold" data-a="${p}bank"></b></div>
-          <p>${tc(`继续观看可获得加时：每看一分钟多 10 分（乘以热度），最多 ${cap}。超过之后不再计分，锁局会一直保持，直到出现 O 或「停止加时」；已入账的分数不会丢失。`, `Keep going for overtime: every minute you watch adds 10 more (times heat), up to ${cap}. Past that it scores nothing more and the lock holds until an O or Stop overtime; nothing banked is lost.`)}</p>
+      ? `<div class="ld-otcard"><div class="ld-othead">${DROP}<b>${tc("已到达边缘目标：你出局了", "Edge target reached: you're out")}</b></div>
+          <div class="ld-otbank">${tc("已入账分数", "Score banked")} <b class="ld-gold" data-a="${p}bank"></b></div>
+          <p>${tc(`继续加时：每看一分钟再加 10（乘热度），最多 ${cap}。${pastWords(lock)} 锁定会持续到一次 O 或你停止加时；已入账的分数不会丢失。`, `Keep going for overtime: every minute you watch adds 10 more (times heat), up to ${cap}. ${pastWords(lock)} The lock holds until an O or Stop overtime; nothing banked is lost.`)}</p>
           <div class="ld-otbtns"><button class="ld-start ld-otgo" data-a="otgo">${tc("继续（加时）", "Keep going (overtime)")}</button>
             <button class="ld-start ld-otfin" data-a="otfin">${tc("完成", "Finish")}</button></div></div>`
       : `<div class="ld-otcard ld-oton"><div class="ld-othead">${DROP}<b data-a="${p}ot"></b></div>
           <div class="ld-otmeter"><i data-a="${p}otbar"></i></div>
-          <p>${tc(`最多计 ${cap}；之后锁局保持、不再计分，直到出现 O（自然结束）或「停止加时」。已入账的分数不会丢失。`, `It scores up to ${cap}; after that the lock holds, scoring nothing, until an O (the natural finish) or Stop overtime. Nothing banked is lost.`)}</p>
+          <p>${tc(`最多可得 ${cap}；${lock && lock.pt ? `之后每分钟 ${PAST_PTS} 分，最多再多 ${PAST_CAP_MS / 60000} 分钟，` : "之后不再得分，"}锁定会持续到一次 O（自然完成）或你停止加时。已入账的分数不会丢失。`, `It scores up to ${cap}; ${lock && lock.pt ? `after that ${PAST_PTS} a minute, up to ${PAST_CAP_MS / 60000} minutes more,` : "after that nothing,"} and the lock holds until an O (the natural finish) or Stop overtime. Nothing banked is lost.`)}</p>
           <div class="ld-otbtns"><button class="ld-start ld-otfin" data-a="otstop">${tc("停止加时", "Stop overtime")}</button></div></div>`;
   }
   // "12:30 more", or for a hidden target "as long again as the target"
   // (2.12: it is revealed on the result card)
-  const otUpTo = (L) => (L && L.goal && L.goal.hidden ? tc("与隐藏目标一样长", "as long again as the hidden target") : tc(`再多 ${fmtClock(overtimeCap(L))}`, `${fmtClock(overtimeCap(L))} more`));
+  // 2.26.0: what watching without Keep going, or past a full overtime, earns
+  const pastWords = (L) => (L && L.pt ? tc(`不带加时继续看，或超过加时上限后，每分钟 ${PAST_PTS} 分，最多 ${PAST_CAP_MS / 60000} 分钟。`, `Watching on without it, or past that, scores ${PAST_PTS} a minute, up to ${PAST_CAP_MS / 60000} minutes.`) : tc("再往后就不加分了。", "Past that it scores nothing more."));
+  const otUpTo = (L) => (L && L.goal && L.goal.hidden ? tc("与隐藏目标等长", "as long again as the hidden target") : tc(`还可再看 ${fmtClock(overtimeCap(L))}`, `${fmtClock(overtimeCap(L))} more`));
   function wireOver(box) {
     box.querySelectorAll('[data-a="otgo"]').forEach((b) => b.addEventListener("click", keepGoing));
     box.querySelectorAll('[data-a="otfin"]').forEach((b) => b.addEventListener("click", () => end("done")));
@@ -8606,6 +9458,12 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       `<b>${tc(`第 ${rd.n} 个 / 共 ${rd.of} 个场景`, `${rd.n} of ${plural(rd.of, "scene", "scenes")}`)}</b></div><span class="ld-track"><i style="width:${rd.of ? Math.round((rd.n / rd.of) * 100) : 0}%"></i></span>` : "");
     set("lvwatched", hiddenPast(lock) ? tc("已超过目标", "past the target") : fmtDuration(lock.watchedMs || 0));
     set("lvskips", String(skipsUsed(lock)));
+    const tbb = b.querySelector('[data-a="lvback"]');
+    if (tbb && tbb.hidden !== !takeBackInfo(lock)) tbb.hidden = !takeBackInfo(lock);
+    // 2.26.0: what the last O did and whether the first-O grace is still there
+    const sl = slipLine(lock), sle = b.querySelector('[data-a="lvslip"]');
+    set("lvslip", sl);
+    if (sle && sle.hidden !== !sl) sle.hidden = !sl;
     set("lvskipsl", sc && sc.skips && !hiddenPast(lock) ? tc(`已用跳过 · ${sc.skips}`, `skips used · ${sc.skips}`) : tc("已用跳过", "skips used"));
     set("lvpicn", (lock.pics || []).length ? picsText(lock.pics.length) : "");
     set("lvscore", hiddenPast(lock) ? tc("结束时显示", "at the end") : sc ? sc.total.toLocaleString() : "–");
@@ -8737,7 +9595,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     delete t.media;
     const multi = t.kind === "tag" && t.tags && t.tags.length > 1;
     const probe = { kind: t.kind, tid: String(t.id), ids: [String(t.id)], rules: rulesOf(S),
-                    ...(multi ? { tags: t.tags, mode: t.mode } : {}), ...(duoOf(t) ? { duo: duoMembers(t.duo) } : {}) };
+                    ...(multi ? { tags: t.tags, mode: t.mode } : {}), ...(duoOf(t) ? { duo: duoMembers(t.duo) } : {}),
+                    ...(perfTags(t) ? { tagOn: "performers" } : {}) };
     let under = [String(t.id)], baseO = 0, groups = null;
     try {
       if (multi) { groups = await Promise.all(t.tags.map((x) => idsUnder("tag", x.id))); under = groups[0]; }
@@ -8782,9 +9641,16 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         }
       } catch (e) { log(`Tag cards not read: ${e.message}`, "error"); }
     }
+    // 2.26.0: Pictures cards are dealt when the target has PICS_CARD_MIN
+    // pictures and Slideshow is here to show them (`pk` on the hand)
+    let picsCard = false;
+    if (t.media !== "images" && slideshowApi()) {
+      try { picsCard = (await imageCount({ ...probe, ...(groups ? { groups } : {}) })) >= PICS_CARD_MIN; }
+      catch (e) { log(`Pictures not counted: ${e.message}`); }
+    }
     if (lock) { closeModal(); return; }  // another device's lock arrived meanwhile
     lock = newLock(t, under, S, how, baseO, Date.now(), undefined, groups);
-    if (t.media !== "images") { lock.hand = newHand(cardTags); if (S.cards) lock.cardSet = S.cards; }
+    if (t.media !== "images") { lock.hand = newHand(cardTags); if (picsCard) lock.hand.pk = 1; if (S.cards) lock.cardSet = S.cards; }
     if (nv.nov > 0) { lock.nov = nv.nov; lock.novK = nv.ks; }
     // a lock to a performer clears their shown-card count (a pick, not a pass)
     if (t.kind === "performer") {
@@ -8911,25 +9777,33 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   function showResult(entry, done, now, note) {
     const result = entry.result;
     const g = goalType(entry);
-    const title = result === "cancelled" ? tc("已取消", "Cancelled") : result !== "done" ? tc("放弃锁局", "Lockdown given up")
+    // 2.27.0: the one locked in, with their picture, on the end screen
+    const lkP = entry.lockIn ? ((duoOf(entry) || []).find((p) => String(p.id) === String(entry.lockIn.id)) || { name: entry.lockIn.name }) : null;
+    const lockHtml = lkP ? `<div class="ld-lockres">${pfHtml(null, lkP.name, lkP.image_path || "", "b", "performer")}<span>${tc(`锁定在 <b>${escapeHtml(entry.lockIn.name || lkP.name || "?")}</b>`, `Locked in on <b>${escapeHtml(entry.lockIn.name || lkP.name || "?")}</b>`)}` +
+      ` · ${entry.lockIn.st === "broke" ? tc("已破", "broken") : tc("保留", "kept")} · ${tc(`在他身上 ${escapeHtml(fmtMinutes(Math.round((entry.lockIn.ms || 0) / 60000)))}`, `${escapeHtml(fmtMinutes(Math.round((entry.lockIn.ms || 0) / 60000)))} on them`)}</span></div>` : "";
+    const title = result === "cancelled" ? tc("已取消", "Cancelled"): result !== "done" ? tc("放弃锁局", "Lockdown given up")
       : g === "timer" ? tc("时间已满", "Time served") : g === "edge" ? tc("你坚持住了", "You held out") : tc("你出局了", "You got out");
     const sc = scoreOf(entry);
     // overtime has its own line below; 2.13.0: so has Eyes on screen when
     // there is a score to show it in
-    const detail = entryDetail({ ...entry, overtimeMs: 0, ...(sc ? { away: undefined } : {}) });
+    // 2.26.0: and the time past the target (its own line in the score)
+    const detail = entryDetail({ ...entry, overtimeMs: 0, ...(entry.pastMs > 0 ? { pastMs: 0 } : {}), ...(sc ? { away: undefined } : {}), lockIn: undefined });
     const gl = entry.goal || {};
     const edgeW = g === "edge" && gl.watchMs ? Math.min(entry.watchedMs || 0, gl.watchMs) : entry.watchedMs;
     const scoreHtml = sc ? `<div class="ld-score">
         <div><span>${tc(`${g === "edge" ? "目标" : "观看"} ${escapeHtml(fmtDuration(edgeW))} × 每分钟 10 分`, `${g === "edge" ? "Target" : "Watched"} ${escapeHtml(fmtDuration(edgeW))} × 10/min`)}</span><b class="ld-blue">${sc.watched}</b></div>
         ${sc.overtime ? `<div><span>${tc(`加时 ${escapeHtml(fmtDuration(Math.min(entry.overtimeMs, gl.watchMs || 0)))} × 每分钟 10 分`, `Overtime ${escapeHtml(fmtDuration(Math.min(entry.overtimeMs, gl.watchMs || 0)))} × 10/min`)}</span><b class="ld-blue">+${sc.overtime}</b></div>` : ""}
+        ${sc.past ? `<div><span>${tc(`超出目标 ${escapeHtml(fmtDuration(Math.min(PAST_CAP_MS, pastExtra(entry))))} × 每分钟 ${PAST_PTS} 分${pastExtra(entry) > PAST_CAP_MS ? `（最多 ${PAST_CAP_MS / 60000} 分钟）` : ""}`, `Past the target ${escapeHtml(fmtDuration(Math.min(PAST_CAP_MS, pastExtra(entry))))} × ${PAST_PTS}/min${pastExtra(entry) > PAST_CAP_MS ? ` (up to ${PAST_CAP_MS / 60000} min)` : ""}`)}</span><b class="ld-blue">+${sc.past}</b></div>` : ""}
         <div><span>${tc(`跳过 ${entry.skipsUsed} × −5${entry.skipsUsed * 5 > -sc.skips ? "（最多扣一半）" : ""}`, `Skips ${entry.skipsUsed} × −5${entry.skipsUsed * 5 > -sc.skips ? " (capped at half)" : ""}`)}</span><b class="ld-coral">${sc.skips}</b></div>
         ${g === "edge" ? `<div><span>${tc(`失误 ${entry.slips || 0} × −100`, `Slips ${entry.slips || 0} × −100`)}</span><b class="ld-coral">${sc.slips}</b></div>` : ""}
         ${sc.pics ? `<div><span>${tc(`图片 ${sc.pics}`, `Pictures ${sc.pics}`)}</span><b class="ld-blue">+${sc.pics}</b></div>` : ""}
         ${sc.holds ? `<div><span>${tc(`坚持 ${sc.holds / HOLD_KINDS.eyes.pts} × +${HOLD_KINDS.eyes.pts}`, `Holds ${sc.holds / HOLD_KINDS.eyes.pts} × +${HOLD_KINDS.eyes.pts}`)}</span><b class="ld-blue">+${sc.holds}</b></div>` : ""}
         ${sc.tagm ? `<div><span>${tc(`标签牌标记 ${sc.tagm / TAG_MATCH_PTS} × +${TAG_MATCH_PTS}`, `Tag card markers ${sc.tagm / TAG_MATCH_PTS} × +${TAG_MATCH_PTS}`)}</span><b class="ld-blue">+${sc.tagm}</b></div>` : ""}
         ${entry.stays ? `<div><span>${tc(`停留牌 ${escapeHtml(staysText(entry.stays))}`, `Stay cards ${escapeHtml(staysText(entry.stays))}`)}</span><b class="${sc.stays < 0 ? "ld-coral" : "ld-blue"}">${sc.stays < 0 ? "−" + -sc.stays : "+" + sc.stays}</b></div>` : ""}
+        ${sc.picc ? `<div><span>${tc(`保留的图片牌 ${(entry.picCards && entry.picCards.kept) || 1}`, `Pictures cards kept ${(entry.picCards && entry.picCards.kept) || 1}`)}</span><b class="ld-blue">+${sc.picc}</b></div>` : ""}
         ${sc.skipc ? `<div><span>${tc(`留存的跳过牌 ${entry.skipCards.kept} × ${SKIP_CARD_PTS}`, `Skip cards kept ${entry.skipCards.kept} × ${SKIP_CARD_PTS}`)}</span><b class="ld-blue">+${sc.skipc}</b></div>` : ""}
         ${entry.race ? `<div><span>${tc(`竞赛 ${escapeHtml(raceText(entry.race))}`, `Race ${escapeHtml(raceText(entry.race))}`)}</span><b class="${sc.race < 0 ? "ld-coral" : "ld-blue"}">${sc.race < 0 ? "−" + -sc.race : "+" + sc.race}</b></div>` : ""}
+        ${entry.lockIn ? `<div><span>${tc(`锁定牌：${escapeHtml(lockInText(entry.lockIn))}`, `Lock in: ${escapeHtml(lockInText(entry.lockIn))}`)}</span><b class="ld-blue">+${sc.lockin}</b></div>` : ""}
         ${entry.away ? (sc.away ? `<div><span>${tc(`离开 ${entry.away.n || 1}× · ${escapeHtml(fmtAway(awayMsOf(entry)))}`, `Away ${entry.away.n || 1}× · ${escapeHtml(fmtAway(awayMsOf(entry)))}`)}</span><b class="ld-coral">−${-sc.away}</b></div>`
           : `<div><span>${tc("盯着画面", "Eyes on screen")}</span><b><span class="ld-clean" title="${tc("从未移开视线", "Never looked away")}">${tc("干净", "clean")}</span></b></div>`) : ""}
         <div><span>${tc("出局", "Got out")}</span><b>+${sc.out}</b></div>
@@ -8958,7 +9832,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         <div class="ld-endico">${icon(entry)}</div>
         <div class="ld-name">${title}</div>
         <div class="ld-msg">${escapeHtml(done.name)} &middot; ${tc("锁定", "locked")} ${fmtDuration(now - done.startedAt)}${entry.v >= 3 ? ` &middot; ${tc("观看", "watched")} ${fmtDuration(entry.watchedMs)}` : ""}${detail ? ` &middot; ${escapeHtml(detail)}` : ""}</div>
-        ${reveal}${over}${note ? `<div class="ld-msg ld-note">${escapeHtml(note)}</div>` : ""}
+        ${reveal}${over}${lockHtml}${note ? `<div class="ld-msg ld-note">${escapeHtml(note)}</div>` : ""}
         ${result === "cancelled" ? `<div class="ld-msg ld-note">${tc("不满 2 分钟：不会记录任何内容，连胜保持不变。", "Under 2 minutes: nothing is recorded and your streak stays.")}</div>` : ""}
         <div class="ld-recchips" data-a="records"></div></div>
         ${momentsHtml(entry) ? `<div class="ld-resmoments">${momentsHtml(entry)}</div>` : ""}
@@ -9077,6 +9951,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     if (pick && pick.round) dealInfo = { id: lock.id, ...pick.round, side: pick.side };
     if (pick && pick.dry && drySaid !== lock.id) { drySaid = lock.id; ldToast(tc("所有未看过的场景都看过了：改为从本局的场景中发牌", "Every unwatched scene has played: dealing from the scenes of this run"), "info"); }
     if (next === true && sceneHere() !== cur) return;          // they went somewhere else meanwhile
+    // 2.27.0: locked in on someone with nothing else left: another of them, said, and that scene does not break it
+    if (pick && pick.id && pick.lkOut) lockFallback(pick.id);
     if (pick && pick.id) {
       if (pay) {
         // decided again: a seek may have used the last skip while picking
@@ -9095,10 +9971,17 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     }
     // only the open scene is left: stay on it and say so
     if (pick && pick.only && cur) { ldToast(nextSceneText("none", lock.rules && lock.rules.fresh)); return; }
-    if (!(pick && pick.only)) ldToast(lock.rules && lock.rules.fresh ? tc("没有未看过的场景可发：TA 的画廊和图片是开放的", "No unwatched scene left to deal: their galleries and images are open") : tc("没有场景可发：TA 的画廊和图片是开放的", "No scene to deal: their galleries and images are open"), "info");
-    navigate(lock.groups ? tagsListUrl(lock, "galleries") : `/${KINDS[lock.kind].path}/${lock.tid}/galleries`, true);
+    if (!(pick && pick.only)) ldToast(lock.rules && lock.rules.fresh ? tc("没有未看过的场景可发了：他们的画廊与图片已开放", "No unwatched scene left to deal: their galleries and images are open") : tc("没有场景可发了：他们的画廊与图片已开放", "No scene to deal: their galleries and images are open"), "info");
+    navigate(listed(lock) ? tagsListUrl(lock, "galleries") : `/${KINDS[lock.kind].path}/${lock.tid}/galleries`, true);
   }
   let dealInfo = null, drySaid = null;
+  // 2.27.0: the dealer had to open another performer's scene for the one
+  // locked in: the scene is `free` (it does not break the lock-in), once said
+  function lockFallback(sceneId) {
+    if (!lock || !lock.hand || !lock.hand.lk || lock.hand.lk.st !== "on") return;
+    ldToast(tc(`没有别的场景带 ${lock.hand.lk.name || "他们"} 了：发另一个人的场景。这不会打断锁定牌。`, `No other scene with ${lock.hand.lk.name || "them"} left: dealing another one. It does not break the lock-in.`), "info");
+    handSet({ ...lock.hand, lk: { ...lock.hand.lk, free: String(sceneId) }, rev: (lock.hand.rev || 0) + 1 }, true);
+  }
 
   // 2.12.1: runs one part of the page's work; an error is logged (once per
   // part and message) and the caller goes on. A promise's rejection too.
@@ -9146,7 +10029,11 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     syncOverPrompt(st);
     // 2.12: Toy in charge's Start the toy, while Goon mode is not running here
     const toyBtn = !!lock.toy && !toyCtl.live(lock);
-    const key = `${lock.id}|${lock.rules && lock.rules.random}|${pics}|${st}|${toyBtn}|${!!lock.hand}|${lastShown(lock) || ""}`;
+    // 2.27.2 (user: "on lockdown I should be able to still access todo"): the
+    // top nav, where Todo's button lives, is hidden during a run, so the bar
+    // carries one while the Todo plugin is there (it opens Todo's own panel)
+    const todoBtn = !!document.querySelector(".todo-nav a");
+    const key = `${lock.id}|${lock.rules && lock.rules.random}|${pics}|${st}|${toyBtn}|${!!lock.hand}|${lastShown(lock) || ""}|${todoBtn}`;
     if (bar.dataset.key === key) return;
     bar.dataset.key = key;
     // 2.12.1: the bar's links (barLinks), inline on a wide screen and in a
@@ -9164,8 +10051,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     const plain = links.filter((l) => l !== run && l !== gear);
     const linkHtml = (l) => `<a href="${escapeHtml(l.href)}" data-a="link"${l.cls ? ` class="${l.cls}"` : ""}` +
       `${l.title ? ` title="${escapeHtml(l.title)}" aria-label="${escapeHtml(l.title)}"` : ""}>${l.icon ? GEAR_ICON : escapeHtml(l.label)}</a>`;
-    const sub = `${liveGoalLabel(lock).replace(/ · .*$/, "")}${typeof lock.heat === "number" ? ` · ${tc("热度", "heat")} ${lock.heat} · ×${heatMult(lock.heat)}` : ""}` +
-      `${lock.kind !== "performer" ? ` · ${KINDS[lock.kind].label}` : ""}`;
+    const sub = `${liveGoalLabel(lock).replace(/ · .*$/, "")}${typeof lock.heat === "number" ? ` · ${tc(`热度 ${lock.heat}`, `heat ${lock.heat}`)} · ×${heatMult(lock.heat)}` : ""}` +
+      `${lock.kind !== "performer" ? ` · ${kindNote(lock)}` : ""}`;
     bar.innerHTML =
       `<span class="ld-bwho">${pfHtml(lock, lock.name, lock.image, "b")}` +
       `<span class="ld-who"><b>${escapeHtml(lock.name)}</b><small>${escapeHtml(sub)}</small></span></span>` +
@@ -9179,8 +10066,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       (run ? `<a href="${escapeHtml(run.href)}" data-a="link" class="ld-runbtn" title="${tc("你的对局：对局页", "Your run: the run page")}">${LOCK_SVG}<span>${tc("你的对局", "Your run")}</span></a>` : "") +
       `<span class="ld-links">` +
         (plain.length ? `<span class="ld-blinks">${plain.map(linkHtml).join("")}</span>` : "") +
-        (pics ? `<button data-a="pics" class="ld-pics" title="${tc("把本盘图片当幻灯片播放", "Play the pictures of this run as a slideshow")}" aria-label="${tc("播放图片", "Play pictures")}">${PICS_ICON}<span>${tc("图片", "Pictures")}</span></button>` : "") +
-        (toyBtn ? `<button data-a="toy" class="ld-toybtn" title="${tc("玩具主导：由 Intiface Sync 的 Goon 模式推进蓄力", "Toy in charge: let Intiface Sync's Goon mode drive the build-up")}">${COND_ICON.toy}<span>${tc("启动玩具", "Start the toy")}</span></button>` : "") +
+        (pics ? `<button data-a="pics" class="ld-pics" title="${tc("把这局的图片按幻灯片播放", "Play the pictures of this run as a slideshow")}" aria-label="${tc("播放图片", "Play pictures")}">${PICS_ICON}<span>${tc("图片", "Pictures")}</span></button>` : "") +
+        (toyBtn ? `<button data-a="toy" class="ld-toybtn" title="${tc("玩具主导：让 Intiface Sync 的 Goon 模式驱动进度", "Toy in charge: let Intiface Sync's Goon mode drive the build-up")}">${COND_ICON.toy}<span>${tc("启动玩具", "Start the toy")}</span></button>` : "") +
+        (todoBtn ? `<button data-a="todo" class="ld-todobtn" title="Todo" aria-label="Todo">${TODO_ICON}<span>Todo</span></button>` : "") +
         (gear ? linkHtml(gear) : "") +
         `<button data-a="menu" class="ld-menubtn" title="${tc(`更多：${escapeHtml(links.map((l) => l.label).join(", "))}`, `More: ${escapeHtml(links.map((l) => l.label).join(", "))}`)}" aria-label="${tc("更多", "More")}" aria-haspopup="true" aria-expanded="false">${MORE_ICON}</button>` +
       `</span>` +
@@ -9208,6 +10096,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     menuBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); showMenu(menu.hidden); });
     bar.querySelector('[data-a="pics"]')?.addEventListener("click", playPictures);
     bar.querySelector('[data-a="toy"]')?.addEventListener("click", startToyClick);
+    bar.querySelector('[data-a="todo"]')?.addEventListener("click", todoClick);
     bar.querySelector('[data-a="hand"]')?.addEventListener("click", (ev) => { ev.stopPropagation(); showHand(bar.querySelector(".ld-handpop").hidden); });
     bar.querySelector(".ld-handpop")?.addEventListener("click", handClick);
     const gu = bar.querySelector(".ld-giveup");
@@ -9239,6 +10128,70 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   const HOLD_SHOW_MS = 20000;
   let holdDone = null;                 // { t: "kept" | "broken", at, pts, k }: shown a little while
   let raceDone = null;                 // 2.19: { t: "won" | "lost", at }: the same for the Race
+  let lockDone = null;                 // 2.27.0: { at }: the lock-in just broken, shown a little while
+  // 2.27.0: the Lock in in the hand: held (a card to play: it asks who), on
+  // (who, the time on them, the points so far), or broken (a little while)
+  function lockRow(hand, page) {
+    const k = hand && hand.lk, L = lock;
+    if (!k) return "";
+    const c = "--c:var(--sx-pu)";
+    if (k.st === "held") return page
+      ? `<button class="ld-pcard" data-lockin="1" title="${tc("选他们中的一位：从此只发他的场景", "Pick one of them: only their scenes are dealt from now on")}" style="${c}"><span class="ld-pkind">${tc("锁定牌", "Lock in card")}</span>` +
+        `<span class="ld-pico">${CARD_ICON.lockin}</span><span class="ld-pcname">${tc("锁定", "Lock in")}</span><span class="ld-pmeta">${tc(`选你更倚重的那一位：从此只发他的场景。在他身上每分钟 +${LOCKIN_PER_MIN}，留到结束再加 +${LOCKIN_KEEP}。打开别人的场景会破掉它，已得的分不扣。`, `Pick the one you lean on: only their scenes are dealt. +${LOCKIN_PER_MIN} a minute on them, +${LOCKIN_KEEP} if you keep it to the end. Another performer's scene breaks it, nothing lost.`)}</span>` +
+        `<span class="ld-pfoot"><span>${tc("每局一次", "once a run")}</span><span class="ld-play">${tc("选择", "Choose")}</span></span></button>`
+      : `<button class="ld-crow" data-lockin="1" title="${tc("选他们中的一位：从此只发他的场景", "Pick one of them: only their scenes are dealt from now on")}" style="${c}"><span class="ld-cico">${CARD_ICON.lockin}</span>` +
+        `<span class="ld-ctxt"><b>${tc("锁定", "Lock in")}</b><small>${tc(`选他们中的一位 · 在他身上每分钟 +${LOCKIN_PER_MIN}，留到结束 +${LOCKIN_KEEP}`, `pick one of them · +${LOCKIN_PER_MIN}/min on them, +${LOCKIN_KEEP} kept`)}</small></span><span class="ld-go">${tc("选择", "Choose")}</span></button>`;
+    const ms = L ? lockInMs(L) : 0, pts = lockInPts(ms, false);
+    const p = ((L && duoOf(L)) || []).find((m) => String(m.id) === String(k.id)) || { name: k.name };
+    if (k.st === "on") return page
+      ? `<div class="ld-pcard ld-plive ld-plock" style="${c}"><span class="ld-pkind">${tc("已锁定", "Locked in")}</span>${pfHtml(null, p.name, p.image_path || "", "s", "performer")}` +
+        `<span class="ld-pcname">${escapeHtml(k.name || "?")}</span><span class="ld-pmeta">${tc(`在他身上 ${escapeHtml(fmtMinutes(Math.round(ms / 60000)))} · 目前 +${pts}`, `${escapeHtml(fmtMinutes(Math.round(ms / 60000)))} on them · +${pts} so far`)}` +
+        `${ms >= LOCKIN_KEEP_MIN_MS ? tc(` · 留到结束 +${LOCKIN_KEEP}`, ` · +${LOCKIN_KEEP} if kept`) : tc(` · 保持 ${LOCKIN_KEEP_MIN_MS / 60000} 分钟后 +${LOCKIN_KEEP}`, ` · +${LOCKIN_KEEP} kept after ${LOCKIN_KEEP_MIN_MS / 60000} min`)}</span></div>`
+      : `<div class="ld-crow ld-con" style="${c}"><span class="ld-cico">${CARD_ICON.lockin}</span><span class="ld-ctxt"><b>${tc(`已锁定：${escapeHtml(k.name || "?")}`, `Locked in: ${escapeHtml(k.name || "?")}`)}</b>` +
+        `<small>${tc(`在他身上 ${escapeHtml(fmtMinutes(Math.round(ms / 60000)))} · 目前 +${pts}，留到结束 +${LOCKIN_KEEP}`, `${escapeHtml(fmtMinutes(Math.round(ms / 60000)))} on them · +${pts} so far, +${LOCKIN_KEEP} kept`)}</small></span></div>`;
+    if (!(lockDone && Date.now() - lockDone.at < HOLD_SHOW_MS)) return "";
+    return page
+      ? `<div class="ld-pcard ld-plost" style="--c:var(--sx-re)"><span class="ld-pbig">${X_SVG}</span><span class="ld-pcname">${tc("锁定牌被破", "Lock-in broken")}</span>` +
+        `<span class="ld-pmeta">${tc(`打开了没有 ${escapeHtml(k.name || "他")} 的场景。已得的 +${lockInPts(k.ms || 0, false)} 保留。`, `A scene without ${escapeHtml(k.name || "them")} was opened. The +${lockInPts(k.ms || 0, false)} it earned stays.`)}</span></div>`
+      : `<div class="ld-crow ld-cbroken" style="--c:var(--sx-re)"><span class="ld-cico">${X_SVG}</span><span class="ld-ctxt"><b>${tc("锁定牌被破", "Lock-in broken")}</b>` +
+        `<small>${tc(`打开了没有 ${escapeHtml(k.name || "他")} 的场景；已得 +${lockInPts(k.ms || 0, false)} 保留`, `a scene without ${escapeHtml(k.name || "them")}; +${lockInPts(k.ms || 0, false)} kept`)}</small></span></div>`;
+  }
+  // 2.27.0: who to lock in, as the setup shows them (their pictures); a
+  // dialog, arrow keys between them (the window's key handler), big buttons
+  function chooseLockIn() {
+    const L = lock, duo = L && duoOf(L);
+    if (!duo || !L.hand || !L.hand.lk || L.hand.lk.st !== "held") return;
+    showHand(false);
+    const box = modal(`<h3>${tc("锁定", "Lock in")}</h3><div class="ld-sub">${tc(`你更倚重谁？从此只发他的场景。他的场景每分钟 +${LOCKIN_PER_MIN}（最多 ${LOCKIN_CAP_MS / 60000} 分钟），留到结束再加 +${LOCKIN_KEEP}。打开没有他的场景会破掉它：已得的分保留，不会扣。`, `Who do you lean on? From now on only their scenes are dealt. +${LOCKIN_PER_MIN} a minute on their scenes (up to ${LOCKIN_CAP_MS / 60000} min), +${LOCKIN_KEEP} if the run ends with it kept. Opening a scene without them breaks it: what it earned stays, nothing is taken off.`)}</div>` +
+      `<div class="ld-lkgrid" role="group" aria-label="${tc("演员", "Performers")}">${duo.map((p) => `<button type="button" class="ld-lkopt" data-lkpick="${escapeHtml(p.id)}">` +
+        `${pfHtml(null, p.name, p.image_path || "", "m", "performer")}<b>${escapeHtml(p.name || "?")}</b></button>`).join("")}</div>` +
+      `<button class="ld-close" data-a="lkno">${tc("暂不", "Not now")}</button>`);
+    box.setAttribute("aria-label", tc("锁定：选一位演员", "Lock in: choose a performer"));
+    setTimeout(() => box.querySelector(".ld-lkopt")?.focus({ preventScroll: true }), 0);
+    box.addEventListener("click", (ev) => {
+      const b = ev.target.closest && ev.target.closest("[data-lkpick], .ld-close");
+      if (!b) return;
+      if (b.classList.contains("ld-close")) { closeModal(); return; }
+      const p = duo.find((m) => String(m.id) === b.dataset.lkpick);
+      if (!lock || lock.id !== L.id || !p) { closeModal(); return; }
+      // the scene on screen when it is played never breaks it (`free`): the next one dealt is theirs
+      const h = handPlayLockIn(lock.hand, p, pwGet(lock.pw, p.id), Date.now(), sceneHere());
+      closeModal();
+      if (!h) return;
+      handSet(h, true);
+      sound("start");
+      flash(tc(`已锁定 ${p.name}：从此只发他的场景，每分钟 +${LOCKIN_PER_MIN}`, `Locked in on ${p.name}: only their scenes from now on, +${LOCKIN_PER_MIN} a minute`));
+    });
+  }
+  // Arrow keys between the dialog's choices (the window's key handler stops them before the dialog)
+  function lockKeyMove(t, key) {
+    const opts = [...((t && t.closest && t.closest(".ld-lkgrid")) || { querySelectorAll: () => [] }).querySelectorAll(".ld-lkopt")];
+    const i = opts.indexOf(t);
+    if (i < 0) return false;
+    const j = key === "ArrowLeft" || key === "ArrowUp" ? i - 1 : key === "ArrowRight" || key === "ArrowDown" ? i + 1 : key === "Home" ? 0 : key === "End" ? opts.length - 1 : i;
+    opts[(j + opts.length) % opts.length].focus();
+    return true;
+  }
   function handNote(hand, w) {
     if (!hand) return "";
     const n = handReady(hand, w);
@@ -9315,18 +10268,19 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     if (!page) {
       let h = "";
       h += raceRow(hand, now, false);
+      h += lockRow(hand, false);   // 2.27.0
       if (hand.hold && HOLD_KINDS[hand.hold.k]) {
-        const k = HOLD_KINDS[hand.hold.k], d = Math.min(k.ms, Math.max(0, w - hand.hold.from));
-        h += `<div class="ld-crow ld-con" style="--c:var(--sx-cy)"><span class="ld-cico">${holdIcon(hand.hold.k)}</span><span class="ld-ctxt"><b>${tc(`${escapeHtml(holdName(k))}：进行中`, `${escapeHtml(k.name)}: holding`)}</b>` +
-          `<small>${tc(`还剩 ${escapeHtml(fmtClock(k.ms - d))} 游玩时间 · +${k.pts}${k.stay ? " · 本场景上" : ""}`, `${escapeHtml(fmtClock(k.ms - d))} of playing left · +${k.pts}${k.stay ? " · on this scene" : ""}`)}</small></span><i class="ld-cbar" style="width:${Math.round((d / k.ms) * 100)}%"></i></div>`;
+        const k = HOLD_KINDS[hand.hold.k], d = Math.min(k.ms, holdSpent(hand.hold, w));
+        h += `<div class="ld-crow ld-con" style="--c:var(--sx-cy)"><span class="ld-cico">${holdIcon(hand.hold.k)}</span><span class="ld-ctxt"><b>${escapeHtml(k.name)}: holding</b>` +
+          `<small>${escapeHtml(fmtClock(k.ms - d))} of ${k.pics ? "pictures" : "playing"} left · +${k.pts}${k.stay ? " · on this scene" : ""}</small></span><i class="ld-cbar" style="width:${Math.round((d / k.ms) * 100)}%"></i></div>`;
       } else if (done) {
         h += `<div class="ld-crow ld-c${done.t}" style="--c:var(--sx-${done.t === "kept" ? "gr" : "re"})"><span class="ld-cico">${done.t === "kept" ? TICK_SVG : X_SVG}</span>` +
-          `<span class="ld-ctxt"><b>${done.t === "kept" ? tc(`坚持成功 · +${done.pts}`, `Kept · +${done.pts}`) : done.k === "stay" ? tc("失去", "Lost") : tc("中断", "Broken")}</b><small>${done.t === "kept" ? tc("热度前计入分数", "before heat, in the score")
-            : done.k === "stay" ? tc("打开了另一个场景；没有扣分", "another scene was opened; no points lost") : tc("你移开了视线；没有扣分", "you looked away; no points lost")}</small></span></div>`;
+          `<span class="ld-ctxt"><b>${done.t === "kept" ? `Kept · +${done.pts}` : done.k === "stay" || done.k === "pics" ? "Lost" : "Broken"}</b><small>${done.t === "kept" ? "before heat, in the score"
+            : done.k === "stay" ? "another scene was opened; no points lost" : done.k === "pics" ? "the slideshow was closed; no points lost" : "you looked away; no points lost"}</small></span></div>`;
       }
       h += hand.holds.map((c, i) => { const k = HOLD_KINDS[c.k] || HOLD_KINDS.eyes, left = c.until - w;
-        return `<button class="ld-crow" data-hold="${i}"${hand.hold ? " disabled" : ""} title="${escapeHtml(holdText(k))}" style="--c:var(--sx-cy)"><span class="ld-cico">${holdIcon(c.k)}</span>` +
-          `<span class="ld-ctxt"><b>${escapeHtml(k.stay ? holdName(k) : tc(`${holdName(k)} · ${Math.round(k.ms / 60000)} 分钟`, `${k.name} · ${Math.round(k.ms / 60000)} min`))}</b><small${left < SOON_MS ? ' class="ld-soon"' : ""}>${k.stay ? tc("限一个场景 · ", "on one scene · ") : ""}${tc(`将在 ${minTxt(left)} 后过期`, `expires in ${minTxt(left)}`)}</small></span>` +
+        return `<button class="ld-crow" data-hold="${i}"${hand.hold ? " disabled" : ""} title="${escapeHtml(k.text)}" style="--c:var(--sx-cy)"><span class="ld-cico">${holdIcon(c.k)}</span>` +
+          `<span class="ld-ctxt"><b>${escapeHtml(k.stay || k.pics ? k.name : `${k.name} · ${Math.round(k.ms / 60000)} min`)}</b><small${left < SOON_MS ? ' class="ld-soon"' : ""}>${k.stay ? "on one scene · " : k.pics ? "in Slideshow · " : ""}expires in ${minTxt(left)}</small></span>` +
           `<span class="ld-go">+${k.pts}</span></button>`; }).join("");
       h += skipCardRow(hand, false);
       h += hand.tags.map((t) => { const left = tagReadyIn(t, w), pic = tagPicOf(t, st), line = tagLine(t, st, L);
@@ -9338,29 +10292,31 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       return `<div class="ld-hand"><div class="ld-pophead"><b>${tc("你的手牌", "Your hand")}</b><span class="ld-hint">${escapeHtml(handNote(hand, w))}</span></div><div class="ld-crows">${h}</div>` +
         `<div class="ld-hint ld-handfoot">${foot}</div></div>`;
     }
-    let h = raceRow(hand, now, true);
+    let h = raceRow(hand, now, true) + lockRow(hand, true);   // 2.27.0
     if (hand.hold && HOLD_KINDS[hand.hold.k]) {
-      const k = HOLD_KINDS[hand.hold.k], d = Math.min(k.ms, Math.max(0, w - hand.hold.from));
-      h += `<div class="ld-pcard ld-plive" style="--c:var(--sx-cy)"><span class="ld-pkind">${tc("进行中", "Holding")}</span>${ringHtml(1 - d / k.ms, fmtClock(k.ms - d))}` +
-        `<span class="ld-pcname">${escapeHtml(holdName(k))}</span><span class="ld-pmeta">${tc(`还剩 ${escapeHtml(fmtClock(k.ms - d))} 游玩时间 · +${k.pts}${k.stay ? " · 本场景上" : ""}`, `${escapeHtml(fmtClock(k.ms - d))} of playing left · +${k.pts}${k.stay ? ", on this scene" : ""}`)}</span></div>`;
+      const k = HOLD_KINDS[hand.hold.k], d = Math.min(k.ms, holdSpent(hand.hold, w));
+      h += `<div class="ld-pcard ld-plive" style="--c:var(--sx-cy)"><span class="ld-pkind">${tc("保持中", "Holding")}</span>${ringHtml(1 - d / k.ms, fmtClock(k.ms - d))}` +
+        `<span class="ld-pcname">${escapeHtml(k.name)}</span><span class="ld-pmeta">${tc(`还剩 ${k.pics ? "图片" : "播放"} · +${k.pts}${k.stay ? "，就在这个场景" : ""}`, `of ${k.pics ? "pictures" : "playing"} left · +${k.pts}${k.stay ? ", on this scene" : ""}`)}</span></div>`;
     } else if (done) {
       h += done.t === "kept"
-        ? `<div class="ld-pcard ld-pwon" style="--c:var(--sx-gr)"><span class="ld-pbig">${TICK_SVG}</span><span class="ld-pcname">${tc("坚持成功", "Kept")}</span><b class="ld-ppts">+${done.pts}</b>` +
-          `<span class="ld-pmeta">${tc(`热度前计入${L && typeof L.heat === "number" ? ` · 分数 ×${heatMult(L.heat)}` : ""}`, `before heat${L && typeof L.heat === "number" ? ` · ×${heatMult(L.heat)} in the score` : ""}`)}</span></div>`
-        : `<div class="ld-pcard ld-plost" style="--c:var(--sx-re)"><span class="ld-pbig">${X_SVG}</span><span class="ld-pcname">${done.k === "stay" ? tc("失去", "Lost") : tc("中断", "Broken")}</span>` +
-          (done.k === "stay" ? `<span class="ld-pmeta">${tc("时间到前打开了另一个场景。没有扣分。", "Another scene was opened before the time was up. No points lost.")}</span></div>`
+        ? `<div class="ld-pcard ld-pwon" style="--c:var(--sx-gr)"><span class="ld-pbig">${TICK_SVG}</span><span class="ld-pcname">${tc("守住", "Kept")}</span><b class="ld-ppts">+${done.pts}</b>` +
+          `<span class="ld-pmeta">${tc(`计入热度前${L && typeof L.heat === "number" ? ` · 分数里 ×${heatMult(L.heat)}` : ""}`, `before heat${L && typeof L.heat === "number" ? ` · ×${heatMult(L.heat)} in the score` : ""}`)}</span></div>`
+        : `<div class="ld-pcard ld-plost" style="--c:var(--sx-re)"><span class="ld-pbig">${X_SVG}</span><span class="ld-pcname">${done.k === "stay" || done.k === "pics" ? tc("错失", "Lost") : tc("中断", "Broken")}</span>` +
+          (done.k === "stay" ? `<span class="ld-pmeta">${tc("时间未到就打开了别的场景。没有扣分。", "Another scene was opened before the time was up. No points lost.")}</span></div>`
+            : done.k === "pics" ? `<span class="ld-pmeta">${tc("时间未到就关掉了幻灯片。没有扣分。", "The slideshow was closed before the time was up. No points lost.")}</span></div>`
             : `<span class="ld-pmeta">${tc(`你移开视线超过 ${EYES_GRACE_MS / 1000} 秒。没有扣分。`, `You looked away for more than ${EYES_GRACE_MS / 1000} s. No points lost.`)}</span></div>`);
     }
     h += hand.holds.map((c, i) => { const k = HOLD_KINDS[c.k] || HOLD_KINDS.eyes, left = c.until - w, soon = left < SOON_MS;
-      return `<button class="ld-pcard" data-hold="${i}"${hand.hold ? " disabled" : ""} title="${escapeHtml(holdText(k))}" style="--c:var(--sx-cy)">` +
-        `<span class="ld-pkind">${tc("坚持牌", "Hold card")}</span><span class="ld-pico">${holdIcon(c.k)}</span><span class="ld-pcname">${escapeHtml(holdName(k))}</span>` +
-        `<span class="ld-pmeta">${tc(k.stay ? `在本场景游玩 ${Math.round(k.ms / 60000)} 分钟；打开别的场景会失去它` : `盯着画面 ${Math.round(k.ms / 60000)} 分钟，期间不切换标签页或应用`, k.stay ? `Stay on one scene for ${Math.round(k.ms / 60000)} min of playing; leaving loses it` : `Keep your eyes here for ${Math.round(k.ms / 60000)} min of playing`)}</span>` +
-        `<span class="ld-pfoot"><span${soon ? ' class="ld-soon"' : ""}>${tc(`将在 ${minTxt(left)} 后过期`, `expires in ${minTxt(left)}`)}</span><span class="ld-play">+${k.pts} · ${tc("游玩", "Play")}</span></span>` +
+      return `<button class="ld-pcard" data-hold="${i}"${hand.hold ? " disabled" : ""} title="${escapeHtml(k.text)}" style="--c:var(--sx-cy)">` +
+        `<span class="ld-pkind">${tc("坚持牌", "Hold card")}</span><span class="ld-pico">${holdIcon(c.k)}</span><span class="ld-pcname">${escapeHtml(k.name)}</span>` +
+        `<span class="ld-pmeta">${k.stay ? tc(`在一个场景上停留播放 ${Math.round(k.ms / 60000)} 分钟；离开就失去它`, `Stay on one scene for ${Math.round(k.ms / 60000)} min of playing; leaving loses it`)
+          : k.pics ? tc(`在幻灯片里看这局的图片 ${Math.round(k.ms / 60000)} 分钟；关掉就失去这张牌`, `Watch the run's pictures for ${Math.round(k.ms / 60000)} min in Slideshow; closing it loses the card`) : tc(`盯着画面播放 ${Math.round(k.ms / 60000)} 分钟`, `Keep your eyes here for ${Math.round(k.ms / 60000)} min of playing`)}</span>` +
+        `<span class="ld-pfoot"><span${soon ? ' class="ld-soon"' : ""}>${tc(`${minTxt(left)} 后过期`, `expires in ${minTxt(left)}`)}</span><span class="ld-play">+${k.pts} · ${tc("出牌", "Play")}</span></span>` +
         `<span class="ld-pline${soon ? " ld-soon" : ""}"><i style="width:${Math.max(0, Math.min(100, Math.round((left / HOLD_LASTS_MS) * 100)))}%"></i></span></button>`; }).join("");
     h += skipCardRow(hand, true);
     h += hand.tags.map((t) => { const left = tagReadyIn(t, w), pic = tagPicOf(t, st), line = tagLine(t, st, L), again = tagRoundDone(t, st, L);
       return `<button class="ld-pcard ld-pctag${left ? " ld-pwait" : ""}" data-ctag="${escapeHtml(t.id)}"${left ? " disabled" : ""} title="${tc(`打开一个带 ${escapeHtml(t.name)} 的场景`, `Open a scene with ${escapeHtml(t.name)}`)}" style="--c:var(--sx-ma)">` +
-        (pic ? `<span class="ld-pprev">${cardPicHtml(pic, t.name)}</span><span class="ld-pkind">${tc("标签牌", "Tag card")}</span>` : `<span class="ld-pkind">${tc("标签牌", "Tag card")}</span><span class="ld-pico">${TAG_ICON}</span>`) +
+        (pic ? `<span class="ld-pprev">${cardPicHtml(pic, t.name)}</span><span class="ld-pkind">${tc("标签牌", "Tag card")}</span>` : `<span class="ld-pprev ld-pnopic">${TAG_ICON}</span><span class="ld-pkind">${tc("标签牌", "Tag card")}</span>`) +
         `<span class="ld-pcname">${escapeHtml(t.name)}</span><span class="ld-pmeta">${escapeHtml(line)}</span>` +
         `<span class="ld-pfoot">${left ? `<span>${tc(`${minTxt(left)} 后恢复`, `back in ${minTxt(left)}`)}</span><span>${tc("恢复中", "recharging")}</span>` : `<span>${again ? tc("再演一个", "plays one again") : tc("现在打开一个", "opens one now")}</span><span class="ld-play${again ? " ld-gogrey" : ""}">${tc("游玩", "Play")}</span>`}</span>` +
         (left ? `<span class="ld-pline"><i style="width:${Math.round((1 - left / CARD_RECHARGE_MS) * 100)}%"></i></span>` : "") + `</button>`; }).join("");
@@ -9409,7 +10365,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   // opened or CARD_NEW_MS has passed: a blink is easy to miss during a scene.
   const CARD_NEW_MS = 2 * 60000;
   let cardNew = {};
-  const SLOT_ICON = { hold: (s) => holdIcon(s.k), skip: () => COND_ICON.skip, tag: () => TAG_ICON, race: () => CARD_ICON.race };
+  const SLOT_ICON = { hold: (s) => holdIcon(s.k), skip: () => COND_ICON.skip, tag: () => TAG_ICON, race: () => CARD_ICON.race, lockin: () => CARD_ICON.lockin };
   const slotCls = (s) => `ld-slot ld-s${s.g}${s.on ? " ld-on" : ""}${s.wait ? " ld-wait" : ""}${s.live ? " ld-live" : ""}${s.soon ? " ld-soon" : ""}${s.fresh ? " ld-new" : ""}`;
   function drawSlots(w) {
     const box = bar.querySelector(".ld-slots"), btn = bar.querySelector('[data-a="hand"]');
@@ -9458,8 +10414,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     // 2.19: the Race first (it runs on the clock), then a hold
     if (race) html += `${CARD_ICON.race}<span>${escapeHtml(tc(`竞赛 · ${fmtClock(Math.max(0, race.until - Date.now()))} · +${RACE_WIN}`, `Race · ${fmtClock(Math.max(0, race.until - Date.now()))} · +${RACE_WIN}`))}</span>`;
     if (h) {
-      const k = HOLD_KINDS[h.k], left = Math.max(0, k.ms - Math.max(0, (lock.watchedMs || 0) - h.from));
-      html += `${holdIcon(h.k)}<span>${escapeHtml(tc(k.stay ? `${holdName(k)} · ${fmtClock(left)} 剩余 · +${k.pts}` : `进行中 · ${fmtClock(left)} 剩余 · +${k.pts}`, k.stay ? `${k.name} · ${fmtClock(left)} left · +${k.pts}` : `Holding · ${fmtClock(left)} left · +${k.pts}`))}</span>`;
+      const k = HOLD_KINDS[h.k], left = Math.max(0, k.ms - holdSpent(h, lock.watchedMs || 0));
+      html += `${holdIcon(h.k)}<span>${k.stay ? escapeHtml(k.name) : "Holding"} · ${escapeHtml(fmtClock(left))} left · +${k.pts}</span>`;
     }
     if (chip.dataset.k !== html) { chip.dataset.k = html; chip.innerHTML = html; }
   }
@@ -9473,6 +10429,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     if (pageEl) updateLive();
   }
   function handClick(ev) {
+    // 2.27.0: the Lock in card asks who
+    const lb = ev.target.closest && ev.target.closest("[data-lockin]");
+    if (lb && !lb.disabled && lock && lock.hand) { ev.stopPropagation(); chooseLockIn(); return; }
     const b = ev.target.closest && ev.target.closest("[data-hold], [data-ctag], [data-race], [data-skipcard]");
     if (!b || b.disabled || !lock || !lock.hand) return;
     ev.stopPropagation();
@@ -9493,16 +10452,20 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       // 2.19: a Stay card is played on the scene on screen, else on the one
       // last shown (opened for it)
       const here = sceneHere(), scene = k && k.stay ? (here || lastShown(lock)) : null;
-      if (k && k.stay && !scene) { ldToast(tc("先打开本局的一个场景，再打出这张牌", "Open a scene of the run, then play this card"), "info"); return; }
+      if (k && k.stay && !scene) { ldToast(tc("先打开这局的一个场景，再打出这张牌", "Open a scene of the run, then play this card"), "info"); return; }
+      // 2.26.0: a Pictures card needs Slideshow on this device
+      if (k && k.pics && !slideshowApi()) { ldToast(tc("图片牌要在 Slideshow 里播放：请安装或开启 Slideshow 插件", "A Pictures card plays in Slideshow: install or turn on the Slideshow plugin"), "info"); return; }
       const h = handPlayHold(lock.hand, +b.dataset.hold, lock.watchedMs || 0, scene);
       if (!h) return;
       holdAway = 0;
       handSet(h, true);
       const kk = HOLD_KINDS[h.hold.k];
-      flash(kk.stay ? tc(`${holdName(kk)}：在本场景游玩 ${Math.round(kk.ms / 60000)} 分钟`, `${kk.name}: stay on this scene for ${Math.round(kk.ms / 60000)} minutes of playing`)
-        : tc(`进行中：盯着画面 ${Math.round(kk.ms / 60000)} 分钟，期间不切换标签页或应用`, `Holding: ${kk.name.toLowerCase()} for ${Math.round(kk.ms / 60000)} minutes of playing`));
+      flash(kk.stay ? tc(`${kk.name}：在这个场景上停留播放 ${Math.round(kk.ms / 60000)} 分钟`, `${kk.name}: stay on this scene for ${Math.round(kk.ms / 60000)} minutes of playing`)
+        : kk.pics ? tc(`${kk.name}：看图片 ${Math.round(kk.ms / 60000)} 分钟；关掉幻灯片就失去这张牌`, `${kk.name}: watch the pictures for ${Math.round(kk.ms / 60000)} minutes; closing the slideshow loses the card`)
+        : tc(`保持：${kk.name}，播放 ${Math.round(kk.ms / 60000)} 分钟`, `Holding: ${kk.name.toLowerCase()} for ${Math.round(kk.ms / 60000)} minutes of playing`));
       showHand(false);
       if (kk.stay && scene !== here) navigate(`/scenes/${scene}`);
+      if (kk.pics) playPictures();
     } else playTag(b.dataset.ctag);
   }
   // A tag card: a scene of the run with that tag, one not shown yet if there is one.
@@ -9516,12 +10479,16 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     tagBusy = true;
     const L = lock;
     try {
-      const d = await gql(`query ($x: SceneFilterType) { findScenes(scene_filter: $x, filter: { per_page: -1 }) { scenes { id } } }`,
+      // 2.27.0: locked in, the card deals that performer's scenes with the tag (lockPool)
+      const lk = lockedIn(L);
+      const d = await gql(`query ($x: SceneFilterType) { findScenes(scene_filter: $x, filter: { per_page: -1 }) { scenes { id${lk ? " performers { id }" : ""} } } }`,
                           { x: { ...sceneFilterFor(L, L.rules && L.rules.fresh), AND: { tags: { value: [card.id], modifier: "INCLUDES", depth: -1 } } } }, 60000);
-      const all = (d?.findScenes?.scenes ?? []).map((x) => ({ id: String(x.id), who: [] }));
-      const pick = deckPick(all, { scenes: L.scenes, deck: {} }, sceneHere(), Math.random(), Date.now());
+      const lp = lockPool((d?.findScenes?.scenes ?? []).map((x) => ({ id: String(x.id), who: (x.performers || []).map((p) => String(p.id)) })), lk, sceneHere());
+      const all = lp.pool.map((x) => ({ id: x.id, who: [] }));
+      const pick = deckPick(all, { scenes: L.scenes, deck: {} }, sceneHere(), Math.random(), Date.now(), learnWeights(L, learnNow, Date.now()));
       if (!lock || lock.id !== L.id) return;
-      if (!pick.id) { ldToast(tc(`${L.name} 没有其他带「${card.name}」的场景${L.rules && L.rules.fresh ? "未看过" : ""}`, `No other scene of ${L.name} with ${card.name}${L.rules && L.rules.fresh ? " left unwatched" : ""}`), "info"); return; }
+      if (!pick.id) { ldToast(tc(`没有别的 ${L.name} 场景带 ${card.name}${L.rules && L.rules.fresh ? " 且未看过" : ""} 了`, `No other scene of ${L.name} with ${card.name}${L.rules && L.rules.fresh ? " left unwatched" : ""}`), "info"); return; }
+      if (lp.out) lockFallback(pick.id);
       // 2.23.1: the tags under the card's, for the marker bonus (a failed read only narrows it to the tag itself)
       let sub = [];
       try {
@@ -9547,6 +10514,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   // tab that never showed it (another window on another scene) does not
   // break it; this one does once it opens another scene.
   let staySeen = "";
+  // 2.26.0: the Pictures card this tab opened the slideshow for ("k|from")
+  let picHoldSeen = "";
   function handStep(now) {
     if (!lock || !lock.hand) return;
     let hand = lock.hand;
@@ -9562,29 +10531,54 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         hand = handBreakHold(hand); holdDone = { t: "broken", at: now, k: "stay" };
         sound("thud"); flash(tc(`${holdName(hk)} 失去：打开了另一个场景`, `${hk.name} lost: another scene was opened`));
       }
+    } else if (hk && hk.pics) {
+      // 2.26.0: a Pictures card counts Slideshow's own time (slideshow:viewed)
+      // and is lost when this tab closes the slideshow it showed it in
+      holdAway = 0;
+      const ss = slideshowApi(), open = !!(ss && typeof ss.isOpen === "function" && ss.isOpen()), key = `${hand.hold.k}|${hand.hold.from}`;
+      if (open) picHoldSeen = key;
+      else if (picHoldSeen === key) {
+        picHoldSeen = "";
+        hand = handBreakHold(hand); holdDone = { t: "broken", at: now, k: "pics" };
+        sound("thud"); flash(tc(`${hk.name} 失去：幻灯片被关闭`, `${hk.name} lost: the slideshow was closed`));
+      }
     } else if (hand.hold) {
       if (awayHere() && sceneHere() && (holdAway || playingHere())) { if (!holdAway) holdAway = now; }
       else holdAway = 0;
       if (holdAway && now - holdAway > EYES_GRACE_MS) { holdAway = 0; hand = handBreakHold(hand); holdDone = { t: "broken", at: now }; sound("thud"); flash(tc("坚持中断：你移开了视线", "Hold broken: you looked away")); }
     } else holdAway = 0;
+    // 2.27.0: a scene of the run without the performer locked in breaks the
+    // lock-in (on the tab showing it, once its performers are read); what it
+    // earned stays, the end bonus goes
+    if (hand.lk && hand.lk.st === "on") {
+      const here = sceneHere();
+      if (here && allowedCache.get(`${lock.id}:scene:${here}`) === true && lockBreaks(hand.lk, here, perfsOf("scene", here))) {
+        const name = hand.lk.name || tc("他们", "them");
+        hand = handBreakLock(hand, lockInMs({ ...lock, hand }), now, here);
+        lockDone = { at: now };
+        sound("thud"); flash(tc(`锁定牌被破：这个场景里没有 ${name} · 已得的分保留`, `Lock-in broken: ${name} is not in this scene · what it earned stays`));
+      }
+    }
     const stays = !(lock.one && lock.one.id) && !(lock.rules && lock.rules.stay);
-    const r = handTick(hand, lock.watchedMs || 0, { stays, race: raceDue(lock, now), now, skips: skipBudget() !== null && lock.media !== "images" });
+    const r = handTick(hand, lock.watchedMs || 0, { stays, race: raceDue(lock, now), now, skips: skipBudget() !== null && lock.media !== "images", lockin: lockInDue(lock, now) });
     for (const ev of r.events) {
-      if (ev.t === "passed") { holdDone = { t: "kept", at: now, pts: HOLD_KINDS[ev.k].pts, k: ev.k }; sound("bell"); flash(`${HOLD_KINDS[ev.k].stay ? tc(`${holdName(HOLD_KINDS[ev.k])} 坚持成功`, `${HOLD_KINDS[ev.k].name} kept`) : tc("坚持通过", "Hold passed")} · +${HOLD_KINDS[ev.k].pts}`); }
-      else if (ev.t === "race-lost") { raceDone = { t: "lost", at: now }; sound("thud"); flash(tc(`竞赛失败：时间到了 · −${RACE_LOSE}`, `Race lost: time ran out · −${RACE_LOSE}`)); }
+      if (ev.t === "passed") { holdDone = { t: "kept", at: now, pts: HOLD_KINDS[ev.k].pts, k: ev.k }; sound("bell"); flash(tc(`${HOLD_KINDS[ev.k].stay || HOLD_KINDS[ev.k].pics ? HOLD_KINDS[ev.k].name + " 守住" : "坚持通过"} · +${HOLD_KINDS[ev.k].pts}`, `${HOLD_KINDS[ev.k].stay || HOLD_KINDS[ev.k].pics ? HOLD_KINDS[ev.k].name + " kept" : "Hold passed"} · +${HOLD_KINDS[ev.k].pts}`)); }
+      else if (ev.t === "race-lost") { raceDone = { t: "lost", at: now }; sound("thud"); flash(tc(`竞赛失败：时间到 · −${RACE_LOSE}`, `Race lost: time ran out · −${RACE_LOSE}`)); }
       else if (ev.t === "dealt") {
         flash(ev.k === "race" ? tc(`竞赛牌：打出它，然后在 ${RACE_MS / 60000} 分钟内完成可得 +${RACE_WIN}`, `The Race card: play it, then finish within ${RACE_MS / 60000} minutes for +${RACE_WIN}`)
-          : ev.k === "skip" ? tc(`跳过牌：场景的跳过配额用完后可再跳一次，留到最后每张 +${SKIP_CARD_PTS}`, `A skip card: one more skip when a scene is out of them, or +${SKIP_CARD_PTS} if you keep it`)
-          : tc(`坚持牌${HOLD_KINDS[ev.k] && HOLD_KINDS[ev.k].stay ? `（${HOLD_KINDS[ev.k].name}）` : ""}：想用时再打`, `A hold card${HOLD_KINDS[ev.k] && HOLD_KINDS[ev.k].stay ? `, ${HOLD_KINDS[ev.k].name}` : ""}: play it when you like`));
+          : ev.k === "lockin" ? tc(`锁定牌：选他们中的一位，他的场景每分钟 +${LOCKIN_PER_MIN}，留到结束 +${LOCKIN_KEEP}`, `The Lock in card: pick one of them for +${LOCKIN_PER_MIN} a minute on their scenes, +${LOCKIN_KEEP} if you keep it`)
+          : ev.k === "skip" ? tc(`跳过牌：场景用光跳过次数时可以再用一次，或者留着换 +${SKIP_CARD_PTS}`, `A skip card: one more skip when a scene is out of them, or +${SKIP_CARD_PTS} if you keep it`)
+          : tc(`一张坚持牌${HOLD_KINDS[ev.k] && (HOLD_KINDS[ev.k].stay || HOLD_KINDS[ev.k].pics) ? `（${HOLD_KINDS[ev.k].name}）` : ""}：想打时再打`, `A hold card${HOLD_KINDS[ev.k] && (HOLD_KINDS[ev.k].stay || HOLD_KINDS[ev.k].pics) ? `, ${HOLD_KINDS[ev.k].name}` : ""}: play it when you like`));
         // 2.21: the new slot blinks and stays lit (drawSlots), the box around
         // them pulses, and a card now makes a sound
-        cardNew[ev.k === "skip" ? "skip" : ev.k === "race" ? "race" : "hold"] = now + CARD_NEW_MS;
+        if (ev.k === "lockin") cardNew.lockin = now + CARD_NEW_MS;   // 2.27.0
+        else cardNew[ev.k === "skip" ? "skip" : ev.k === "race" ? "race" : "hold"] = now + CARD_NEW_MS;
         sound("card");
         const hb = bar && bar.querySelector('[data-a="hand"]');
         if (hb) { hb.classList.add("ld-pulse"); setTimeout(() => hb.classList.remove("ld-pulse"), 3400); }
       }
     }
-    if (r.hand !== lock.hand) handSet(r.hand, r.events.some((e) => e.t === "passed" || e.t === "race-lost") || hand !== lock.hand);
+    if (r.hand !== lock.hand) handSet(r.hand, r.events.some((e) => e.t === "passed" || e.t === "race-lost" || (e.t === "dealt" && e.k === "lockin")) || hand !== lock.hand);
     else drawHand();
   }
 
@@ -9834,7 +10828,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       if (!lock.over && goalReached(lock, now)) edgeReached(now);
       else if (overtimeFull(lock) && otFullSaid !== lock.id && !hiddenPast(lock)) {
         otFullSaid = lock.id;
-        ldToast(tc(`加时已满：+${overtimePts(overtimeScored(lock))} 已入账。继续观看不再计分；锁局保持，直到出局或停止加时。`, `Overtime full: +${overtimePts(overtimeScored(lock))} banked. Watching on scores nothing more; the lock holds until an O or Stop overtime.`), "done");
+        ldToast(`Overtime full: +${overtimePts(overtimeScored(lock))} banked. ${lock.pt ? `Watching on scores ${PAST_PTS} a minute, up to ${PAST_CAP_MS / 60000} minutes` : "Watching on scores nothing more"}; the lock holds until an O or Stop overtime.`, "done");
       }
     } else if (goalReached(awayNowLock(lock, eyesAt, now), now)) end("done");
   }
@@ -9891,7 +10885,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     } else if (lock.goal && lock.goal.hidden) {
       // 2.12: Hidden target: a rough hint and the watched time, never the target
       const need = edgeNeedMs(lock), w = lock.watchedMs || 0;
-      out = `<span class="ld-wlabel">${tc("已观看 ", "watched ")}</span>${fmtClock(w)} <small class="ld-hint3">${hintTc(need ? w / need : 0)}</small>`;
+      out = `<span class="ld-wlabel">watched </span>${fmtClock(w)} <small class="ld-hint3">${edgeHint(edgeFrac(lock))}</small>`;
     } else {
       const need = edgeNeedMs(lock), w = Math.min(need, lock.watchedMs || 0);
       out = `<span class="ld-wlabel">${tc("已观看 ", "watched ")}</span>${fmtClock(w)}${tc(" / ", " of ")}${fmtClock(need)}<span class="ld-meter"><i style="width:${need ? Math.round((w / need) * 100) : 0}%"></i></span>`;
@@ -9925,7 +10919,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       // several tags: the Scenes list must keep their filter (and the
       // unplayed one), or its list view would show the whole library
       const listPage = { "/scenes": "scenes", "/images": "images", "/galleries": "galleries" }[path];
-      if (lock.groups && listPage) {
+      if (listed(lock) && listPage) {
         if (!keepsListFilter(location.search, lock, listPage)) { later(() => { lastPath = null; navigate(tagsListUrl(lock, listPage), true); }); return; }
         document.body.classList.remove("ld-checking");
         return;
@@ -10104,6 +11098,11 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     if (live > 0) {
       lock.watchedMs = (lock.watchedMs || 0) + live;
       if (lock.toy && toyCtl.live(lock)) lock.toy = { ...lock.toy, ms: (lock.toy.ms || 0) + live };   // 2.12
+      // 2.27.0: picture time is watched time (2.5.2), so it goes to the picture's performers too
+      creditPw("image", ev.detail.imageId ? String(ev.detail.imageId) : "", live);
+      // 2.26.0: and a Pictures card being played counts it as its own time
+      const h = lock.hand && lock.hand.hold;
+      if (h && HOLD_KINDS[h.k] && HOLD_KINDS[h.k].pics) lock.hand = { ...lock.hand, hold: { ...h, pms: (Number(h.pms) || 0) + live } };
     }
     dirty = true;
     writeState(lock);
@@ -10214,6 +11213,20 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   // every 2.5 s (one small query) and every O of the target only every 15 s,
   // or at once when that count moved; elsewhere every 10 s; and only the
   // polling tab reads them all (oCheckPlan).
+  // 2.25.1: take back the last O (the toast's "Not an O", the run page's
+  // button). The O stays on the scene in Stash: it is already in the
+  // baseline, so it is not counted again; taking it off there changes nothing.
+  function takeBackNow() {
+    const t = lock && takeBackInfo(lock);
+    if (!lock || !takeBack(lock)) { ldToast(tc("这一次 O 已经无法撤回了", "That O can no longer be taken back"), "error"); return; }
+    dirty = true;
+    writeState(lock);
+    saveProgress(true);
+    // 2.26.0: a forgiven O taken back gives the grace back; one that added time takes it off
+    ldToast(t && t.g ? tc("已撤回 O：首 O 宽恕又回来了", "O taken back: First O forgiven is there again") : t && t.ms >= 60000 && !(lock.goal && lock.goal.hidden && lock.goal.slip !== "add")
+      ? tc(`已撤回 O：它加的 ${fmtMinutes(Math.round(t.ms / 60000))}已去掉`, `O taken back: the ${fmtMinutes(Math.round(t.ms / 60000))} it added are off`) : tc("已撤回 O：它不再计数", "O taken back: it no longer counts"), "done");
+    try { tick(); updateLive(); } catch (_) {}
+  }
   let oBusy = false, lastOCheck = 0, lastOScene = 0;
   async function checkO() {
     if (!lock || oBusy || document.visibilityState !== "visible") return;
@@ -10263,9 +11276,9 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
         saveProgress(true);
         const g = lock.goal || {};
         if (lock.slips > (before.slips || 0)) sound("thud");
-        if (lock.slips > (before.slips || 0)) ldToast(g.slip === "reset" ? tc("一次 O：整个目标重新来过", "An O: the whole target again")
-          : g.hidden ? tc("一次 O：还要看更多（多少保持隐藏）", "An O: more to watch (how much stays hidden)")
-          : tc(`一次 O：还要再看 ${fmtMinutes(Math.round((edgeNeedMs(lock) - edgeNeedMs(before)) / 60000))}`, `An O: ${fmtMinutes(Math.round((edgeNeedMs(lock) - edgeNeedMs(before)) / 60000))} more to watch`));
+        // 2.26.0: what changed, in slipNote's words (forgiven, +10 min, what is left)
+        if (lock.slips > (before.slips || 0)) ldToast(slipNote(lock, before) || tc("一次 O：可看时间变多", "An O: more to watch"),
+          undefined, takeBackInfo(lock) ? { label: tc("不是 O", "Not an O"), fn: takeBackNow } : undefined);
         else if (lock.early > (before.early || 0)) ldToast(lock.slowBy === "watched"
           ? tc(`为时过早：看过 ${fmtMinutes(lock.rules.minMs / 60000)} 后 O 才计数。等待会重新开始。`, `Too early: O's count after ${fmtMinutes(lock.rules.minMs / 60000)} watched. The wait starts over.`)
           : tc(`为时过早：看过 ${fmtMinutes(lock.rules.minMs / 60000)} 后 O 才计数`, `Too early: O's count after ${fmtMinutes(lock.rules.minMs / 60000)}`));
@@ -10331,6 +11344,42 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
   // Watch time (every run since 2.1: it scores; Edge also needs it to get
   // out), only while the scene plays in a tab on screen; and the timeline:
   // playback between events, drags that ended, the watched parts drawn.
+  // 2.27.0: an item's performers with their gender, read once a session
+  // ("scene:12" -> [{ id, gender }]; an image's own and its galleries'), for
+  // the watched time per performer (pwWho) and the Lock in's break. Time
+  // watched while they are read waits in `pwPend` and is added when they come.
+  const itemPerfs = new Map(), itemPerfAsk = new Set();
+  let pwPend = {};
+  function perfsOf(kind, id) {
+    const key = `${kind}:${id}`;
+    if (itemPerfs.has(key)) return itemPerfs.get(key);
+    if (!itemPerfAsk.has(key) && /^\d+$/.test(String(id))) {
+      itemPerfAsk.add(key);
+      const q = kind === "image" ? `query ($id: ID!) { findImage(id: $id) { performers { id gender } galleries { performers { id gender } } } }`
+        : `query ($id: ID!) { findScene(id: $id) { performers { id gender } } }`;
+      gql(q, { id: String(id) }).then((d) => {
+        const x = d && (kind === "image" ? d.findImage : d.findScene);
+        const list = x ? (x.performers || []).concat(kind === "image" ? (x.galleries || []).flatMap((g) => (g && g.performers) || []) : []) : [];
+        itemPerfs.set(key, list.filter((p) => p && p.id != null).map((p) => ({ id: String(p.id), gender: p.gender || "" })));
+        const p = pwPend[key];
+        delete pwPend[key];
+        if (p && lock && lock.id === p.run) creditPw(kind, id, p.ms);
+      }, (e) => { itemPerfAsk.delete(key); log(`Performers of ${key} not read: ${e.message}`); });
+    }
+    return null;
+  }
+  function creditPw(kind, id, ms) {
+    if (!lock || !lock.pw || !(ms > 0)) return;
+    const perfs = id ? perfsOf(kind, id) : [];
+    if (!perfs) {
+      const key = `${kind}:${id}`, was = pwPend[key] && pwPend[key].run === lock.id ? pwPend[key].ms : 0;
+      pwPend[key] = { run: lock.id, ms: was + ms };
+      return;
+    }
+    const ids = pwWho(lock, perfs);
+    if (ids.length) { lock.pw = pwAdd(lock.pw, ids, ms); dirty = true; }
+  }
+
   let lastTrack = 0;
   function trackPlayback() {
     const now = Date.now();
@@ -10347,6 +11396,7 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
       lock.watchedMs = (lock.watchedMs || 0) + dt;
       // 2.12: and the part of it Goon mode drove, for Toy in charge's heat
       if (lock.toy && toyCtl.live(lock)) lock.toy = { ...lock.toy, ms: (lock.toy.ms || 0) + dt };
+      creditPw("scene", id, dt);   // 2.27.0: and to the scene's performers
       dirty = true;
     }
     if (dirty && now - lastCache > 5000) { lastCache = now; writeState(lock); }
@@ -11024,6 +12074,8 @@ body.ld-noff .scene-card-preview-video, body.ld-noff .scene-card .hover-scrubber
     ev.stopImmediatePropagation();
     if (act === "close") { ev.preventDefault(); closeModal(); }
     else if (act === "stop") ev.preventDefault();
+    // 2.27.0: the Lock in chooser's arrow keys
+    else if (/^(Arrow\w+|Home|End)$/.test(ev.key) && t && t.classList && t.classList.contains("ld-lkopt") && back.contains(t)) { ev.preventDefault(); lockKeyMove(t, ev.key); }
     // 2.24.3 (audit 2026-11-10): a row worked like a button gets its Enter /
     // Space here, since this stops the key before the dialog's own listener
     else if (t && t.tagName !== "BUTTON" && t.getAttribute && rowKeyOk(ev.key, t.getAttribute("role"), false) && back.contains(t)) { ev.preventDefault(); t.click(); }
