@@ -30,7 +30,7 @@
   window.__TasksToolkitI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '0.6.9-1';
+  var PLUGIN_VERSION = '0.7.0-1';
   var _intlLocale = '';
   var _afterLocale = [];        // locale 到达后要重绘的东西（导航入口、面板）
   function tc(zh, en) {
@@ -76,6 +76,8 @@
   const LOCK_STALE_MS = 12000;
   const PLAY_KEY = "TasksToolkitI18nPlaying";    // a scene playing in any tab of this browser
   const VIEW_KEY = "TasksToolkitI18nView";       // what the running tab shows the others (nav indicator)
+  const ACT_KEY = "TasksToolkitI18nActive";      // the last pointer, key, scroll or focus in any Stash tab of this browser
+  const IDLE_MAX_MS = 10 * 60000, IDLE_MIN_MS = 60000;   // away after this long (idleAfter)
   const PREFS_KEY = "TasksToolkitI18nPrefs";     // UI only: last tab, unticked rows
   const DEBUG = false;
   const log = (m, lvl = "log") => { if (DEBUG || lvl === "error") console[lvl](`[${PLUGIN_ID}]`, m); };
@@ -1286,10 +1288,27 @@
   // the page or in the runner tab, else every 10 s. The data: 10 s on the
   // page only while something runs or waits, else 30 s; 5 min hidden.
   function readEvery(o) {
+    // 0.7.0: away (idleNow), nothing is read, except by the runner tab while
+    // a step runs: the queue every 30 s and the data every 5 min until it ends
+    if (o.idle) { const keep = !!(o.mine && o.cur); return { q: keep ? 30000 : Infinity, data: keep ? 5 * 60000 : Infinity }; }
     const q = !o.visible ? (o.mine && o.busy ? 30000 : Infinity) : o.mine || o.page ? 0 : 10000;
     const data = !o.mine ? Infinity : !o.visible ? 5 * 60000 : o.page ? (o.busy ? 10000 : 30000) : o.busy ? 15000 : 5 * 60000;
     return { q, data };
   }
+  // 0.7.0 (forum 2026-11-09, Tasks Toolkit #2: Stash did not log out after
+  // its Maximum session age). Stash renews its session cookie on every
+  // request, so reading every few seconds kept a login alive for as long as
+  // a tab stayed open. Away: no pointer, key, scroll or focus in any Stash
+  // tab of this browser (ACT_KEY) for idleAfter(Stash's maxSessionAge): half
+  // of it, at least 1 min, at most 10 min (not known: 10 min). A Stash
+  // without a login (no username) has no session to end, so it is never
+  // away and browser routines run there as before.
+  function idleAfter(maxAgeS) {
+    const s = Number(maxAgeS);
+    return s > 0 ? Math.max(IDLE_MIN_MS, Math.min(IDLE_MAX_MS, s * 500)) : IDLE_MAX_MS;
+  }
+  // o: { now, lastAct, after, login (true, false, null: not known yet) }
+  function idleNow(o) { return o.login !== false && o.now - (o.lastAct || 0) >= o.after; }
   function apOffWords(r) {
     const st = (r && r.stopped) || [], left = (r && r.left) || [];
     const parts = [st.length ? tc(`已停止 ${st.slice(0, 3).join("、")}${st.length > 3 ? ` 等 ${st.length} 项` : ""}`, `Stopped ${st.slice(0, 3).join(", ")}${st.length > 3 ? ` and ${st.length - 3} more` : ""}`) : tc("当时没有任务在运行", "Nothing was running")];
@@ -1300,7 +1319,7 @@
   }
 
   if (window.__TasksToolkitI18nTest) {
-    window.__TasksToolkitI18nTestHooks = { extKits, extKey, EXT_SUB, tabOf, tabUrl, readEvery, PLUGIN_VERSION, DATA_KEYS, CAT, Q, KITS, KIT_STEPS, stepServer, ORDER, catOf, stepName, safeOrder, safeIdentifyInput, idEndpoints, identifyRisks, ID_FIELDS, ID_FILTER,
+    window.__TasksToolkitI18nTestHooks = { extKits, extKey, EXT_SUB, tabOf, tabUrl, readEvery, idleAfter, idleNow, IDLE_MAX_MS, IDLE_MIN_MS, PLUGIN_VERSION, DATA_KEYS, CAT, Q, KITS, KIT_STEPS, stepServer, ORDER, catOf, stepName, safeOrder, safeIdentifyInput, idEndpoints, identifyRisks, ID_FIELDS, ID_FILTER,
       GUARDS, heavyJob, classifyDesc, inNight, gate, firstReady, parseHM, nextRun, lastDue, dueState, schedWords, cronLine, readData, writeData, normRoutine,
       routineSteps, enqueue, enqueueRoutine, moveItem, pushHist, finishCur, histFilter, histCounts, timePerPlugin, lastOk, estimate, overview, recommend,
       applyRecommended, serverScript, stepBody, shSafe, kitServer, verAtLeast, autotagTitle, navPlan, shq, slugOf, fmtDur, fmtAgo, fmtWhen, HIST_MAX, GRACE_MS, LONG_MS, suiteData, lockFree,
@@ -1387,6 +1406,7 @@
     queue: [], queueAt: 0, queueErr: "", why: {}, kits: {}, kitVer: {}, notes: null, notesErr: "", server: "", sched: null, schedErr: "",
     hf: "all", hmore: 25, fold: {}, sheet: null, armed: null, armTimer: 0, force: "", missed: [],
     ap: null, apErr: "",
+    login: null, idleMs: IDLE_MAX_MS, idle: false, idleKeep: false,   // 0.7.0: Stash's login; whether this browser counts as away
   };
   let pageEl = null, sheetEl = null;
 
@@ -1745,6 +1765,30 @@
     return { job: v == null ? "" : String(v) };
   }
 
+  // 0.7.0: activity (idleAfter). This tab's own time, and the newest any
+  // tab of this browser wrote (at most every 5 s); coming back reads at once
+  let lastAct = Date.now(), actSaved = 0, loginAsked = false;
+  function lastActive() {
+    let at = 0;
+    try { at = +localStorage.getItem(ACT_KEY) || 0; } catch (_) {}
+    return Math.max(lastAct, at);
+  }
+  function isIdle(now) { return idleNow({ now, lastAct: lastActive(), after: S.idleMs, login: S.login }); }
+  function noteActive() {
+    const now = Date.now(), was = now - lastAct >= IDLE_MIN_MS && isIdle(now);
+    lastAct = now;
+    if (now - actSaved > 5000) { actSaved = now; try { localStorage.setItem(ACT_KEY, String(now)); } catch (_) {} }
+    if (was) tick();
+  }
+  // Stash's login and session age, once per page (read while the user is here)
+  function askLogin() {
+    if (loginAsked) return;
+    loginAsked = true;
+    gql("{ configuration { general { username maxSessionAge } } }").then((d) => {
+      const g = (d && d.configuration && d.configuration.general) || {};
+      S.login = !!g.username; S.idleMs = idleAfter(g.maxSessionAge);
+    }, () => {});   // not known: counted as a login, away after 10 min
+  }
   let ticking = false, lastRead = 0, lastQ = 0;
   const seen = new Map();     // Stash jobs this tab saw in the queue: id -> job (for History)
   async function tick() {
@@ -1756,26 +1800,31 @@
       const mine = holdLock();
       const busy = !!(S.data && (S.data.runner.cur || S.data.runner.wait.length));
       const now = Date.now();
+      // 0.7.0: away, the tab stops reading so Stash's session can end; the
+      // runner tab still watches a step that runs (keep), then stops
+      const idle = isIdle(now), cur = !!(S.data && S.data.runner.cur), keep = idle && mine && cur;
+      S.idle = idle; S.idleKeep = keep;
+      if (!idle) askLogin();
       // 0.6.9 (audit 2026-11-10): how often, in readEvery: no queue read from
       // a hidden tab unless it runs something here; the data every 10 s on
       // the page only while something runs or waits
-      const ev = readEvery({ visible, mine, page: !!pageEl, busy });
+      const ev = readEvery({ visible, mine, page: !!pageEl, busy, idle, cur });
       if (now - lastQ >= ev.q) {
         try { S.queue = await readQueue(); S.queueErr = ""; } catch (e) { S.queueErr = e.message; }
         S.queueAt = lastQ = Date.now();
       }
-      if (mine) {
+      if (mine && (!idle || keep)) {
         if (!S.data || now - lastRead > ev.data) { lastRead = now; try { await loadData(); } catch (e) { S.dataErr = e.message; } }
         if (S.data && !S.dataErr) {
           await watchElsewhere();
           await watchCur();
-          await timers();
-          await sendNext();
+          // away: no routine started and no next step sent; they wait for the user
+          if (!idle) { await timers(); await sendNext(); }
         }
-        shareView();
       }
-      // 0.6.0: Autopilot's switch, every 30 s by the tab that runs things or shows the page
-      if ((mine || pageEl) && visible) {
+      if (mine) shareView();
+      // 0.6.0: Autopilot's switch, every 30 s by the tab that runs things or shows the page (not while away)
+      if ((mine || pageEl) && visible && !idle) {
         await loadAp(false);
         if (mine && S.data && !S.dataErr) await apSyncHold(S.ap);
       }
@@ -2060,7 +2109,7 @@
     const html = `<div class="tt" data-tab="${S.tab}">
       <div class="tt-head"><h1 class="tt-title">${ic("tasks")}${tc("任务", "Tasks")}</h1><span class="tt-read">${readLine(now)}</span>
         <div class="tt-tabs" role="tablist" aria-label="${tc("任务", "Tasks")}">${TABS.map(([k, l, i, c, key]) => `<button class="tt-tab${S.tab === k ? " on" : ""}" role="tab" aria-selected="${S.tab === k}" style="--tc:var(--sx-${c})" data-tab="${k}" title="${tabLabel(k, l)} (${key})">${ic(i)}${tabLabel(k, l)}</button>`).join("")}</div></div>
-      ${missedHtml(now)}
+      ${missedHtml(now)}${idleHtml()}
       ${body}</div>`;
     if (soft && html === lastHtml) return;
     lastHtml = html;
@@ -2077,6 +2126,14 @@
       return `<span class="tt-spin"></span>${esc(parts.join(" · "))}`;
     }
     return `${ic("clock")}${tc("Stash 空闲", "Stash is idle")}`;
+  }
+  // 0.7.0: away, the page says why it stopped reading
+  function idleHtml() {
+    if (!S.idle) return "";
+    const why = S.idleKeep
+      ? tc("你已离开（没有操作）：只继续留意正在跑的那一步，下一步等你回来", "You are away: only the step running now is watched, and the next waits for you")
+      : tc("你已离开（没有操作），所以本页已停止读取 Stash", "You are away, so this page stopped reading Stash");
+    return `<div class="tt-banner tt-quiet" role="status">${ic("pause")}<span class="tt-grow">${why}${tc("；这样 Stash 的登录才能按「最大会话时长」到期。动一下鼠标或按任意键即恢复读取。", "; that lets Stash's login end after its Maximum session age. Move the mouse or press a key to read again.")}</span></div>`;
   }
   function missedHtml(now) {
     if (!S.missed.length || !S.data) return "";
@@ -2293,7 +2350,7 @@
       <div class="tt-last"><span class="${warn ? "warn" : last || cur ? "ok" : ""}">${ic(warn ? "warn" : cur ? "clock" : "check")}${esc(lastTxt)}</span><span class="tt-grow"></span>
         <span>${next ? tc(`下一次：${esc(fmtWhen(next, now))}`, `Next: ${esc(fmtWhen(next, now))}`) : r.sched.freq === "hand" ? tc("按“立即运行”时运行", "Runs when you press Run now") : ""}</span></div>
       ${kitSteps.length ? `<div class="tt-banner">${ic("browser")}<span class="tt-grow">${tc(`${esc(kitSteps.map(stepName).join("、"))} 只能从浏览器运行；服务器脚本会跳过它们。`, `${esc(kitSteps.map(stepNameEn).join(", "))} run${kitSteps.length === 1 ? "s" : ""} from a browser only; the server script leaves ${kitSteps.length === 1 ? "it" : "them"} out.`)}</span></div>` : ""}
-      ${!server && r.on && r.sched.freq !== "hand" ? `<div class="tt-banner tt-quiet">${ic("browser")}<span class="tt-grow">${tc(`到 ${esc(r.sched.time)} 时需要打开一个 Stash 标签页${missedHere ? "；上次错过了" : ""}。`, `Needs a Stash tab open at ${esc(r.sched.time)}${missedHere ? "; missed last time" : ""}.`)}</span><button class="tt-btn tt-sm" data-a="toserver" data-id="${esc(r.id)}">${tc("改在 Stash 里运行", "Run it in Stash")}</button></div>` : ""}
+      ${!server && r.on && r.sched.freq !== "hand" ? `<div class="tt-banner tt-quiet">${ic("browser")}<span class="tt-grow">${tc(`到 ${esc(r.sched.time)} 时需要打开一个 Stash 标签页${missedHere ? "；上次错过了" : ""}。${S.login !== false ? `有 Stash 登录时，放着的标签页在 ${Math.round(S.idleMs / 60000)} 分钟没人操作后会停止读取，好让登录到期；在 Stash 里运行则不受影响。` : ""}`, `Needs a Stash tab open at ${esc(r.sched.time)}${missedHere ? "; missed last time" : ""}.${S.login !== false ? ` With a Stash login, a tab left alone stops reading after ${Math.round(S.idleMs / 60000)} min so the login can end; in Stash it runs anyway.` : ""}`)}</span><button class="tt-btn tt-sm" data-a="toserver" data-id="${esc(r.id)}">${tc("改在 Stash 里运行", "Run it in Stash")}</button></div>` : ""}
     </article>`;
   }
 
@@ -2898,6 +2955,9 @@
 
   window.addEventListener("keydown", onKey, true);
   window.addEventListener("pagehide", dropLock);
+  // 0.7.0: what counts as the user being here (passive, capture: nothing is stopped)
+  for (const t of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart", "scroll", "focus"]) window.addEventListener(t, noteActive, { capture: true, passive: true });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState !== "hidden") noteActive(); });
   let navQueued = false;
   new MutationObserver(() => {
     if (navQueued) return;

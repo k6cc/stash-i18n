@@ -85,7 +85,7 @@ except ImportError:          # Windows: no scheduler there (it needs fork)
     fcntl = None
 
 PLUGIN_ID = "TasksToolkitI18n"
-PLUGIN_VERSION = "0.6.9-1"
+PLUGIN_VERSION = "0.7.0"
 EVENTS_MAX = 100          # the newest events kept, oldest dropped
 STEPS_MAX = 40            # steps kept per run
 RUNS_MAX = 50             # routines with a run on record
