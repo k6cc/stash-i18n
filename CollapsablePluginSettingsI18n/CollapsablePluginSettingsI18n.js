@@ -1,10 +1,10 @@
 /**
  * Collapsable Plugin Settings - Stash UI plugin (bilingual 中文/EN fork)
  *
- * Makes the plugin groups in Settings -> Plugins and Settings -> Tasks ->
- * Plugin Tasks collapsible, searchable and sortable; the toolbar is
- * right-aligned at the height of the section heading and the optional slider
- * replaces Stash's Enable/Disable buttons.
+ * Adds Collapse all / Expand all, a default state and sorting to the plugin
+ * groups in Settings -> Plugins and Settings -> Tasks -> Plugin Tasks; it
+ * operates Stash's own arrow buttons and the optional slider replaces Stash's
+ * Enable/Disable buttons.
  *
  * This is a localization fork: the functional logic follows the upstream
  * plugin by Jacksyy420 (https://github.com/Jacksyy420/Stash-Plugins).
@@ -15,7 +15,7 @@
   window.__CollapsablePluginSettingsI18nLoaded = true;
 
   // ==================== i18n ====================
-  var PLUGIN_VERSION = '0.10.7-1';
+  var PLUGIN_VERSION = '0.11.3-1';
   var _intlLocale = '';
   function tc(zh, en) {
     if (_intlLocale.indexOf('zh') === 0) return zh;
@@ -63,12 +63,9 @@
   let mode = "remember";
   // Slider instead of the Enable/Disable buttons (Settings -> Plugins)
   const DEFAULT_COLORS = { enabled: "#FFD700", disabled: "#dc3545" }; // gold / red
-  let switchOn = false;
+  let switchOn = true;
   const ready = {}; // Scope-ID -> { container, promise }
-  let lastActiveId = null;
   let toolbar = null;
-  let searchInput = null;
-  let countEl = null;
   let toolbarSelect = null; // the toolbar's <select>, kept for the label refresh
   let sortOptionEls = [];   // its <option> elements, in SORT_MODES order
   let collapseAllBtn = null;
@@ -76,7 +73,6 @@
   let currentScope = null; // scope the toolbar is currently aligned to
   let rafId = 0;
   let settleUntil = 0;
-  let query = ""; // current search term (not stored)
   let sortMode = "default"; // "default" | "asc" | "desc" | "enabled" | "disabled" (stored)
   try {
     const saved = localStorage.getItem(SORT_KEY);
@@ -107,8 +103,9 @@
   }
 
   function applySliderSettings(cfg) {
+    // On by default: only an explicit "off" in the plugin settings turns the slider off.
     const on = cfg && cfg.enableSlider;
-    switchOn = on === true || String(on).toLowerCase() === "true";
+    switchOn = on === undefined || on === null || on === true || String(on).toLowerCase() === "true";
     const root = document.documentElement;
     root.style.setProperty("--csp-on", validColor(cfg && cfg.sliderColorEnabled, DEFAULT_COLORS.enabled));
     root.style.setProperty("--csp-off", validColor(cfg && cfg.sliderColorDisabled, DEFAULT_COLORS.disabled));
@@ -162,9 +159,13 @@
     return groupKey(group.firstElementChild || group);
   }
 
+  // true = collapsed, false = expanded, undefined = no preference (keep Stash's own default)
   function isCollapsed(key) {
     if (key in sessionState) return sessionState[key];
-    if (mode === "remember") return !!loadState()[key];
+    if (mode === "remember") {
+      const saved = loadState()[key];
+      return typeof saved === "boolean" ? saved : undefined;
+    }
     return mode === "collapsed";
   }
 
@@ -172,19 +173,18 @@
     sessionState[key] = collapsed;
     if (mode === "remember") {
       const s = loadState();
-      if (collapsed) s[key] = true;
-      else delete s[key];
+      s[key] = collapsed;
       saveState(s);
     }
   }
 
   function clearSession(sc) {
     Object.keys(sessionState).forEach((k) => {
-      if (k.startsWith(TASKS.prefix) === sc.native) delete sessionState[k];
+      if (k.startsWith(TASKS.prefix) === (sc.id === "tasks")) delete sessionState[k];
     });
   }
 
-  // ---- Bereiche (Scopes) -------------------------------------------------
+  // ---- Scopes ------------------------------------------------------------
 
   const HEADING_SELECTOR = "h1, h2, h3, h4, h5, h6, .setting-heading";
 
@@ -244,7 +244,6 @@
     if (pluginsPane) {
       out.push({
         id: "plugins",
-        native: false, // own collapse mechanism
         prefix: "",
         pane: pluginsPane,
         container: pluginsPane,
@@ -259,7 +258,6 @@
       if (section) {
         out.push({
           id: "tasks",
-          native: true, // Stash collapses these groups itself -> operate its button
           prefix: TASKS.prefix,
           pane: tasksPane,
           container: section,
@@ -284,8 +282,10 @@
 
   // ---- Collapsing --------------------------------------------------------
 
-  // Stash-native groups (Plugin Tasks): read the state from the collapse container
-  // (class "show") and click Stash's arrow button when needed.
+  // Stash collapses and expands the plugin groups itself (arrow button, click on the header).
+  // This plugin only operates that button: it reads the state from the collapse container
+  // (class "show") and clicks Stash's arrow when the group is not in the desired state.
+  // Groups without an arrow (plugins without settings) are left alone.
   function setNativeCollapsed(group, collapsed) {
     const wrap = group.children[1];
     const btn = group.querySelector(".setting-group-collapse-button");
@@ -298,53 +298,23 @@
     btn.click();
   }
 
-  // Only data attributes are set, class/children are never modified:
-  // React overwrites className on every re-render (e.g. when enabling or
-  // disabling a plugin), data attributes are left untouched.
+  // Only data attributes are set, class/children are never modified: React overwrites
+  // className on every re-render, data attributes are left untouched.
   function enhanceGroup(group, sc) {
     const header = group.firstElementChild;
     if (!header || group.children.length < 2) return; // nothing to collapse
 
     const key = sc.prefix + groupKey(header);
-    const ok = sc.native
-      ? group.hasAttribute("data-csp-native")
-      : header.hasAttribute("data-csp-header");
-    if (group.dataset.cspKey === key && ok) return;
+    if (group.dataset.cspKey === key && group.hasAttribute("data-csp-native")) return;
 
     group.dataset.cspKey = key;
+    group.setAttribute("data-csp-native", "");
+    // Apply the default state (setting "Default state"); no preference = Stash's own default
     const collapsed = isCollapsed(key);
-    if (sc.native) {
-      group.setAttribute("data-csp-native", "");
-      setNativeCollapsed(group, collapsed);
-    } else {
-      header.setAttribute("data-csp-header", "");
-      group.setAttribute("data-csp-collapsed", String(collapsed));
-    }
+    if (collapsed !== undefined) setNativeCollapsed(group, collapsed);
   }
 
-  // ---- Search and sorting ------------------------------------------------
-
-  // Filters the groups by the search term (name, description, settings).
-  // Only data attributes, so React is not disturbed.
-  function applyFilter(sc, isActive) {
-    const q = isActive ? query.trim().toLowerCase() : "";
-    let shown = 0;
-    sc.groups.forEach((g) => {
-      const match = !q || (g.textContent || "").toLowerCase().includes(q);
-      if (match) {
-        shown++;
-        if (g.hasAttribute("data-csp-hidden")) g.removeAttribute("data-csp-hidden");
-      } else if (g.getAttribute("data-csp-hidden") !== "true") {
-        g.setAttribute("data-csp-hidden", "true");
-      }
-    });
-    if (isActive && countEl) {
-      // Writing the same text again would itself create DOM mutations and keep
-      // the mutation observer busy, so it is only written when it changed.
-      const text = q ? shown + " / " + sc.groups.length : "";
-      if (countEl.textContent !== text) countEl.textContent = text;
-    }
-  }
+  // ---- Sorting and slider ------------------------------------------------
 
   function isDisabled(group) {
     const header = group.firstElementChild;
@@ -375,7 +345,7 @@
     const target = switchOn ? findEnableButton(group) : null;
     header.querySelectorAll("[data-csp-switch]").forEach((b) => {
       if (b !== target) {
-        ["data-csp-switch", "data-csp-state", "role", "aria-checked"].forEach((n) => b.removeAttribute(n));
+        ["data-csp-switch", "data-csp-state", "data-csp-noarrow", "role", "aria-checked"].forEach((n) => b.removeAttribute(n));
       }
     });
     if (!target) return;
@@ -384,6 +354,17 @@
     setAttr(target, "data-csp-state", on ? "on" : "off");
     setAttr(target, "role", "switch");
     setAttr(target, "aria-checked", String(on));
+    // Plugins without Stash's arrow get the arrow's width as free space,
+    // so all sliders line up in one column.
+    const arrow = header.querySelector(".setting-group-collapse-button");
+    if (arrow) {
+      const cs = getComputedStyle(arrow);
+      const w = arrow.getBoundingClientRect().width + (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0);
+      if (w > 0) document.documentElement.style.setProperty("--csp-arrow-w", w + "px");
+      target.removeAttribute("data-csp-noarrow");
+    } else {
+      setAttr(target, "data-csp-noarrow", "");
+    }
   }
 
   // Sorting purely via CSS "order" (flex container): DOM nodes are not moved,
@@ -442,22 +423,17 @@
     const target = e.target;
     if (!target || !target.closest) return;
 
-    // Own mechanism ("Plugins" tab)
-    const header = target.closest("[data-csp-header]");
-    if (header) {
-      // Do not intercept clicks on controls (e.g. Enable/Disable)
-      if (target.closest("button, input, select, textarea, a, label")) return;
-      const group = header.parentElement;
-      if (!group || !group.dataset.cspKey) return;
-      const collapsed = group.getAttribute("data-csp-collapsed") !== "true";
-      group.setAttribute("data-csp-collapsed", String(collapsed));
-      setCollapsed(group.dataset.cspKey, collapsed);
-      return;
-    }
-
-    // Stash-native groups (Plugin Tasks): remember the result after the animation
+    // Remember the state Stash's arrow / header click produced (after the animation).
+    // Clicks on other buttons and links of the header (Enable/Disable, link) do not count.
     const ng = target.closest("[data-csp-native]");
-    if (ng && ng.firstElementChild && ng.firstElementChild.contains(target)) {
+    const onArrow = !!target.closest(".setting-group-collapse-button");
+    if (
+      ng &&
+      ng.firstElementChild &&
+      ng.firstElementChild.contains(target) &&
+      ng.querySelector(".setting-group-collapse-button") &&
+      (onArrow || !target.closest("button, a, input, select, textarea, label"))
+    ) {
       setTimeout(() => {
         const wrap = ng.children[1];
         if (wrap && ng.dataset.cspKey) {
@@ -474,8 +450,6 @@
   // re-applied whenever the toolbar is built and on every run() (refreshLabels).
   function toolbarLabels() {
     return {
-      searchPlaceholder: tc("搜索插件…", "Search plugins…"),
-      searchAria: tc("搜索插件", "Search plugins"),
       sortAria: tc("排序方式", "Sort by"),
       sortLabels: {
         default: tc("默认顺序", "Default order"),
@@ -492,12 +466,6 @@
   function refreshLabels() {
     if (!toolbar || !document.body.contains(toolbar)) return;
     const t = toolbarLabels();
-    if (searchInput) {
-      if (searchInput.placeholder !== t.searchPlaceholder) searchInput.placeholder = t.searchPlaceholder;
-      if (searchInput.getAttribute("aria-label") !== t.searchAria) {
-        searchInput.setAttribute("aria-label", t.searchAria);
-      }
-    }
     if (toolbarSelect && toolbarSelect.getAttribute("aria-label") !== t.sortAria) {
       toolbarSelect.setAttribute("aria-label", t.sortAria);
     }
@@ -531,9 +499,8 @@
         if (!sc) return;
         sc.groups.forEach((g) => {
           const key = g.dataset.cspKey;
-          if (!key) return;
-          if (sc.native) setNativeCollapsed(g, collapse);
-          else g.setAttribute("data-csp-collapsed", String(collapse));
+          if (!key || !g.querySelector(".setting-group-collapse-button")) return; // nothing to collapse
+          setNativeCollapsed(g, collapse);
           setCollapsed(key, collapse);
         });
       });
@@ -541,31 +508,6 @@
     };
 
     const t = toolbarLabels();
-    const input = document.createElement("input");
-    searchInput = input;
-    input.type = "search";
-    input.className = "form-control form-control-sm csp-search";
-    input.placeholder = t.searchPlaceholder;
-    input.setAttribute("aria-label", t.searchAria);
-    input.value = query;
-    const onSearch = () => {
-      query = input.value;
-      const sc = getActiveScope();
-      if (!sc) return;
-      applyFilter(sc, true);
-      positionToolbar(sc);
-    };
-    input.addEventListener("input", onSearch);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        input.value = "";
-        onSearch();
-      }
-    });
-
-    countEl = document.createElement("span");
-    countEl.className = "csp-count";
-
     const sort = document.createElement("select");
     toolbarSelect = sort;
     sort.className = "form-control form-control-sm csp-sort";
@@ -590,20 +532,73 @@
 
     collapseAllBtn = mk(t.collapseAll, true);
     expandAllBtn = mk(t.expandAll, false);
-    toolbar.append(input, countEl, sort, collapseAllBtn, expandAllBtn);
+    toolbar.append(sort, collapseAllBtn, expandAllBtn);
     document.body.appendChild(toolbar);
     refreshLabels(); // the locale may have arrived between two runs
     return toolbar;
   }
 
-  // The toolbar stays outside the React tree and is placed by coordinates,
-  // right-aligned at the height of the heading.
+  const visibleEl = (el) => el.getClientRects().length > 0;
+  const inOwn = (el) => el.closest(SELECTORS.group) || el.closest(".csp-toolbar");
+
+  // Finds the filter field of Stash and the button that follows it (the reload button) by
+  // structure and position, never by text: the filter is the text input closest to the heading
+  // (same row), the reload button is the next button after it in the DOM in that same row.
+  // Returns null if either is missing (older Stash versions), then the toolbar is right-aligned.
+  function findAnchor(sc) {
+    const heading = sc.heading;
+    if (!heading) return null;
+    const hr = heading.getBoundingClientRect();
+    const cy = hr.top + hr.height / 2;
+    const scope = heading.closest(".setting-section") || sc.pane;
+    const inputs = Array.from(scope.querySelectorAll("input")).filter(
+      (el) => !inOwn(el) && visibleEl(el) && /^(text|search|)$/.test(el.getAttribute("type") || "")
+    );
+    let filter = null, best = 60;
+    inputs.forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const d = Math.abs(r.top + r.height / 2 - cy);
+      if (d < best) { best = d; filter = el; }
+    });
+    if (!filter) return null;
+    const fr = filter.getBoundingClientRect();
+    const fy = fr.top + fr.height / 2;
+    const buttons = Array.from(scope.querySelectorAll("button")).filter((el) => !inOwn(el) && visibleEl(el));
+    const reload = buttons.find((b) => {
+      if (!(filter.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+      const r = b.getBoundingClientRect();
+      return Math.abs(r.top + r.height / 2 - fy) < 40 && r.left >= fr.right - 1;
+    });
+    return reload ? { filter, reload } : null;
+  }
+
+  let anchorEl = null;
+  function setAnchor(el) {
+    if (anchorEl === el) return;
+    if (anchorEl) anchorEl.removeAttribute("data-csp-anchor");
+    anchorEl = el;
+    if (el) el.setAttribute("data-csp-anchor", "");
+  }
+
+  // The toolbar stays outside the React tree and is placed by coordinates: between the filter
+  // field and the reload button if both exist, otherwise right-aligned at the height of the heading.
   function positionToolbar(sc) {
     if (!toolbar || toolbar.style.display === "none") return;
     const heading = sc.heading;
 
+    const anchor = findAnchor(sc);
+    setAnchor(anchor ? anchor.reload : null);
+    // The reload button gets a left margin (CSS) as wide as the toolbar, which frees the space.
+    const wPx = toolbar.offsetWidth + 8 + "px";
+    if (document.documentElement.style.getPropertyValue("--csp-toolbar-w") !== wPx)
+      document.documentElement.style.setProperty("--csp-toolbar-w", wPx);
+
     let top, right;
-    if (heading) {
+    if (anchor) {
+      const rr = anchor.reload.getBoundingClientRect();
+      top = rr.top + rr.height / 2 - toolbar.offsetHeight / 2;
+      right = rr.left - 8;
+    } else if (heading) {
       const hr = heading.getBoundingClientRect();
       const box = heading.parentElement || sc.pane;
       const br = box.getBoundingClientRect();
@@ -619,8 +614,8 @@
 
     // The toolbar is position: fixed, so viewport coordinates are used (no scroll offset).
     // This also works when Stash scrolls an inner container instead of the window.
-    // On narrow screens the toolbar may be wider than the pane: clamp against the viewport
-    // so it never extends past the right screen edge.
+    // On narrow screens the toolbar may still be wider than the pane: clamp against the
+    // viewport so it never extends past the right screen edge.
     const width = toolbar.offsetWidth;
     const topPx = Math.round(top) + "px";
     const leftPx = Math.round(Math.max(0, Math.min(right - width, window.innerWidth - width))) + "px";
@@ -693,6 +688,7 @@
     currentScope = sc;
     if (!sc || overlayOpen()) {
       if (toolbar) toolbar.style.display = "none";
+      setAnchor(null);
       return;
     }
     ensureToolbar().style.display = "flex";
@@ -726,17 +722,7 @@
     });
 
     const active = pickActive(scopes);
-    const activeId = active ? active.id : null;
-    if (activeId !== lastActiveId) {
-      lastActiveId = activeId;
-      query = ""; // reset the search term when switching tabs
-      if (searchInput) searchInput.value = "";
-    }
-
-    scopes.forEach((sc) => {
-      applyFilter(sc, sc === active);
-      applySort(sc);
-    });
+    scopes.forEach(applySort);
     updateToolbar(active);
     refreshLabels();
   }

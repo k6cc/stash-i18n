@@ -1,29 +1,5 @@
-[data-csp-header] {
-  cursor: pointer;
-  user-select: none;
-  position: relative;
-  padding-left: 1.5rem;
-}
-
-[data-csp-header]::before {
-  content: "▾";
-  position: absolute;
-  left: 0.25rem;
-  top: 50%;
-  transform: translateY(-50%);
-  transition: transform 0.15s ease;
-  opacity: 0.7;
-}
-
-[data-csp-collapsed="true"] > [data-csp-header]::before {
-  transform: translateY(-50%) rotate(-90deg);
-}
-
-[data-csp-collapsed="true"] > :not([data-csp-header]) {
-  display: none !important;
-}
-
-/* Toolbar right-aligned next to the "Plugins" heading (position set by JS) */
+/* Toolbar next to the "Plugins" heading, or between Stash's filter field and
+   the reload button (position set by JS) */
 .csp-toolbar {
   display: none;
   position: fixed; /* viewport coordinates, set by JS */
@@ -33,44 +9,6 @@
 
 .csp-toolbar {
   align-items: center;
-}
-
-.csp-search {
-  width: 14rem;
-}
-
-/* Narrow screens (phones): the full toolbar (search + count + sort + two
-   buttons) is wider than the viewport, so let it wrap and shrink the search
-   box instead of extending past the right screen edge. */
-@media (max-width: 767.98px) {
-  .csp-toolbar {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 0.25rem;
-    max-width: 100vw;
-  }
-
-  .csp-search {
-    width: auto;
-    flex: 1 1 6rem;
-    min-width: 5rem;
-  }
-
-  .csp-sort {
-    max-width: 8rem;
-  }
-}
-
-.csp-count {
-  min-width: 3.5rem;
-  text-align: right;
-  font-size: 0.85rem;
-  opacity: 0.75;
-  white-space: nowrap;
-}
-
-[data-csp-hidden="true"] {
-  display: none !important;
 }
 
 /* Sorting via CSS order: the container of the groups becomes a column */
@@ -131,4 +69,14 @@
 [data-csp-switch]:focus-visible {
   outline: 2px solid #fff;
   outline-offset: 2px;
+}
+
+/* Plugins without Stash's arrow: keep the arrow's space free so the sliders align */
+[data-csp-switch][data-csp-noarrow] {
+  margin-right: var(--csp-arrow-w, 2.5rem) !important;
+}
+
+/* Frees the space between the filter field and the reload button for the toolbar (width set by JS) */
+[data-csp-anchor] {
+  margin-left: var(--csp-toolbar-w, 0) !important;
 }
